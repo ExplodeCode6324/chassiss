@@ -162,8 +162,8 @@ func validateArtifactDocument(document *ArtifactDocument) error {
 	}
 	seen := map[string]struct{}{}
 	for _, check := range metadata.AcceptanceChecks {
-		if check.ID == "" || check.Command == "" {
-			return &CLIError{Code: "CHS-ARTIFACT-CHECK", Message: "acceptance checks require id and command", ExitCode: 10}
+		if err := validateCheckSpec(check); err != nil {
+			return err
 		}
 		if _, ok := seen[check.ID]; ok {
 			return &CLIError{Code: "CHS-ARTIFACT-CHECK", Message: "duplicate acceptance check: " + check.ID, ExitCode: 10}

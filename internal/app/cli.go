@@ -614,11 +614,15 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if !ok || task.Baseline == "" {
 			return Response{}, notFound("opened task")
 		}
-		files, err := gitWorkingFiles(root)
+		worktreeRoot, err := taskWorktreeRoot(root, task)
 		if err != nil {
 			return Response{}, err
 		}
-		diff, err := gitWorkingDiff(root)
+		files, err := gitWorkingFiles(worktreeRoot)
+		if err != nil {
+			return Response{}, err
+		}
+		diff, err := gitWorkingDiff(worktreeRoot)
 		if err != nil {
 			return Response{}, err
 		}

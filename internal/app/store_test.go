@@ -227,11 +227,11 @@ func TestReduceEventRejectsDeveloperPayloadWithMissionDelta(t *testing.T) {
 		Missions:  map[string]MissionState{"M001": {ID: "M001", ArtifactID: "M001", Status: "active", TaskIDs: []string{"M001-T001"}, UpdatedAt: now}},
 		Tasks: map[string]TaskState{"M001-T001": {
 			ID: "M001-T001", MissionID: "M001", ArtifactID: "M001-T001", Status: "in_progress", Owner: "agent:developer", Branch: "chassiss/m001-t001", Baseline: "base",
-			DependsOn: []string{}, AllowedPaths: []string{"code.go"}, Checks: []CheckSpec{{ID: "CHECK-001", Command: "go test ./..."}}, CheckResults: map[string]CheckResult{}, UpdatedAt: now,
+			DependsOn: []string{}, AllowedPaths: []string{"code.go"}, Checks: []CheckSpec{{ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 120}}, CheckResults: map[string]CheckResult{}, UpdatedAt: now,
 		}},
 		Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{}, UpdatedAt: now, UpdatedBy: "agent:developer",
 	}
-	payload := json.RawMessage(`{"task_id":"M001-T001","results":[{"id":"CHECK-001","command":"go test ./...","exit_code":0,"passed":true,"output":"ok","snapshot_digest":"sha256:snapshot","checked_at":"1970-01-01T00:00:00Z"}],"mission":{"status":"completed"}}`)
+	payload := json.RawMessage(`{"task_id":"M001-T001","results":[{"id":"CHECK-001","spec_digest":"sha256:forged","exit_code":0,"passed":true,"output":"ok","snapshot_digest":"sha256:snapshot","checked_at":"1970-01-01T00:00:00Z"}],"mission":{"status":"completed"}}`)
 	event := Event{Version: EventVersion, ProjectID: config.ProjectID, Sequence: 6, ID: "EVT-6", Type: "work.checked", Actor: "agent:developer", Role: "developer", CredentialID: "CRED-D", Resource: "M001-T001", OccurredAt: now.Add(time.Second), Payload: payload}
 	if _, err := reduceEvent(config, previous, event); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("developer mission delta error = %v, want strict unknown-field rejection", err)

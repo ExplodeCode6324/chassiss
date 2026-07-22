@@ -9,7 +9,10 @@ allowed_paths:
   - REPLACE_ALLOWED_PATH/**
 acceptance_checks:
   - id: CHECK-001
-    command: REPLACE_CHECK_COMMAND
+    argv: ["REPLACE_COMMAND", "REPLACE_ARGUMENT"]
+    cwd: "."
+    env: {}
+    timeout_seconds: 120
 ---
 # Task M000-T000
 

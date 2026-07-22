@@ -16,6 +16,11 @@ func runCommand(root, name string, args ...string) (string, error) {
 }
 
 func runCommandEnvironment(root string, extraEnvironment []string, name string, args ...string) (string, error) {
+	output, err := runCommandEnvironmentRaw(root, extraEnvironment, name, args...)
+	return strings.TrimSpace(string(output)), err
+}
+
+func runCommandEnvironmentRaw(root string, extraEnvironment []string, name string, args ...string) ([]byte, error) {
 	command := exec.Command(name, args...)
 	command.Dir = root
 	if len(extraEnvironment) != 0 {
@@ -30,13 +35,17 @@ func runCommandEnvironment(root string, extraEnvironment []string, name string, 
 		if message == "" {
 			message = err.Error()
 		}
-		return strings.TrimSpace(stdout.String()), fmt.Errorf("%s", message)
+		return stdout.Bytes(), fmt.Errorf("%s", message)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.Bytes(), nil
 }
 
 func gitEnvironment(root string, environment []string, args ...string) (string, error) {
 	return runCommandEnvironment(root, environment, "git", args...)
+}
+
+func gitEnvironmentRaw(root string, environment []string, args ...string) ([]byte, error) {
+	return runCommandEnvironmentRaw(root, environment, "git", args...)
 }
 
 func git(root string, args ...string) (string, error) {
@@ -140,34 +149,28 @@ func gitClean(root string) (bool, string, error) {
 }
 
 func gitChangedFiles(root, base, head string) ([]string, error) {
-	output, err := git(root, "diff", "--name-only", base, head, "--")
+	output, err := gitEnvironmentRaw(root, nil, "diff", "--name-only", "-z", "--no-renames", base, head, "--")
 	if err != nil {
 		return nil, err
 	}
-	if output == "" {
-		return []string{}, nil
-	}
-	files := strings.Split(output, "\n")
-	for index := range files {
-		files[index] = filepath.ToSlash(strings.TrimSpace(files[index]))
-	}
+	files := splitGitPaths(output)
 	sort.Strings(files)
 	return files, nil
 }
 
 func gitWorkingFiles(root string) ([]string, error) {
-	tracked, err := git(root, "diff", "--name-only", "HEAD", "--")
+	tracked, err := gitEnvironmentRaw(root, nil, "diff", "--name-only", "-z", "--no-renames", "HEAD", "--")
 	if err != nil {
 		return nil, err
 	}
-	untracked, err := git(root, "ls-files", "--others", "--exclude-standard")
+	untracked, err := gitEnvironmentRaw(root, nil, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
 	set := map[string]struct{}{}
-	for _, output := range []string{tracked, untracked} {
-		for _, line := range strings.Split(output, "\n") {
-			path := filepath.ToSlash(strings.TrimSpace(line))
+	for _, output := range [][]byte{tracked, untracked} {
+		for _, line := range splitGitPaths(output) {
+			path := filepath.ToSlash(line)
 			if path != "" && !strings.HasPrefix(path, ".chassis/") {
 				set[path] = struct{}{}
 			}
@@ -186,7 +189,7 @@ func gitWorkingDiff(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	untracked, err := git(root, "ls-files", "--others", "--exclude-standard")
+	untracked, err := gitEnvironmentRaw(root, nil, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return "", err
 	}
@@ -194,8 +197,7 @@ func gitWorkingDiff(root string) (string, error) {
 	if tracked != "" {
 		parts = append(parts, tracked)
 	}
-	for _, path := range strings.Split(untracked, "\n") {
-		path = strings.TrimSpace(path)
+	for _, path := range splitGitPaths(untracked) {
 		if path == "" || strings.HasPrefix(filepath.ToSlash(path), ".chassis/") {
 			continue
 		}
@@ -214,34 +216,124 @@ func gitWorkingDiff(root string) (string, error) {
 }
 
 func gitWorktreeDigest(root string) (string, error) {
-	files, err := gitWorkingFiles(root)
+	cacheDir := filepath.Join(root, ".git")
+	commonDir, err := git(root, "rev-parse", "--git-common-dir")
+	if err == nil {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(root, commonDir)
+		}
+		cacheDir = commonDir
+	}
+	temporary, err := os.CreateTemp(cacheDir, "chassiss-digest-index-*")
 	if err != nil {
 		return "", err
 	}
-	type entry struct {
-		Path    string `json:"path"`
-		Digest  string `json:"digest"`
-		Deleted bool   `json:"deleted,omitempty"`
+	indexPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		return "", err
 	}
-	entries := make([]entry, 0, len(files))
-	for _, path := range files {
-		data, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-		if os.IsNotExist(readErr) {
-			entries = append(entries, entry{Path: path, Deleted: true})
-			continue
-		}
-		if readErr != nil {
-			return "", readErr
-		}
-		entries = append(entries, entry{Path: path, Digest: digestBytes(data)})
+	if err := os.Remove(indexPath); err != nil {
+		return "", err
 	}
-	data, err := canonicalJSON(entries)
+	defer os.Remove(indexPath)
+	environment := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := gitEnvironment(root, environment, "read-tree", "HEAD"); err != nil {
+		return "", err
+	}
+	if _, err := gitEnvironment(root, environment, "add", "-A", "--", "."); err != nil {
+		return "", err
+	}
+	tree, err := gitEnvironment(root, environment, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	stages, err := gitEnvironmentRaw(root, environment, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", err
+	}
+	manifest := struct {
+		Tree        string `json:"tree"`
+		StageDigest string `json:"stage_digest"`
+	}{Tree: tree, StageDigest: digestBytes(stages)}
+	data, err := canonicalJSON(manifest)
 	if err != nil {
 		return "", err
 	}
 	return digestBytes(data), nil
 }
 
+func splitGitPaths(output []byte) []string {
+	if len(output) == 0 {
+		return []string{}
+	}
+	parts := bytes.Split(output, []byte{0})
+	files := make([]string, 0, len(parts))
+	for _, path := range parts {
+		if len(path) != 0 {
+			files = append(files, filepath.ToSlash(string(path)))
+		}
+	}
+	return files
+}
+
 func currentBranch(root string) (string, error) {
 	return git(root, "branch", "--show-current")
+}
+
+func taskWorktreeRelativePath(taskID string) string {
+	return filepath.ToSlash(filepath.Join(".chassis", "worktrees", strings.ToLower(taskID)))
+}
+
+func taskWorktreeBindingID(taskID, worktreePath, branch string) string {
+	data, _ := canonicalJSON(struct {
+		TaskID       string `json:"task_id"`
+		WorktreePath string `json:"worktree_path"`
+		Branch       string `json:"branch"`
+	}{TaskID: taskID, WorktreePath: worktreePath, Branch: branch})
+	return digestBytes(data)
+}
+
+func gitWorktreeIdentity(root string) (string, error) {
+	gitDir, err := git(root, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", err
+	}
+	identity := filepath.Base(filepath.Clean(gitDir))
+	if identity == "" || identity == ".git" {
+		return "", &CLIError{Code: "CHS-WORKTREE-IDENTITY", Message: "path is not a linked task worktree", ExitCode: 40}
+	}
+	return identity, nil
+}
+
+func taskWorktreeRoot(projectRoot string, task TaskState) (string, error) {
+	if task.WorktreePath == "" || task.WorktreeID == "" || task.WorktreeDigest == "" {
+		return "", &CLIError{Code: "CHS-WORKTREE-MISSING", Message: "task has no bound worktree", ExitCode: 10}
+	}
+	worktreeRoot, err := pathWithin(projectRoot, task.WorktreePath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(worktreeRoot)
+	if os.IsNotExist(err) {
+		return "", &CLIError{Code: "CHS-WORKTREE-MISSING", Message: "task worktree was deleted or moved", ExitCode: 40}
+	}
+	if err != nil || !info.IsDir() {
+		return "", &CLIError{Code: "CHS-WORKTREE-MISSING", Message: "task worktree path is invalid", ExitCode: 40}
+	}
+	top, err := git(worktreeRoot, "rev-parse", "--show-toplevel")
+	if err != nil || !samePath(top, worktreeRoot) {
+		return "", &CLIError{Code: "CHS-WORKTREE-IDENTITY", Message: "task path is not the expected Git worktree", ExitCode: 40}
+	}
+	if task.WorktreeDigest != taskWorktreeBindingID(task.ID, task.WorktreePath, task.Branch) {
+		return "", &CLIError{Code: "CHS-WORKTREE-IDENTITY", Message: "task worktree binding digest changed", ExitCode: 40}
+	}
+	actualIdentity, err := gitWorktreeIdentity(worktreeRoot)
+	if err != nil || actualIdentity != task.WorktreeID {
+		return "", &CLIError{Code: "CHS-WORKTREE-IDENTITY", Message: "task worktree identity changed", ExitCode: 40}
+	}
+	branch, err := currentBranch(worktreeRoot)
+	if err != nil || branch != task.Branch {
+		return "", &CLIError{Code: "CHS-WORKTREE-BRANCH", Message: "task worktree is on the wrong branch", ExitCode: 40}
+	}
+	return worktreeRoot, nil
 }

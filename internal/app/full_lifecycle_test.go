@@ -109,7 +109,10 @@ allowed_paths:
   - code.txt
 acceptance_checks:
   - id: CHECK-001
-    command: "true"
+    argv: ["true"]
+    cwd: "."
+    env: {}
+    timeout_seconds: 10
 ---
 # Task M001-T001
 ## Objective
@@ -140,10 +143,14 @@ Create code.txt.
 	if _, _, _, err := workOpen(project, "M001-T001", developer, state.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "code.txt"), []byte("complete\n"), 0o644); err != nil {
+	state = mustProjectState(t, project)
+	worktreeRoot, err := taskWorktreeRoot(project, state.Tasks["M001-T001"])
+	if err != nil {
 		t.Fatal(err)
 	}
-	state = mustProjectState(t, project)
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "code.txt"), []byte("complete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, _, err := runTaskCheck(project, "M001-T001", "", true, developer, state.Revision); err != nil {
 		t.Fatal(err)
 	}

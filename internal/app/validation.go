@@ -118,6 +118,9 @@ func validateState(config Config, state State) error {
 	}
 
 	activeTasks := make([]TaskState, 0)
+	worktreePaths := map[string]string{}
+	worktreeIDs := map[string]string{}
+	worktreeDigests := map[string]string{}
 	for id, task := range state.Tasks {
 		mission, missionExists := state.Missions[task.MissionID]
 		if task.ID != id || !missionExists || !containsString(mission.TaskIDs, id) || task.ArtifactID != id {
@@ -138,7 +141,7 @@ func validateState(config Config, state State) error {
 				return stateError("CHS-STATE-TASK", fmt.Sprintf("ready task %s has unmet dependency %s", id, dependency))
 			}
 		}
-		if containsString([]string{"planned", "ready"}, task.Status) && (task.Owner != "" || task.Branch != "" || task.Baseline != "") {
+		if containsString([]string{"planned", "ready"}, task.Status) && (task.Owner != "" || task.Branch != "" || task.Baseline != "" || task.WorktreePath != "" || task.WorktreeID != "" || task.WorktreeDigest != "") {
 			return stateError("CHS-STATE-TASK", "unclaimed task contains ownership data: "+id)
 		}
 		needsOwner := containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "integrated"}, task.Status)
@@ -147,6 +150,31 @@ func validateState(config Config, state State) error {
 		}
 		if needsOwner && (task.Owner == "" || task.Branch == "" || task.Baseline == "") {
 			return stateError("CHS-STATE-TASK", "active task lacks owner, branch, or baseline: "+id)
+		}
+		needsWorktree := containsString([]string{"in_progress", "review_pending", "changes_requested", "approved"}, task.Status)
+		if task.Status == "blocked" && containsString([]string{"in_progress", "review_pending", "changes_requested", "approved"}, task.PreviousStatus) {
+			needsWorktree = true
+		}
+		if needsWorktree && (task.WorktreePath == "" || task.WorktreeID == "" || task.WorktreeDigest == "") {
+			return stateError("CHS-STATE-WORKTREE", "active work task lacks worktree identity: "+id)
+		}
+		if task.WorktreePath != "" {
+			if owner, exists := worktreePaths[task.WorktreePath]; exists && owner != id {
+				return stateError("CHS-STATE-WORKTREE", "worktree path is bound to multiple tasks")
+			}
+			worktreePaths[task.WorktreePath] = id
+		}
+		if task.WorktreeID != "" {
+			if owner, exists := worktreeIDs[task.WorktreeID]; exists && owner != id {
+				return stateError("CHS-STATE-WORKTREE", "worktree identity is bound to multiple tasks")
+			}
+			worktreeIDs[task.WorktreeID] = id
+		}
+		if task.WorktreeDigest != "" {
+			if owner, exists := worktreeDigests[task.WorktreeDigest]; exists && owner != id {
+				return stateError("CHS-STATE-WORKTREE", "worktree binding digest is bound to multiple tasks")
+			}
+			worktreeDigests[task.WorktreeDigest] = id
 		}
 		if task.Status == "blocked" && (task.PreviousStatus == "" || strings.TrimSpace(task.BlockReason) == "") {
 			return stateError("CHS-STATE-TASK", "blocked task lacks resumable evidence: "+id)
@@ -231,7 +259,7 @@ func validateState(config Config, state State) error {
 		}
 		for _, spec := range state.Tasks[submission.TaskID].Checks {
 			result, ok := integration.Checks[spec.ID]
-			if !ok || !result.Passed || result.Command != spec.Command || result.SnapshotDigest != integration.IntegratedTree {
+			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != integration.IntegratedTree {
 				return stateError("CHS-STATE-INTEGRATION", "integration lacks merged-tree check evidence: "+id)
 			}
 		}

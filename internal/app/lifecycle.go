@@ -261,7 +261,9 @@ func workOpen(root, taskID string, principal Principal, expected int64) (State, 
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
-	intent := taskPayload{TaskID: taskID}
+	worktreeRelative := taskWorktreeRelativePath(taskID)
+	worktreePath := filepath.Join(root, filepath.FromSlash(worktreeRelative))
+	intent := workOpenedPayload{TaskID: taskID, WorktreePath: worktreeRelative, Branch: task.Branch}
 	previous, next, _, err := executeGitOperation(root, "work.open", "work.opened", taskID, principal, expected, intent, func(current State) (preparedOperation, error) {
 		currentTask, ok := current.Tasks[taskID]
 		if !ok || currentTask.Owner != principal.Actor || !containsString([]string{"claimed", "changes_requested"}, currentTask.Status) {
@@ -287,19 +289,54 @@ func workOpen(root, taskID string, principal Principal, expected int64) (State, 
 		if err != nil {
 			return preparedOperation{}, err
 		}
+		bindingID := taskWorktreeBindingID(taskID, worktreeRelative, currentTask.Branch)
+		gitIdentity := filepath.Base(worktreePath)
+		rootState, err := captureGitOperationState(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		rootState.WorktreePath = worktreeRelative
+		rootState.WorktreePresent = true
+		rootState.WorktreeBranch = currentTask.Branch
+		rootState.WorktreeHead = targetHead
+		rootState.WorktreeIndexTree = tree
+		rootState.WorktreeID = gitIdentity
+		if _, err := os.Stat(worktreePath); err == nil {
+			existingTask := currentTask
+			existingTask.WorktreePath = worktreeRelative
+			existingTask.WorktreeID = gitIdentity
+			existingTask.WorktreeDigest = bindingID
+			if _, err := taskWorktreeRoot(root, existingTask); err != nil {
+				return preparedOperation{}, err
+			}
+			actualHead, err := gitHead(worktreePath)
+			if err != nil {
+				return preparedOperation{}, err
+			}
+			rootState.WorktreeHead = actualHead
+			rootState.WorktreeIndexTree, err = git(worktreePath, "write-tree")
+			if err != nil {
+				return preparedOperation{}, err
+			}
+			targetHead = actualHead
+		} else if !os.IsNotExist(err) {
+			return preparedOperation{}, err
+		}
+		payload := workOpenedPayload{TaskID: taskID, WorktreePath: worktreeRelative, WorktreeID: gitIdentity, WorktreeDigest: bindingID, Branch: currentTask.Branch, Head: targetHead}
 		return preparedOperation{
-			Payload:  taskPayload{TaskID: taskID},
-			GitAfter: GitOperationState{Branch: currentTask.Branch, Head: targetHead, IndexTree: tree},
+			Payload:  payload,
+			GitAfter: rootState,
 			ApplyGit: func() error {
-				if !branchExists {
-					if _, err := git(root, "branch", currentTask.Branch, currentTask.Baseline); err != nil {
-						return err
-					}
-					if err := injectOperationFault("git_branch_created"); err != nil {
-						return err
-					}
+				if _, err := os.Stat(worktreePath); err == nil {
+					return nil
+				} else if !os.IsNotExist(err) {
+					return err
 				}
-				_, err := git(root, "checkout", currentTask.Branch)
+				if !branchExists {
+					_, err := git(root, "worktree", "add", "-b", currentTask.Branch, worktreePath, currentTask.Baseline)
+					return err
+				}
+				_, err := git(root, "worktree", "add", worktreePath, currentTask.Branch)
 				return err
 			},
 		}, nil
@@ -326,6 +363,10 @@ func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, e
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, nil, err
 	}
+	worktreeRoot, err := taskWorktreeRoot(root, task)
+	if err != nil {
+		return State{}, State{}, nil, err
+	}
 	var selected []CheckSpec
 	for _, check := range task.Checks {
 		if all || check.ID == checkID {
@@ -337,22 +378,9 @@ func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, e
 	}
 	results := make([]CheckResult, 0, len(selected))
 	for _, check := range selected {
-		arguments := strings.Fields(check.Command)
-		if len(arguments) == 0 {
-			return State{}, State{}, nil, &CLIError{Code: "CHS-WORK-CHECK-INVALID", Message: "acceptance check command is empty", ExitCode: 10}
-		}
-		output, runErr := runCommand(root, arguments[0], arguments[1:]...)
-		result := CheckResult{ID: check.ID, Command: check.Command, Passed: runErr == nil, CheckedAt: timeNow(), Output: output}
-		if runErr != nil {
-			result.ExitCode = 1
-			result.Output = runErr.Error()
-		}
-		if len(result.Output) > 4000 {
-			result.Output = result.Output[len(result.Output)-4000:]
-		}
-		results = append(results, result)
+		results = append(results, runCheckSpec(worktreeRoot, check))
 	}
-	snapshotDigest, err := gitWorktreeDigest(root)
+	snapshotDigest, err := gitWorktreeDigest(worktreeRoot)
 	if err != nil {
 		return State{}, State{}, nil, err
 	}
@@ -388,6 +416,9 @@ func workCheckpoint(root, taskID, checkpoint string, principal Principal, expect
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
 	}
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	if _, err := taskWorktreeRoot(root, task); err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
 	task.Checkpoint = checkpoint
@@ -433,11 +464,15 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
 			return preparedOperation{}, err
 		}
-		branch, err := currentBranch(root)
+		worktreeRoot, err := taskWorktreeRoot(root, currentTask)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		branch, err := currentBranch(worktreeRoot)
 		if err != nil || branch != currentTask.Branch {
 			return preparedOperation{}, &CLIError{Code: "CHS-WORK-BRANCH", Message: "current branch is not the task branch", ExitCode: 10}
 		}
-		files, err := gitWorkingFiles(root)
+		files, err := gitWorkingFiles(worktreeRoot)
 		if err != nil {
 			return preparedOperation{}, err
 		}
@@ -449,30 +484,43 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 				return preparedOperation{}, &CLIError{Code: "CHS-WORK-SCOPE", Message: "changed file is outside allowed_paths: " + file, ExitCode: 10}
 			}
 		}
-		snapshotDigest, err := gitWorktreeDigest(root)
+		snapshotDigest, err := gitWorktreeDigest(worktreeRoot)
 		if err != nil {
 			return preparedOperation{}, err
 		}
 		if err := validateTaskChecks(currentTask, snapshotDigest); err != nil {
 			return preparedOperation{}, err
 		}
-		before, head, err := gitPrepareCommit(root, "Complete "+taskID, files...)
+		before, head, err := gitPrepareCommit(worktreeRoot, "Complete "+taskID, files...)
 		if err != nil {
 			return preparedOperation{}, err
 		}
-		changed, err := gitChangedFiles(root, currentTask.Baseline, head)
+		changed, err := gitChangedFiles(worktreeRoot, currentTask.Baseline, head)
 		if err != nil {
 			return preparedOperation{}, err
 		}
 		submission = Submission{ID: id, TaskID: taskID, BaseCommit: currentTask.Baseline, HeadCommit: head, ChangedFiles: changed, Checks: currentTask.CheckResults, Handoff: handoff}
-		tree, err := git(root, "rev-parse", head+"^{tree}")
+		tree, err := git(worktreeRoot, "rev-parse", head+"^{tree}")
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		expectedGit, err := captureGitOperationState(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		expectedGit.WorktreePath = currentTask.WorktreePath
+		expectedGit.WorktreePresent = true
+		expectedGit.WorktreeBranch = currentTask.Branch
+		expectedGit.WorktreeHead = head
+		expectedGit.WorktreeIndexTree = tree
+		expectedGit.WorktreeID, err = gitWorktreeIdentity(worktreeRoot)
 		if err != nil {
 			return preparedOperation{}, err
 		}
 		return preparedOperation{
 			Payload:  workSubmittedPayload{Submission: submission},
-			GitAfter: GitOperationState{Branch: branch, Head: head, IndexTree: tree},
-			ApplyGit: func() error { return applyPreparedCommit(root, branch, before, head) },
+			GitAfter: expectedGit,
+			ApplyGit: func() error { return applyPreparedCommit(worktreeRoot, branch, before, head) },
 		}, nil
 	})
 	if err == nil {
@@ -486,6 +534,9 @@ func validateTaskChecks(task TaskState, snapshotDigest string) error {
 		result, ok := task.CheckResults[check.ID]
 		if !ok || !result.Passed {
 			return &CLIError{Code: "CHS-WORK-CHECKS", Message: "required check has not passed: " + check.ID, ExitCode: 10}
+		}
+		if result.SpecDigest != checkSpecDigest(check) {
+			return &CLIError{Code: "CHS-WORK-CHECKS-STALE", Message: "required check no longer matches the Task contract: " + check.ID, ExitCode: 10, Remedy: []string{"rerun chassiss work check using the current Task contract"}}
 		}
 		if result.SnapshotDigest == "" || result.SnapshotDigest != snapshotDigest {
 			return &CLIError{Code: "CHS-WORK-CHECKS-STALE", Message: "files changed after required check: " + check.ID, ExitCode: 10, Remedy: []string{"rerun chassiss work check after the final content change"}}
@@ -637,7 +688,7 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 	}
 	candidateRelative := filepath.ToSlash(filepath.Join(".chassis", "cache", "integration-"+id))
 	candidatePath := filepath.Join(root, filepath.FromSlash(candidateRelative))
-	intent := integrationOperationIntent{SubmissionID: submissionID, CandidatePath: candidateRelative}
+	intent := integrationOperationIntent{SubmissionID: submissionID, CandidatePath: candidateRelative, TaskWorktreePath: task.WorktreePath}
 	var integration Integration
 	previous, next, _, err := executeGitOperation(root, "integrate.apply", "integration.applied", submissionID, principal, expected, intent, func(current State) (preparedOperation, error) {
 		currentSubmission, currentTask, _, err := reviewCheckState(root, current, submissionID)
@@ -735,13 +786,7 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 				_, err = git(root, "merge", "--ff-only", integratedHead)
 				return err
 			},
-			Finalize: func() error {
-				if _, err := git(root, "worktree", "remove", "--force", candidatePath); err != nil {
-					return err
-				}
-				_, _ = git(root, "worktree", "prune")
-				return nil
-			},
+			Finalize: func() error { return cleanupIntegrationWorktrees(root, intent, payload) },
 		}, nil
 	})
 	if err == nil {
@@ -753,15 +798,9 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 func runIntegrationChecks(root string, task TaskState, tree string) (map[string]CheckResult, error) {
 	results := make(map[string]CheckResult, len(task.Checks))
 	for _, check := range task.Checks {
-		arguments := strings.Fields(check.Command)
-		if len(arguments) == 0 {
-			return nil, &CLIError{Code: "CHS-INTEGRATION-CHECKS", Message: "acceptance check command is empty", ExitCode: 10}
-		}
-		output, runErr := runCommand(root, arguments[0], arguments[1:]...)
-		result := CheckResult{ID: check.ID, Command: check.Command, Passed: runErr == nil, Output: trimOutput(output), SnapshotDigest: tree, CheckedAt: timeNow()}
-		if runErr != nil {
-			result.ExitCode = 1
-			result.Output = trimOutput(runErr.Error())
+		result := runCheckSpec(root, check)
+		result.SnapshotDigest = tree
+		if !result.Passed {
 			return nil, &CLIError{Code: "CHS-INTEGRATION-CHECKS", Message: "merged result failed acceptance check " + check.ID + ": " + result.Output, ExitCode: 10}
 		}
 		results[check.ID] = result

@@ -29,12 +29,16 @@ func TestGitWorkingFilesAndDiff(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "new.go"), []byte("package calc\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	spaced := " leading and trailing .txt "
+	if err := os.WriteFile(filepath.Join(root, spaced), []byte("spaces\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	files, err := gitWorkingFiles(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"calc/calc.go", "new.go"}
+	want := []string{spaced, "calc/calc.go", "new.go"}
 	if !reflect.DeepEqual(files, want) {
 		t.Fatalf("files = %#v, want %#v", files, want)
 	}
@@ -42,7 +46,7 @@ func TestGitWorkingFilesAndDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"calc/calc.go", "new.go", "Changed = true"} {
+	for _, marker := range []string{"calc/calc.go", "new.go", "leading and trailing", "Changed = true"} {
 		if !strings.Contains(diff, marker) {
 			t.Fatalf("diff does not contain %q:\n%s", marker, diff)
 		}
@@ -77,5 +81,88 @@ func TestGitWorktreeDigestChangesWithContent(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("worktree digest did not change with file content")
+	}
+}
+
+func TestGitWorktreeDigestBindsModesSymlinksAndDoesNotStage(t *testing.T) {
+	root := t.TempDir()
+	if _, err := git(root, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"target-a", "target-b"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("same content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executable := filepath.Join(root, "tool.sh")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "current")
+	if err := os.Symlink("target-a", link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommit(root, "baseline", "target-a", "target-b", "tool.sh", "current"); err != nil {
+		t.Fatal(err)
+	}
+	indexBefore, err := git(root, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineDigest, err := gitWorktreeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexAfter, _ := git(root, "write-tree")
+	if indexAfter != indexBefore {
+		t.Fatalf("digest changed real index from %s to %s", indexBefore, indexAfter)
+	}
+	if err := os.Chmod(executable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	modeDigest, err := gitWorktreeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modeDigest == baselineDigest {
+		t.Fatal("executable-bit change did not change Git tree/index digest")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target-b", link); err != nil {
+		t.Fatal(err)
+	}
+	linkDigest, err := gitWorktreeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkDigest == modeDigest {
+		t.Fatal("symlink target change did not change Git tree/index digest")
+	}
+}
+
+func TestGitWorkingFilesReportsBothSidesOfRename(t *testing.T) {
+	root := t.TempDir()
+	if _, err := git(root, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(root, "old.txt")
+	if err := os.WriteFile(oldPath, []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommit(root, "baseline", "old.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldPath, filepath.Join(root, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	files, err := gitWorkingFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"new.txt", "old.txt"}
+	if !reflect.DeepEqual(files, want) {
+		t.Fatalf("rename files = %#v, want %#v", files, want)
 	}
 }

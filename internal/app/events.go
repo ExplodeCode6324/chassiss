@@ -65,6 +65,15 @@ type taskPayload struct {
 	TaskID string `json:"task_id"`
 }
 
+type workOpenedPayload struct {
+	TaskID         string `json:"task_id"`
+	WorktreePath   string `json:"worktree_path"`
+	WorktreeID     string `json:"worktree_id"`
+	WorktreeDigest string `json:"worktree_digest"`
+	Branch         string `json:"branch"`
+	Head           string `json:"head"`
+}
+
 type workCheckedPayload struct {
 	TaskID  string        `json:"task_id"`
 	Results []CheckResult `json:"results"`
@@ -223,7 +232,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			}
 			task := *payload.Task
 			task.Status = "planned"
-			task.Owner, task.Branch, task.Baseline, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID = "", "", "", "", "", "", ""
+			task.Owner, task.Branch, task.Baseline, task.WorktreePath, task.WorktreeID, task.WorktreeDigest, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID = "", "", "", "", "", "", "", "", "", ""
 			task.CheckResults = map[string]CheckResult{}
 			task.UpdatedAt = event.OccurredAt
 			next.Tasks[task.ID] = task
@@ -396,6 +405,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			}
 		}
 		task.Owner, task.Branch, task.Baseline, task.Status = payload.Owner, payload.Branch, payload.Baseline, "claimed"
+		task.WorktreePath, task.WorktreeID, task.WorktreeDigest = "", "", ""
 		task.CheckResults = map[string]CheckResult{}
 		task.UpdatedAt = event.OccurredAt
 		next.Tasks[task.ID] = task
@@ -441,7 +451,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		task.UpdatedAt = event.OccurredAt
 		next.Tasks[task.ID] = task
 	case "work.opened":
-		var payload taskPayload
+		var payload workOpenedPayload
 		if err := decodePayload(event.Payload, &payload); err != nil {
 			return err
 		}
@@ -449,13 +459,16 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		task, ok := previous.Tasks[payload.TaskID]
-		if event.Role != "developer" || !ok || task.Owner != event.Actor || !containsString([]string{"claimed", "changes_requested"}, task.Status) {
+		if event.Role != "developer" || !ok || task.Owner != event.Actor || !containsString([]string{"claimed", "changes_requested"}, task.Status) || payload.WorktreePath == "" || payload.WorktreeID == "" || payload.WorktreeDigest == "" || payload.Branch != task.Branch || payload.Head == "" {
 			return transitionError(event, "task is not openable by this developer")
 		}
 		if err := requireMissionExecutable(previous, task.MissionID); err != nil {
 			return err
 		}
 		task.Status = "in_progress"
+		task.WorktreePath = payload.WorktreePath
+		task.WorktreeID = payload.WorktreeID
+		task.WorktreeDigest = payload.WorktreeDigest
 		task.UpdatedAt = event.OccurredAt
 		next.Tasks[task.ID] = task
 	case "work.checked":
@@ -480,7 +493,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		seen := map[string]bool{}
 		for _, result := range payload.Results {
 			check, exists := known[result.ID]
-			if !exists || seen[result.ID] || result.SnapshotDigest == "" || result.Command != check.Command {
+			if !exists || seen[result.ID] || result.SnapshotDigest == "" || result.SpecDigest != checkSpecDigest(check) {
 				return transitionError(event, "check result does not match task contract")
 			}
 			seen[result.ID] = true
@@ -600,7 +613,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		checks := map[string]CheckResult{}
 		for _, spec := range previous.Tasks[submission.TaskID].Checks {
 			result, ok := payload.Checks[spec.ID]
-			if !ok || !result.Passed || result.Command != spec.Command || result.SnapshotDigest != payload.IntegratedTree {
+			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != payload.IntegratedTree {
 				return transitionError(event, "integration result lacks a passed merged-tree check")
 			}
 			result.CheckedAt = event.OccurredAt
@@ -612,6 +625,9 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		next.Submissions[submission.ID] = submission
 		task := next.Tasks[submission.TaskID]
 		task.Status = "integrated"
+		task.WorktreePath = ""
+		task.WorktreeID = ""
+		task.WorktreeDigest = ""
 		task.UpdatedAt = event.OccurredAt
 		next.Tasks[task.ID] = task
 		next.Baseline = payload.IntegratedHead
@@ -686,8 +702,11 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 		return taskClaimedPayload{TaskID: resource, Owner: task.Owner, Branch: task.Branch, Baseline: task.Baseline}, nil
 	case "task.blocked", "work.blocked":
 		return taskBlockedPayload{TaskID: resource, Reason: candidate.Tasks[resource].BlockReason}, nil
-	case "task.resumed", "work.opened":
+	case "task.resumed":
 		return taskPayload{TaskID: resource}, nil
+	case "work.opened":
+		task := candidate.Tasks[resource]
+		return workOpenedPayload{TaskID: resource, WorktreePath: task.WorktreePath, WorktreeID: task.WorktreeID, WorktreeDigest: task.WorktreeDigest, Branch: task.Branch, Head: task.Baseline}, nil
 	case "work.checked":
 		before := previous.Tasks[resource].CheckResults
 		after := candidate.Tasks[resource].CheckResults

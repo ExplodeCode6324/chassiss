@@ -87,13 +87,17 @@ type ArtifactState struct {
 }
 
 type CheckSpec struct {
-	ID      string `yaml:"id" json:"id"`
-	Command string `yaml:"command" json:"command"`
+	ID             string            `yaml:"id" json:"id"`
+	Argv           []string          `yaml:"argv" json:"argv"`
+	Cwd            string            `yaml:"cwd" json:"cwd"`
+	Env            map[string]string `yaml:"env" json:"env"`
+	TimeoutSeconds int               `yaml:"timeout_seconds" json:"timeout_seconds"`
+	Shell          bool              `yaml:"shell,omitempty" json:"shell,omitempty"`
 }
 
 type CheckResult struct {
 	ID             string    `yaml:"id" json:"id"`
-	Command        string    `yaml:"command" json:"command"`
+	SpecDigest     string    `yaml:"spec_digest" json:"spec_digest"`
 	ExitCode       int       `yaml:"exit_code" json:"exit_code"`
 	Passed         bool      `yaml:"passed" json:"passed"`
 	Output         string    `yaml:"output" json:"output"`
@@ -120,6 +124,9 @@ type TaskState struct {
 	Owner          string                 `yaml:"owner,omitempty" json:"owner,omitempty"`
 	Branch         string                 `yaml:"branch,omitempty" json:"branch,omitempty"`
 	Baseline       string                 `yaml:"baseline,omitempty" json:"baseline,omitempty"`
+	WorktreePath   string                 `yaml:"worktree_path,omitempty" json:"worktree_path,omitempty"`
+	WorktreeID     string                 `yaml:"worktree_id,omitempty" json:"worktree_id,omitempty"`
+	WorktreeDigest string                 `yaml:"worktree_digest,omitempty" json:"worktree_digest,omitempty"`
 	DependsOn      []string               `yaml:"depends_on" json:"depends_on"`
 	AllowedPaths   []string               `yaml:"allowed_paths" json:"allowed_paths"`
 	Checks         []CheckSpec            `yaml:"checks" json:"checks"`

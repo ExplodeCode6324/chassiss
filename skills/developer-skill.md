@@ -13,7 +13,8 @@ Use the Developer credential issued for this project and actor. It is reusable a
 2. Run `chassiss --json status`.
 3. Run `chassiss --json next --role developer --actor <actor>`.
 4. Open only the assigned Task with `work open <task-id>`.
-5. Read `work context <task-id>` as the complete implementation contract.
+5. Use the bound `.chassis/worktrees/<task-id>/` returned in Task state as the only product worktree; do not implement in the project root.
+6. Read `work context <task-id>` as the complete implementation contract.
 
 ## Permissions
 
@@ -31,8 +32,8 @@ Do not claim or assign Tasks, change lifecycle state outside Developer commands,
 
 1. Confirm objective, baseline, dependencies, allowed paths, checks, exclusions, and stop conditions.
 2. Make only changes required by the Task; avoid unrelated refactors, upgrades, and opportunistic fixes.
-3. Inspect `work diff`; checkpoint any useful recoverable intermediate result.
-4. Run every declared check with `work check` after the final content change.
+3. Inspect `work diff`; checkpoint any useful recoverable intermediate result. All Developer commands revalidate the bound path, branch and Git worktree identity.
+4. Run every declared structured check with `work check` after the final content change; do not reinterpret argv through a shell or add undeclared environment variables.
 5. Submit a concise handoff identifying behavior, verification, and Reviewer attention.
 6. If changes are requested, reopen only the same Task and address the cited evidence.
 

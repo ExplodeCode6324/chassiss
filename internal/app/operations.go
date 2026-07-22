@@ -22,9 +22,15 @@ const (
 )
 
 type GitOperationState struct {
-	Branch    string `json:"branch"`
-	Head      string `json:"head"`
-	IndexTree string `json:"index_tree"`
+	Branch            string `json:"branch"`
+	Head              string `json:"head"`
+	IndexTree         string `json:"index_tree"`
+	WorktreePath      string `json:"worktree_path,omitempty"`
+	WorktreePresent   bool   `json:"worktree_present,omitempty"`
+	WorktreeBranch    string `json:"worktree_branch,omitempty"`
+	WorktreeHead      string `json:"worktree_head,omitempty"`
+	WorktreeIndexTree string `json:"worktree_index_tree,omitempty"`
+	WorktreeID        string `json:"worktree_id,omitempty"`
 }
 
 type OperationJournal struct {
@@ -54,8 +60,9 @@ type preparedOperation struct {
 }
 
 type integrationOperationIntent struct {
-	SubmissionID  string `json:"submission_id"`
-	CandidatePath string `json:"candidate_path"`
+	SubmissionID     string `json:"submission_id"`
+	CandidatePath    string `json:"candidate_path"`
+	TaskWorktreePath string `json:"task_worktree_path"`
 }
 
 // operationFaultHook is used only by crash-injection tests. A non-nil error
@@ -86,7 +93,8 @@ func executeGitOperation(root, action, eventType, resource string, principal Pri
 		return State{}, State{}, Event{}, &CLIError{Code: "CHS-OPERATION-RECOVERY-REQUIRED", Message: "an unfinished operation must be recovered before another write", ExitCode: 40, Remedy: []string{"run chassiss recover"}}
 	}
 
-	before, err := captureGitOperationState(root)
+	worktreePath := operationTaskWorktreePath(action, resource, previous)
+	before, err := captureGitOperationStateFor(root, worktreePath)
 	if err != nil {
 		return State{}, State{}, Event{}, err
 	}
@@ -150,7 +158,7 @@ func executeGitOperation(root, action, eventType, resource string, principal Pri
 	}
 
 	if err := prepared.ApplyGit(); err != nil {
-		current, captureErr := captureGitOperationState(root)
+		current, captureErr := captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 		if captureErr == nil && reflect.DeepEqual(current, journal.GitBefore) {
 			_ = removeOperationJournal(root, journal.ID)
 		}
@@ -159,7 +167,7 @@ func executeGitOperation(root, action, eventType, resource string, principal Pri
 	if err := injectOperationFault("git_applied_before_phase"); err != nil {
 		return State{}, State{}, Event{}, err
 	}
-	current, err := captureGitOperationState(root)
+	current, err := captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 	if err != nil {
 		return State{}, State{}, Event{}, err
 	}
@@ -266,7 +274,7 @@ func recoverOperationsLocked(root string, config Config) error {
 		if journal.Version != operationVersion || journal.ID == "" || journal.Phase == "" {
 			return &CLIError{Code: "CHS-OPERATION-INVALID", Message: "operation journal is invalid", ExitCode: 40}
 		}
-		current, err := captureGitOperationState(root)
+		current, err := captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 		if err != nil {
 			return err
 		}
@@ -314,11 +322,11 @@ func recoverOperationsLocked(root string, config Config) error {
 			if err := finalizeRecoveredOperation(root, journal); err != nil {
 				return err
 			}
-		case journal.Event != nil && containsString([]string{"artifact.accept", "work.submit", "integrate.apply"}, journal.Action) && current.Branch == journal.GitAfter.Branch && current.Head == journal.GitAfter.Head:
-			if _, err := git(root, "read-tree", "--reset", journal.GitAfter.Head); err != nil {
+		case journal.Event != nil && containsString([]string{"artifact.accept", "work.submit", "integrate.apply"}, journal.Action) && operationRefsAtAfter(journal, current):
+			if err := syncOperationIndex(root, journal); err != nil {
 				return err
 			}
-			current, err = captureGitOperationState(root)
+			current, err = captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 			if err != nil || !reflect.DeepEqual(current, journal.GitAfter) {
 				return operationIntegrityBlocked(journal)
 			}
@@ -347,6 +355,29 @@ func recoverOperationsLocked(root string, config Config) error {
 		}
 	}
 	return nil
+}
+
+func operationRefsAtAfter(journal OperationJournal, current GitOperationState) bool {
+	if current.Branch != journal.GitAfter.Branch || current.Head != journal.GitAfter.Head {
+		return false
+	}
+	if journal.GitAfter.WorktreePath == "" {
+		return true
+	}
+	return current.WorktreePath == journal.GitAfter.WorktreePath && current.WorktreePresent && current.WorktreeBranch == journal.GitAfter.WorktreeBranch && current.WorktreeHead == journal.GitAfter.WorktreeHead && current.WorktreeID == journal.GitAfter.WorktreeID
+}
+
+func syncOperationIndex(root string, journal OperationJournal) error {
+	if journal.GitAfter.WorktreePath == "" {
+		_, err := git(root, "read-tree", "--reset", journal.GitAfter.Head)
+		return err
+	}
+	worktreeRoot, err := pathWithin(root, journal.GitAfter.WorktreePath)
+	if err != nil {
+		return err
+	}
+	_, err = git(worktreeRoot, "read-tree", "--reset", journal.GitAfter.WorktreeHead)
+	return err
 }
 
 func integrationAtPreviousHead(journal OperationJournal, current GitOperationState) bool {
@@ -395,7 +426,7 @@ func recoverIntegrationGit(root string, journal OperationJournal) (bool, error) 
 			return false, err
 		}
 	}
-	current, err := captureGitOperationState(root)
+	current, err := captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 	if err != nil {
 		return false, err
 	}
@@ -411,37 +442,84 @@ func finalizeRecoveredOperation(root string, journal OperationJournal) error {
 		if err := decodePayload(journal.Intent, &intent); err != nil {
 			return err
 		}
-		if intent.CandidatePath != "" {
-			candidate := filepath.Join(root, filepath.FromSlash(intent.CandidatePath))
-			if _, err := os.Stat(candidate); err == nil {
-				if _, err := git(root, "worktree", "remove", "--force", candidate); err != nil {
-					return err
-				}
-			} else if !os.IsNotExist(err) {
-				return err
-			}
-			_, _ = git(root, "worktree", "prune")
+		if journal.Event == nil {
+			return cleanupIntegrationWorktrees(root, intent, integrationAppliedPayload{})
+		}
+		var payload integrationAppliedPayload
+		if err := decodePayload(journal.Event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := cleanupIntegrationWorktrees(root, intent, payload); err != nil {
+			return err
 		}
 	}
 	return removeOperationJournal(root, journal.ID)
 }
 
+func cleanupIntegrationWorktrees(root string, intent integrationOperationIntent, payload integrationAppliedPayload) error {
+	if intent.CandidatePath != "" {
+		candidate := filepath.Join(root, filepath.FromSlash(intent.CandidatePath))
+		if _, err := os.Stat(candidate); err == nil {
+			if _, err := git(root, "worktree", "remove", "--force", candidate); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if intent.TaskWorktreePath != "" && payload.SubmissionHead != "" {
+		taskWorktree := filepath.Join(root, filepath.FromSlash(intent.TaskWorktreePath))
+		if _, err := os.Stat(taskWorktree); err == nil {
+			clean, status, err := gitClean(taskWorktree)
+			if err != nil {
+				return err
+			}
+			head, err := gitHead(taskWorktree)
+			if err != nil || !clean || head != payload.SubmissionHead {
+				return &CLIError{Code: "CHS-WORKTREE-CLEANUP", Message: "integrated task worktree is not clean at the submitted head: " + status, ExitCode: 40}
+			}
+			if _, err := git(root, "worktree", "remove", taskWorktree); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	_, _ = git(root, "worktree", "prune")
+	return nil
+}
+
 func recoverWorkOpenGit(root string, journal OperationJournal) (bool, error) {
-	if journal.GitAfter.Branch == "" || journal.GitAfter.Head == "" {
+	if journal.Event == nil || journal.GitAfter.WorktreePath == "" {
 		return false, operationIntegrityBlocked(journal)
 	}
-	ref := "refs/heads/" + journal.GitAfter.Branch
-	head, err := git(root, "rev-parse", "--verify", ref)
-	if err != nil {
-		return false, nil // Branch creation never happened; cancel the prepared operation.
-	}
-	if head != journal.GitAfter.Head {
-		return false, operationIntegrityBlocked(journal)
-	}
-	if _, err := git(root, "checkout", journal.GitAfter.Branch); err != nil {
+	var payload workOpenedPayload
+	if err := decodePayload(journal.Event.Payload, &payload); err != nil {
 		return false, err
 	}
-	current, err := captureGitOperationState(root)
+	worktreePath, err := pathWithin(root, payload.WorktreePath)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		ref := "refs/heads/" + payload.Branch
+		head, refErr := git(root, "rev-parse", "--verify", ref)
+		if refErr == nil {
+			if head != payload.Head {
+				return false, operationIntegrityBlocked(journal)
+			}
+			if _, err := git(root, "worktree", "add", worktreePath, payload.Branch); err != nil {
+				return false, err
+			}
+		} else {
+			if _, err := git(root, "worktree", "add", "-b", payload.Branch, worktreePath, payload.Head); err != nil {
+				return false, err
+			}
+		}
+	} else if err != nil {
+		return false, err
+	}
+	current, err := captureGitOperationStateFor(root, journal.GitAfter.WorktreePath)
 	if err != nil {
 		return false, err
 	}
@@ -456,6 +534,10 @@ func operationIntegrityBlocked(journal OperationJournal) error {
 }
 
 func captureGitOperationState(root string) (GitOperationState, error) {
+	return captureGitOperationStateFor(root, "")
+}
+
+func captureGitOperationStateFor(root, worktreeRelative string) (GitOperationState, error) {
 	branch, err := currentBranch(root)
 	if err != nil {
 		return GitOperationState{}, err
@@ -468,7 +550,48 @@ func captureGitOperationState(root string) (GitOperationState, error) {
 	if err != nil {
 		return GitOperationState{}, err
 	}
-	return GitOperationState{Branch: branch, Head: head, IndexTree: indexTree}, nil
+	result := GitOperationState{Branch: branch, Head: head, IndexTree: indexTree, WorktreePath: worktreeRelative}
+	if worktreeRelative == "" {
+		return result, nil
+	}
+	worktreePath, err := pathWithin(root, worktreeRelative)
+	if err != nil {
+		return GitOperationState{}, err
+	}
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		return result, nil
+	} else if err != nil {
+		return GitOperationState{}, err
+	}
+	result.WorktreePresent = true
+	result.WorktreeBranch, err = currentBranch(worktreePath)
+	if err != nil {
+		return GitOperationState{}, err
+	}
+	result.WorktreeHead, err = gitHead(worktreePath)
+	if err != nil {
+		return GitOperationState{}, err
+	}
+	result.WorktreeIndexTree, err = git(worktreePath, "write-tree")
+	if err != nil {
+		return GitOperationState{}, err
+	}
+	result.WorktreeID, err = gitWorktreeIdentity(worktreePath)
+	if err != nil {
+		return GitOperationState{}, err
+	}
+	return result, nil
+}
+
+func operationTaskWorktreePath(action, resource string, state State) string {
+	switch action {
+	case "work.open":
+		return taskWorktreeRelativePath(resource)
+	case "work.submit":
+		return state.Tasks[resource].WorktreePath
+	default:
+		return ""
+	}
 }
 
 func operationJournalPath(root, id string) string {

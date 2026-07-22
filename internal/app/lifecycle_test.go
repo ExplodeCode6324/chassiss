@@ -48,14 +48,21 @@ func TestEffectiveExpected(t *testing.T) {
 
 func TestValidateTaskChecksBindsSnapshot(t *testing.T) {
 	task := TaskState{
-		Checks:       []CheckSpec{{ID: "CHECK-001", Command: "go test ./..."}},
-		CheckResults: map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", Passed: true, SnapshotDigest: "snapshot-a"}},
+		Checks: []CheckSpec{{ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 120}},
 	}
+	task.CheckResults = map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", SpecDigest: checkSpecDigest(task.Checks[0]), Passed: true, SnapshotDigest: "snapshot-a"}}
 	if err := validateTaskChecks(task, "snapshot-a"); err != nil {
 		t.Fatalf("current check was rejected: %v", err)
 	}
 	if err := validateTaskChecks(task, "snapshot-b"); err == nil {
 		t.Fatal("stale check snapshot was accepted")
+	}
+	forged := task
+	result := forged.CheckResults["CHECK-001"]
+	result.SpecDigest = "sha256:forged"
+	forged.CheckResults = map[string]CheckResult{"CHECK-001": result}
+	if err := validateTaskChecks(forged, "snapshot-a"); err == nil {
+		t.Fatal("check result from a different Task contract was accepted")
 	}
 }
 
@@ -73,7 +80,7 @@ func TestNextActionsRequireChecksAndOfferMissionAcceptance(t *testing.T) {
 	}
 	state.Tasks["M001-T001"] = TaskState{
 		ID: "M001-T001", MissionID: "M001", Status: "in_progress", Owner: "agent:developer",
-		Checks: []CheckSpec{{ID: "CHECK-001"}}, CheckResults: map[string]CheckResult{},
+		Checks: []CheckSpec{{ID: "CHECK-001", Argv: []string{"true"}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 10}}, CheckResults: map[string]CheckResult{},
 	}
 	want = []string{"work.check M001-T001"}
 	if got := nextActions(state, "developer", "agent:developer"); !reflect.DeepEqual(got, want) {

@@ -29,10 +29,12 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 
 优先级高：
 
-- Event V2 已改为严格最小 payload、确定性 reducer 和 State/transition validator；持有合法角色私钥的主体不能再借自己的 action 写入任意 State delta。仍需通过 operation journal 把 Git 副作用纳入同一恢复协议。
+- Event V2 已改为严格最小 payload、确定性 reducer 和 State/transition validator；持有合法角色私钥的主体不能再借自己的 action 写入任意 State delta。
 - Git checkout/commit/merge 与 state/event 已纳入项目写锁和 operation journal；崩溃恢复只补全 journal 中预先签名且与 Git 精确一致的事件，不对正式分支隐式 reset/force。
 - integration 已验证 task branch tip 等于获批 `HeadCommit`，在临时候选 worktree 合并精确提交并重跑 checks；正式分支推进和 `integration.applied` 由同一 journal 恢复协议保护。
-- snapshot digest 目前绑定路径和普通文件内容，但没有完整绑定 symlink 目标、文件模式和其他 Git index 元数据。allowed-path 与快照检查需要改为 Git tree/index 级实现。
+- 每个 Active Task 使用独立 linked worktree；主 worktree 不再被 `work open` 切换。Task 状态绑定路径、Git worktree 身份、branch 和绑定摘要，删除、移动、错分支或重复绑定都会安全拒绝。
+- snapshot digest 基于临时 Git index 的 tree 和 stage manifest，覆盖 symlink、executable bit、文件模式与 rename/type change，不修改真实 index。
+- acceptance check 使用结构化 argv、相对 cwd、显式 env 和 timeout；默认不经过 shell，cwd 经符号链接解析后不能逃出 Task worktree。
 - 不带 credential 的 `doctor` 仍只能证明 `.chassis` 内部自洽；有能力整体替换项目控制目录的主体可以构造另一套自洽 Root。正式门禁必须传入 Master 分发的 credential，后续可增加 OS Keychain/可信 Root store。
 
 优先级中：
@@ -40,10 +42,9 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - 长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。下一版可增加 rotate、TTL、Task/submission scope 和 broker。
 - `trust.yaml` 更新与 credential 文件写出不是单个事务，且 trust version 与 workflow revision 分离。应增加授权 journal、原子签发协议和独立 trust revision 输出。
 - Event V2 不再保存完整 State；`state.yaml` 是事件序列的可重建投影。长期项目如出现重放性能问题，再增加带链锚的周期 snapshot。
-- acceptance command 使用安全但有限的 argv 切分，不支持引号、环境变量或管道。应改为模板中的结构化 argv/env/timeout，而不是默认开放 shell。
 - Mission block 保留 Task 原状态，但已关闭 Developer、Reviewer 和 integration 的推进许可；恢复 Mission 后合法 Task 才能继续。
 - 设计变更、Task release/supersede、transactional dry-run、credential rotate/TTL 和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
 
 ## 建议的下一步
 
-下一步把 Developer 工作区迁移到每 Task 独立 worktree，并把快照升级为 Git tree/index 摘要；之后完成授权 journal、resume/supersede 和 credential rotate/TTL。远端 publish adapter 仍在本地事务边界完全稳定后接入。
+下一步完成 Task resume 的完整重验证、Developer 身份校验和授权 journal；之后补齐 release/cancel/supersede 与 credential rotate/TTL。远端 publish adapter 仍在本地事务边界完全稳定后接入。

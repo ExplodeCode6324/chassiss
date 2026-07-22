@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,15 +19,20 @@ type approvedSubmissionFixture struct {
 }
 
 func TestIntegrationRejectsApprovedBranchThatMoved(t *testing.T) {
-	fixture := setupApprovedSubmission(t, "true")
+	fixture := setupApprovedSubmission(t, []string{"true"})
 	formalBefore, err := git(fixture.Project, "rev-parse", "refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := git(fixture.Project, "-c", "user.name=developer", "-c", "user.email=developer@invalid", "commit", "--allow-empty", "-m", "unreviewed"); err != nil {
+	state := mustProjectState(t, fixture.Project)
+	worktreeRoot, err := taskWorktreeRoot(fixture.Project, state.Tasks[fixture.Submission.TaskID])
+	if err != nil {
 		t.Fatal(err)
 	}
-	state := mustProjectState(t, fixture.Project)
+	if _, err := git(worktreeRoot, "-c", "user.name=developer", "-c", "user.email=developer@invalid", "commit", "--allow-empty", "-m", "unreviewed"); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, fixture.Project)
 	_, _, _, err = integrateSubmission(fixture.Project, fixture.Submission.ID, fixture.Reviewer, state.Revision)
 	if err == nil {
 		t.Fatal("integration accepted a task branch that moved after approval")
@@ -46,7 +52,7 @@ func TestIntegrationRejectsApprovedBranchThatMoved(t *testing.T) {
 }
 
 func TestIntegrationRunsChecksOnMergedCandidate(t *testing.T) {
-	fixture := setupApprovedSubmission(t, "git symbolic-ref --quiet HEAD")
+	fixture := setupApprovedSubmission(t, []string{"git", "symbolic-ref", "--quiet", "HEAD"})
 	formalBefore, _ := git(fixture.Project, "rev-parse", "refs/heads/main")
 	state := mustProjectState(t, fixture.Project)
 	_, _, _, err := integrateSubmission(fixture.Project, fixture.Submission.ID, fixture.Reviewer, state.Revision)
@@ -68,7 +74,7 @@ func TestIntegrationRunsChecksOnMergedCandidate(t *testing.T) {
 }
 
 func TestIntegrationMergeParentAndEvidenceUseApprovedHead(t *testing.T) {
-	fixture := setupApprovedSubmission(t, "true")
+	fixture := setupApprovedSubmission(t, []string{"true"})
 	state := mustProjectState(t, fixture.Project)
 	_, next, integration, err := integrateSubmission(fixture.Project, fixture.Submission.ID, fixture.Reviewer, state.Revision)
 	if err != nil {
@@ -95,7 +101,7 @@ func TestIntegrationMergeParentAndEvidenceUseApprovedHead(t *testing.T) {
 }
 
 func TestIntegrationJournalRecoversAfterFormalBranchAdvance(t *testing.T) {
-	fixture := setupApprovedSubmission(t, "true")
+	fixture := setupApprovedSubmission(t, []string{"true"})
 	state := mustProjectState(t, fixture.Project)
 	operationFaultHook = func(point string) error {
 		if point == "git_applied" {
@@ -128,7 +134,7 @@ func TestIntegrationJournalRecoversAfterFormalBranchAdvance(t *testing.T) {
 	}
 }
 
-func setupApprovedSubmission(t *testing.T, checkCommand string) approvedSubmissionFixture {
+func setupApprovedSubmission(t *testing.T, checkArgv []string) approvedSubmissionFixture {
 	t.Helper()
 	testRoot := t.TempDir()
 	rootPath := filepath.Join(testRoot, "master-root.yaml")
@@ -216,6 +222,10 @@ Create code.txt.
 `, requirementsState.Digest, architectureState.Digest)
 	writeTestArtifact(t, project, "docs/missions/M001.md", mission)
 	submitAndAcceptTestArtifact(t, project, "docs/missions/M001.md", designer, master)
+	encodedArgv, err := json.Marshal(checkArgv)
+	if err != nil {
+		t.Fatal(err)
+	}
 	taskDocument := fmt.Sprintf(`---
 kind: task
 id: M001-T001
@@ -227,7 +237,10 @@ allowed_paths:
   - code.txt
 acceptance_checks:
   - id: CHECK-001
-    command: %q
+    argv: %s
+    cwd: "."
+    env: {}
+    timeout_seconds: 10
 ---
 # Task M001-T001
 ## Objective
@@ -242,7 +255,7 @@ Create code.txt.
 - Scope change.
 ## Reviewer Attention
 - Exact submitted commit.
-`, requirementsState.Digest, architectureState.Digest, checkCommand)
+`, requirementsState.Digest, architectureState.Digest, encodedArgv)
 	writeTestArtifact(t, project, "docs/tasks/M001-T001.md", taskDocument)
 	submitAndAcceptTestArtifact(t, project, "docs/tasks/M001-T001.md", designer, master)
 	state := mustProjectState(t, project)
@@ -257,10 +270,14 @@ Create code.txt.
 	if _, _, _, err := workOpen(project, "M001-T001", developer, state.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "code.txt"), []byte("complete\n"), 0o644); err != nil {
+	state = mustProjectState(t, project)
+	worktreeRoot, err := taskWorktreeRoot(project, state.Tasks["M001-T001"])
+	if err != nil {
 		t.Fatal(err)
 	}
-	state = mustProjectState(t, project)
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "code.txt"), []byte("complete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, _, err := runTaskCheck(project, "M001-T001", "", true, developer, state.Revision); err != nil {
 		t.Fatal(err)
 	}

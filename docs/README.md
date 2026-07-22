@@ -29,6 +29,7 @@ project-name/
 │   ├── events/           # 原子、签名、最小 payload 的工作流事实源
 │   ├── operations/       # 未完成跨介质操作的恢复 journal
 │   ├── submissions/      # 不可变 submission manifest
+│   ├── worktrees/        # 每个 Active Task 的独立 Git worktree
 │   ├── cache/            # 可删除、可重建，不提交
 │   └── lock              # 本机写锁，不提交
 ├── docs/
@@ -86,6 +87,10 @@ Event V2 只携带当前动作的严格 payload。未知字段、未知事件和
 所有正式 Git 副作用都在同一项目写锁和 operation journal 内。恢复只在 Git 精确匹配 journal 的 before/after 时补写状态；不匹配则进入 `CHS-INTEGRITY-BLOCKED`，不会猜测 reset 或 force。每次状态变化增加 revision；状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
 
 Reviewer 批准和集成都绑定 `submission.HeadCommit`。集成在临时候选 worktree 合并精确 SHA、重跑 Task checks 并保存 merged-tree 证据，checks 通过后才推进正式分支并记录 `integration.applied`。
+
+每个 Active Task 固定使用 `.chassis/worktrees/<task-id>/` 下的独立 linked worktree。状态事件同时绑定路径、Git worktree 身份、Task branch 和绑定摘要；`status/diff/check/checkpoint/submit` 都重新验证该绑定。打开 Task 不切换项目根 worktree，两个无路径冲突的 Task 可在 WIP 限制内并行执行。Task 集成后，仅当 worktree 干净且仍位于获批提交时才受控清理，Task branch 保留。
+
+Task check 使用结构化 `argv/cwd/env/timeout_seconds`。默认不经过 shell，不继承任意宿主环境，`cwd` 必须经符号链接解析后仍位于 Task worktree；确需 shell 时必须在冻结 Task 契约中显式 `shell: true` 并由 Master 接受。检查结果绑定 CheckSpec 摘要和由临时 Git index 生成的 tree/stage 摘要，因此覆盖 symlink 目标、executable bit、文件模式、rename/type change，且不会修改真实 index。
 
 `trust.yaml` 不是秘密，只保存由 Master Root 签名的角色公钥、授权版本和回收记录。单独修改它会使签名失效。写命令以及带 `--credential` 的 `doctor/verify` 还会用 Master 分发的 Root/角色 credential 所携带的 Root fingerprint 锚定项目；不带 credential 的读检查只能证明项目内部自洽。私钥和角色 credential 不进入项目仓库。
 
@@ -161,7 +166,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、签名 state/event、revision CAS、长期 credential、本地 Git 闭环、四个角色 Skill，以及 greenfield/brownfield 两轮推演。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation、Task supersede/release 和完整设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、operation journal、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation、Task supersede/release 和完整设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 

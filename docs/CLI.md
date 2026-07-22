@@ -51,7 +51,7 @@ chassiss artifact accept <submission-id>
 chassiss artifact reject <submission-id> --reason <text>
 ```
 
-`check` 验证格式、路径、ID、引用、依赖、allowed paths、验收命令和冻结规则，但不宣称内容语义正确。
+`check` 验证格式、路径、ID、引用、依赖、allowed paths、结构化验收命令和冻结规则，但不宣称内容语义正确。验收项使用 `argv`、项目内相对 `cwd`、显式 `env` 和 `timeout_seconds`；默认不调用 shell，`shell: true` 必须写入由 Master 接受的 Task 契约。
 
 `submit` 固定精确内容摘要。Master 的 `accept` 只接受该摘要；内容变化必须重新提交。
 
@@ -93,7 +93,9 @@ chassiss work block <task-id> --reason <text>
 
 `work context` 是 Developer 的完整任务包；正常执行不要求再读取整个状态或其他 Task。
 
-`work check` 执行 Task 中声明的检查并保存命令、退出码、结果摘要和当前文件快照摘要。检查后再修改内容会使结果失效。
+`work open` 在 `.chassis/worktrees/<task-id>/` 创建或恢复该 Task 的独立 linked worktree，不切换项目根目录分支。后续 `status/diff/check/checkpoint/submit` 都验证 Task、路径、branch、Git worktree 身份和绑定摘要。
+
+`work check` 按原样执行 Task 声明的结构化 argv，使用隔离后的基础环境与显式 env，并保存 CheckSpec 摘要、退出码、结果和当前 Git tree/index 摘要。检查后修改内容、symlink 目标或 executable bit 都会使结果失效。
 
 `work submit` 检查改动范围、baseline、依赖、必需 checks、检查快照和 handoff，成功后产生不可变 submission。
 
@@ -114,7 +116,7 @@ chassiss integrate apply <submission-id>
 
 `review check` 做机器检查；Reviewer 仍须进行语义复核。批准绑定 submission 摘要，任何内容变化都会使批准失效。
 
-`integrate apply` 只接受仍有效的 approved submission，核对正式 baseline 和 integration order 后更新本地正式历史。
+`integrate apply` 只接受仍有效的 approved submission，要求 Task branch tip 仍等于获批 `HeadCommit`，在临时候选 worktree 合并精确 SHA 并重跑 checks；全部通过后才推进本地正式 baseline 和记录 integration。
 
 `publish` 与集成分开。远端发布失败不会伪造成功，也不会损坏本地工作流状态。
 
