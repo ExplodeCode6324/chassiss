@@ -28,6 +28,7 @@ project-name/
 │   ├── state.yaml        # 由事件重放生成的当前状态投影
 │   ├── events/           # 原子、签名、最小 payload 的工作流事实源
 │   ├── operations/       # 未完成跨介质操作的恢复 journal
+│   ├── auth-operations/  # 未完成授权签发/回收的恢复 journal
 │   ├── submissions/      # 不可变 submission manifest
 │   ├── worktrees/        # 每个 Active Task 的独立 Git worktree
 │   ├── cache/            # 可删除、可重建，不提交
@@ -94,6 +95,8 @@ Task check 使用结构化 `argv/cwd/env/timeout_seconds`。默认不经过 shel
 
 `trust.yaml` 不是秘密，只保存由 Master Root 签名的角色公钥、授权版本和回收记录。单独修改它会使签名失效。写命令以及带 `--credential` 的 `doctor/verify` 还会用 Master 分发的 Root/角色 credential 所携带的 Root fingerprint 锚定项目；不带 credential 的读检查只能证明项目内部自洽。私钥和角色 credential 不进入项目仓库。
 
+授权使用独立 monotonic `trust.revision` 和同一项目写锁。`auth issue` 先在最终输出目录准备隐藏 credential 临时文件，再原子提交签名 trust，最后发布 credential；`auth revoke` 也由授权 journal 保护。崩溃后 `recover` 只补全与 journal 精确匹配的结果。并发授权更新由 `--expect-trust-revision` 做 CAS；旧 revision 稳定返回 `CHS-CONFLICT-TRUST-REVISION`。
+
 Master Root 私钥不硬编码在二进制中：二进制需要分发给所有角色，内嵌秘密可以被提取，泄漏后还必须重新发布整个 CLI。v0.1 改为由 Master 独立保管 Root 私钥，二进制只内置算法和规则；每个角色 credential 自带项目和 Root fingerprint，并拥有自己的私钥。
 
 ## 第一版密钥使用方式
@@ -112,6 +115,8 @@ Master 首次运行 chassiss auth master-init
 ```
 
 credential 默认绑定项目、Agent 身份、角色和允许动作，但不绑定单个 Task。Task 权限由当前状态继续收窄：Developer 只能操作分配给自己身份的 Task；Reviewer 不能复核同一身份产生的 submission；Designer 不能接受自己的 artifact；Orchestrator 不能批准实现。
+
+Task assign/claim 只接受当前 trust 中未回收且拥有 Developer 权限的 actor，并在事件中记录当时的 `owner_grant_id`。该字段是分派来源证据，不锁死旧密钥；旧 grant 回收后，同 actor 的新 Developer credential 仍可继续原 Task。
 
 应当为不同 Agent 身份分别签发 credential，不要让全部 Developer 或 Reviewer 共用同一把角色密钥，否则无法独立回收、审计具体主体或证明 Reviewer 独立性。同一 Agent 可以持有多个角色 credential，但每次动作必须明确选择当前角色。
 
@@ -166,7 +171,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、operation journal、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation、Task supersede/release 和完整设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation、Task supersede/release 和完整设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 

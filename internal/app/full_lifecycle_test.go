@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -187,7 +188,12 @@ Create code.txt.
 
 func issueTestPrincipal(t *testing.T, project, rootPath, outputDir, actor, role string) Principal {
 	t.Helper()
-	path := filepath.Join(outputDir, role+".yaml")
+	suffix, err := newID("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileName := strings.NewReplacer(":", "-", "/", "-", "\\", "-").Replace(actor) + "-" + role + "-" + suffix + ".yaml"
+	path := filepath.Join(outputDir, fileName)
 	if _, err := issueCredential(project, rootPath, actor, role, path, nil); err != nil {
 		t.Fatal(err)
 	}

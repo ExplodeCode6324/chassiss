@@ -26,10 +26,11 @@ Do not edit design documents or product files, open Developer work, approve subm
 ## Workflow
 
 1. Activate only a Mission whose Requirements, Architecture, Mission, and complete Task graph are accepted.
-2. Select only ready Tasks. Let the CLI enforce dependencies, WIP, baseline, actor ownership, and overlapping paths.
-3. Use `claim` when the Orchestrator actor is also the intended Developer actor; otherwise use `assign --owner` with that Developer's exact actor ID.
-4. Route each submission to a Reviewer whose actor differs from its author.
-5. After every required Task is integrated, submit concrete Mission evidence and wait for Master acceptance.
+2. Select only ready Tasks. Let the CLI enforce dependencies, WIP, baseline, actor ownership, active Developer grant, and overlapping paths.
+3. Use `claim` only when the Orchestrator actor also has an active Developer grant and is the intended Developer actor; otherwise use `assign --owner` with that Developer's exact actor ID.
+4. Treat `task block` as releasing WIP/path scheduling occupancy. Before `task resume`, expect the CLI to reacquire those constraints and revalidate worktree/submission/review evidence; do not bypass a rejected resume.
+5. Route each submission to a Reviewer whose actor differs from its author.
+6. After every required Task is integrated, submit concrete Mission evidence and wait for Master acceptance.
 
 ## Stop
 

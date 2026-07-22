@@ -108,7 +108,7 @@ func missionResume(root, missionID string, principal Principal, expected int64) 
 func activeWIP(state State) int {
 	count := 0
 	for _, task := range state.Tasks {
-		if containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "blocked"}, task.Status) {
+		if isActiveTaskStatus(task.Status) {
 			count++
 		}
 	}
@@ -141,7 +141,7 @@ func pathsOverlap(left, right []string) bool {
 }
 
 func taskClaimOrAssign(root, taskID, owner string, principal Principal, expected int64, assign bool) (State, State, TaskState, error) {
-	config, _, state, err := loadProject(root)
+	config, trust, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
@@ -162,6 +162,10 @@ func taskClaimOrAssign(root, taskID, owner string, principal Principal, expected
 	if owner == "" {
 		owner = principal.Actor
 	}
+	ownerGrant, ok := activeDeveloperGrant(trust, owner, timeNow())
+	if !ok {
+		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-OWNER-AUTH", Message: "task owner has no active Developer grant", ExitCode: 11, Remedy: []string{"issue an active Developer credential for the owner actor", "assign the Task to a different Developer actor"}}
+	}
 	for otherID, other := range state.Tasks {
 		if otherID == taskID || !containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "blocked"}, other.Status) {
 			continue
@@ -175,6 +179,7 @@ func taskClaimOrAssign(root, taskID, owner string, principal Principal, expected
 		return State{}, State{}, TaskState{}, err
 	}
 	task.Owner = owner
+	task.OwnerGrantID = ownerGrant.ID
 	task.Branch = "chassiss/" + strings.ToLower(taskID)
 	task.Baseline = baseline
 	task.Status = "claimed"
@@ -219,7 +224,7 @@ func taskBlock(root, taskID, reason string, principal Principal, expected int64,
 }
 
 func taskResume(root, taskID string, principal Principal, expected int64) (State, State, TaskState, error) {
-	_, _, state, err := loadProject(root)
+	config, _, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
@@ -227,22 +232,115 @@ func taskResume(root, taskID string, principal Principal, expected int64) (State
 	if err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
-	task, ok := state.Tasks[taskID]
-	if !ok || task.Status != "blocked" || task.PreviousStatus == "" {
-		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-NOT-BLOCKED", Message: "task is not resumable", ExitCode: 10}
-	}
-	if err := requireMissionExecutable(state, task.MissionID); err != nil {
-		return State{}, State{}, TaskState{}, err
-	}
-	task.Status = task.PreviousStatus
-	task.PreviousStatus = ""
-	task.BlockReason = ""
-	task.UpdatedAt = timeNow()
+	var task TaskState
 	previous, next, _, err := updateState(root, principal, "task.resumed", taskID, expected, func(next *State) error {
+		if err := validateTaskResumeState(config, *next, taskID); err != nil {
+			return err
+		}
+		if err := validateTaskResumeGit(root, *next, taskID); err != nil {
+			return err
+		}
+		task = next.Tasks[taskID]
+		task.Status = task.PreviousStatus
+		task.PreviousStatus = ""
+		task.BlockReason = ""
+		task.UpdatedAt = timeNow()
 		next.Tasks[taskID] = task
 		return nil
 	})
 	return previous, next, task, err
+}
+
+func validateTaskResumeState(config Config, state State, taskID string) error {
+	task, ok := state.Tasks[taskID]
+	if !ok || task.Status != "blocked" || task.PreviousStatus == "" {
+		return &CLIError{Code: "CHS-TASK-NOT-BLOCKED", Message: "task is not resumable", ExitCode: 10}
+	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return err
+	}
+	target := task.PreviousStatus
+	if !containsString([]string{"planned", "ready", "claimed", "in_progress", "review_pending", "changes_requested", "approved"}, target) {
+		return &CLIError{Code: "CHS-TASK-RESUME-STATE", Message: "task previous status is not safely resumable", ExitCode: 10}
+	}
+	if target != "planned" {
+		for _, dependency := range task.DependsOn {
+			if state.Tasks[dependency].Status != "integrated" {
+				return &CLIError{Code: "CHS-TASK-RESUME-DEPENDENCY", Message: "task dependency is no longer integrated: " + dependency, ExitCode: 10}
+			}
+		}
+	}
+	if target == "ready" || isActiveTaskStatus(target) {
+		for otherID, other := range state.Tasks {
+			if otherID != taskID && isActiveTaskStatus(other.Status) && pathsOverlap(task.AllowedPaths, other.AllowedPaths) {
+				return &CLIError{Code: "CHS-TASK-RESUME-PATH-CONFLICT", Message: "task write scope now overlaps active task " + otherID, ExitCode: 10}
+			}
+		}
+	}
+	if isActiveTaskStatus(target) && activeWIP(state) >= config.WIPLimit {
+		return &CLIError{Code: "CHS-TASK-RESUME-WIP", Message: "project WIP limit is full", ExitCode: 10}
+	}
+	if containsString([]string{"review_pending", "changes_requested", "approved"}, target) {
+		submission, ok := state.Submissions[task.SubmissionID]
+		if !ok || submission.TaskID != taskID || submission.Status != target {
+			return &CLIError{Code: "CHS-TASK-RESUME-EVIDENCE", Message: "submission state no longer matches the blocked Task", ExitCode: 10}
+		}
+		digest, err := calculateSubmissionDigest(submission)
+		if err != nil || digest != submission.Digest {
+			return &CLIError{Code: "CHS-TASK-RESUME-EVIDENCE", Message: "submission digest is no longer valid", ExitCode: 10}
+		}
+		if target == "changes_requested" {
+			review, ok := state.Reviews[submission.ReviewID]
+			if !ok || review.Verdict != "request_changes" || review.SubmissionDigest != submission.Digest {
+				return &CLIError{Code: "CHS-TASK-RESUME-EVIDENCE", Message: "change-request evidence is no longer valid", ExitCode: 10}
+			}
+		}
+		if target == "approved" {
+			review, ok := state.Reviews[submission.ReviewID]
+			if !ok || review.Verdict != "approve" || review.SubmissionDigest != submission.Digest {
+				return &CLIError{Code: "CHS-TASK-RESUME-EVIDENCE", Message: "approval evidence is no longer valid", ExitCode: 10}
+			}
+		}
+	}
+	return nil
+}
+
+func validateTaskResumeGit(root string, state State, taskID string) error {
+	task := state.Tasks[taskID]
+	target := task.PreviousStatus
+	if !isActiveTaskStatus(target) {
+		return nil
+	}
+	if _, err := git(root, "cat-file", "-e", task.Baseline+"^{commit}"); err != nil {
+		return &CLIError{Code: "CHS-TASK-RESUME-BASELINE", Message: "task baseline commit is unavailable", ExitCode: 10}
+	}
+	branchHead, branchErr := git(root, "rev-parse", "--verify", "refs/heads/"+task.Branch)
+	if target == "claimed" && branchErr != nil {
+		return nil
+	}
+	if branchErr != nil {
+		return &CLIError{Code: "CHS-TASK-RESUME-BRANCH", Message: "task branch is unavailable", ExitCode: 10}
+	}
+	if _, err := git(root, "merge-base", "--is-ancestor", task.Baseline, branchHead); err != nil {
+		return &CLIError{Code: "CHS-TASK-RESUME-BASELINE", Message: "task branch no longer descends from its baseline", ExitCode: 10}
+	}
+	if target != "claimed" {
+		worktreeRoot, err := taskWorktreeRoot(root, task)
+		if err != nil {
+			return err
+		}
+		worktreeHead, err := gitHead(worktreeRoot)
+		if err != nil || worktreeHead != branchHead {
+			return &CLIError{Code: "CHS-TASK-RESUME-BRANCH", Message: "task worktree and branch heads differ", ExitCode: 10}
+		}
+	}
+	if containsString([]string{"review_pending", "changes_requested", "approved"}, target) {
+		submission, _, _, err := reviewCheckState(root, state, task.SubmissionID)
+		if err != nil || submission.HeadCommit != branchHead {
+			return &CLIError{Code: "CHS-TASK-RESUME-EVIDENCE", Message: "submission or reviewed branch head is no longer valid", ExitCode: 10}
+		}
+	}
+	return nil
 }
 
 func workOpen(root, taskID string, principal Principal, expected int64) (State, State, TaskState, error) {
@@ -579,8 +677,18 @@ func reviewCheckState(root string, state State, submissionID string) (Submission
 		}
 	}
 	for _, check := range task.Checks {
-		if result, ok := submission.Checks[check.ID]; !ok || !result.Passed {
+		result, ok := submission.Checks[check.ID]
+		if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(check) {
 			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-CHECKS", Message: "submission lacks passed check: " + check.ID, ExitCode: 10}
+		}
+	}
+	snapshotDigest, err := gitCommitSnapshotDigest(root, submission.HeadCommit)
+	if err != nil {
+		return Submission{}, TaskState{}, nil, err
+	}
+	for _, result := range submission.Checks {
+		if result.SnapshotDigest != snapshotDigest {
+			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-CHECKS", Message: "submission check evidence does not match its exact head commit", ExitCode: 10}
 		}
 	}
 	return submission, task, files, nil
@@ -629,6 +737,9 @@ func recordReview(root, submissionID, verdict, report string, principal Principa
 	if submission.Status != "review_pending" {
 		return State{}, State{}, Review{}, &CLIError{Code: "CHS-REVIEW-STATE", Message: "submission is not pending review", ExitCode: 10}
 	}
+	if state.Tasks[submission.TaskID].Status != "review_pending" {
+		return State{}, State{}, Review{}, &CLIError{Code: "CHS-REVIEW-STATE", Message: "submission Task is blocked or no longer pending review", ExitCode: 10}
+	}
 	if err := requireMissionExecutable(state, state.Tasks[submission.TaskID].MissionID); err != nil {
 		return State{}, State{}, Review{}, err
 	}
@@ -675,6 +786,9 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission is not approved", ExitCode: 10}
 	}
 	task := state.Tasks[submission.TaskID]
+	if task.Status != "approved" {
+		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission Task is blocked or no longer approved", ExitCode: 10}
+	}
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, Integration{}, err
 	}
@@ -697,6 +811,9 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 		}
 		if currentSubmission.Status != "approved" {
 			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission is not approved", ExitCode: 10}
+		}
+		if currentTask.Status != "approved" {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission Task is blocked or no longer approved", ExitCode: 10}
 		}
 		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
 			return preparedOperation{}, err

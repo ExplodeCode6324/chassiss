@@ -134,6 +134,44 @@ func TestIntegrationJournalRecoversAfterFormalBranchAdvance(t *testing.T) {
 	}
 }
 
+func TestApprovedTaskResumeRevalidatesBranchEvidence(t *testing.T) {
+	t.Run("unchanged", func(t *testing.T) {
+		fixture := setupApprovedSubmission(t, []string{"true"})
+		state := mustProjectState(t, fixture.Project)
+		if _, _, _, err := taskBlock(fixture.Project, fixture.Submission.TaskID, "pause", fixture.Orchestrator, state.Revision, "task.blocked"); err != nil {
+			t.Fatal(err)
+		}
+		state = mustProjectState(t, fixture.Project)
+		if _, next, task, err := taskResume(fixture.Project, fixture.Submission.TaskID, fixture.Orchestrator, state.Revision); err != nil {
+			t.Fatal(err)
+		} else if task.Status != "approved" || next.Tasks[task.ID].Status != "approved" {
+			t.Fatalf("resumed task = %#v", task)
+		}
+	})
+
+	t.Run("approved branch moved", func(t *testing.T) {
+		fixture := setupApprovedSubmission(t, []string{"true"})
+		state := mustProjectState(t, fixture.Project)
+		if _, _, _, err := taskBlock(fixture.Project, fixture.Submission.TaskID, "pause", fixture.Orchestrator, state.Revision, "task.blocked"); err != nil {
+			t.Fatal(err)
+		}
+		state = mustProjectState(t, fixture.Project)
+		worktreeRoot, err := taskWorktreeRoot(fixture.Project, state.Tasks[fixture.Submission.TaskID])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := git(worktreeRoot, "-c", "user.name=developer", "-c", "user.email=developer@invalid", "commit", "--allow-empty", "-m", "unreviewed"); err != nil {
+			t.Fatal(err)
+		}
+		state = mustProjectState(t, fixture.Project)
+		if _, _, _, err := taskResume(fixture.Project, fixture.Submission.TaskID, fixture.Orchestrator, state.Revision); err == nil {
+			t.Fatal("resume accepted stale approval evidence")
+		} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-RESUME-EVIDENCE" {
+			t.Fatalf("stale resume error = %#v, want CHS-TASK-RESUME-EVIDENCE", err)
+		}
+	})
+}
+
 func setupApprovedSubmission(t *testing.T, checkArgv []string) approvedSubmissionFixture {
 	t.Helper()
 	testRoot := t.TempDir()

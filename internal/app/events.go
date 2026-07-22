@@ -50,10 +50,11 @@ type missionAcceptancePayload struct {
 }
 
 type taskClaimedPayload struct {
-	TaskID   string `json:"task_id"`
-	Owner    string `json:"owner"`
-	Branch   string `json:"branch"`
-	Baseline string `json:"baseline"`
+	TaskID       string `json:"task_id"`
+	Owner        string `json:"owner"`
+	OwnerGrantID string `json:"owner_grant_id"`
+	Branch       string `json:"branch"`
+	Baseline     string `json:"baseline"`
 }
 
 type taskBlockedPayload struct {
@@ -232,7 +233,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			}
 			task := *payload.Task
 			task.Status = "planned"
-			task.Owner, task.Branch, task.Baseline, task.WorktreePath, task.WorktreeID, task.WorktreeDigest, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID = "", "", "", "", "", "", "", "", "", ""
+			task.Owner, task.OwnerGrantID, task.Branch, task.Baseline, task.WorktreePath, task.WorktreeID, task.WorktreeDigest, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID = "", "", "", "", "", "", "", "", "", "", ""
 			task.CheckResults = map[string]CheckResult{}
 			task.UpdatedAt = event.OccurredAt
 			next.Tasks[task.ID] = task
@@ -384,7 +385,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		task, ok := previous.Tasks[payload.TaskID]
-		if !ok || task.Status != "ready" || task.MissionID != previous.ActiveMission || payload.Owner == "" || payload.Branch == "" || payload.Baseline == "" {
+		if !ok || task.Status != "ready" || task.MissionID != previous.ActiveMission || !validActor(payload.Owner) || payload.OwnerGrantID == "" || payload.Branch == "" || payload.Baseline == "" {
 			return transitionError(event, "task is not claimable")
 		}
 		if event.Type == "task.claimed" && (event.Role != "orchestrator" || payload.Owner != event.Actor) {
@@ -404,7 +405,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 				return transitionError(event, "task path conflicts with another active task")
 			}
 		}
-		task.Owner, task.Branch, task.Baseline, task.Status = payload.Owner, payload.Branch, payload.Baseline, "claimed"
+		task.Owner, task.OwnerGrantID, task.Branch, task.Baseline, task.Status = payload.Owner, payload.OwnerGrantID, payload.Branch, payload.Baseline, "claimed"
 		task.WorktreePath, task.WorktreeID, task.WorktreeDigest = "", "", ""
 		task.CheckResults = map[string]CheckResult{}
 		task.UpdatedAt = event.OccurredAt
@@ -445,6 +446,9 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return transitionError(event, "task is not resumable")
 		}
 		if err := requireMissionExecutable(previous, task.MissionID); err != nil {
+			return err
+		}
+		if err := validateTaskResumeState(config, previous, payload.TaskID); err != nil {
 			return err
 		}
 		task.Status, task.PreviousStatus, task.BlockReason = task.PreviousStatus, "", ""
@@ -570,7 +574,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		submission, ok := previous.Submissions[payload.SubmissionID]
-		if event.Role != "reviewer" || !ok || submission.Status != "review_pending" || submission.Actor == event.Actor || payload.ReviewID == "" {
+		if event.Role != "reviewer" || !ok || submission.Status != "review_pending" || previous.Tasks[submission.TaskID].Status != "review_pending" || submission.Actor == event.Actor || payload.ReviewID == "" {
 			return transitionError(event, "submission is not independently reviewable")
 		}
 		if _, exists := previous.Reviews[payload.ReviewID]; exists {
@@ -597,7 +601,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		submission, ok := previous.Submissions[payload.SubmissionID]
-		if event.Role != "reviewer" || !ok || submission.Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" || payload.IntegratedTree == "" || payload.SubmissionHead != submission.HeadCommit {
+		if event.Role != "reviewer" || !ok || submission.Status != "approved" || previous.Tasks[submission.TaskID].Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" || payload.IntegratedTree == "" || payload.SubmissionHead != submission.HeadCommit {
 			return transitionError(event, "submission is not integratable")
 		}
 		if err := requireMissionExecutable(previous, previous.Tasks[submission.TaskID].MissionID); err != nil {
@@ -699,7 +703,7 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 		return missionAcceptancePayload{MissionID: resource, Evidence: candidate.Missions[resource].AcceptanceEvidence}, nil
 	case "task.claimed", "task.assigned":
 		task := candidate.Tasks[resource]
-		return taskClaimedPayload{TaskID: resource, Owner: task.Owner, Branch: task.Branch, Baseline: task.Baseline}, nil
+		return taskClaimedPayload{TaskID: resource, Owner: task.Owner, OwnerGrantID: task.OwnerGrantID, Branch: task.Branch, Baseline: task.Baseline}, nil
 	case "task.blocked", "work.blocked":
 		return taskBlockedPayload{TaskID: resource, Reason: candidate.Tasks[resource].BlockReason}, nil
 	case "task.resumed":

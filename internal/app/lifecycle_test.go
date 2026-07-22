@@ -113,3 +113,47 @@ func TestMissionBlockDisablesDeveloperAndReviewerProgress(t *testing.T) {
 		t.Fatalf("blocked orchestrator actions = %#v, want %#v", got, want)
 	}
 }
+
+func TestTaskResumeRechecksWIPPathAndDependencies(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	base := State{
+		ActiveMission: "M001",
+		Missions:      map[string]MissionState{"M001": {ID: "M001", Status: "active", TaskIDs: []string{"M001-T000", "M001-T001", "M001-T002"}}},
+		Tasks: map[string]TaskState{
+			"M001-T000": {ID: "M001-T000", MissionID: "M001", Status: "integrated", AllowedPaths: []string{"dependency.txt"}, UpdatedAt: now},
+			"M001-T001": {ID: "M001-T001", MissionID: "M001", Status: "blocked", PreviousStatus: "in_progress", BlockReason: "paused", Owner: "agent:a", OwnerGrantID: "CRED-A", Branch: "chassiss/m001-t001", Baseline: "base", AllowedPaths: []string{"a.txt"}, DependsOn: []string{"M001-T000"}, UpdatedAt: now},
+			"M001-T002": {ID: "M001-T002", MissionID: "M001", Status: "in_progress", Owner: "agent:b", OwnerGrantID: "CRED-B", Branch: "chassiss/m001-t002", Baseline: "base", AllowedPaths: []string{"b.txt"}, UpdatedAt: now},
+		},
+	}
+	if err := validateTaskResumeState(Config{WIPLimit: 1}, base, "M001-T001"); err == nil {
+		t.Fatal("resume ignored a full WIP limit")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-RESUME-WIP" {
+		t.Fatalf("WIP resume error = %#v", err)
+	}
+	pathConflict := base
+	pathConflict.Tasks = make(map[string]TaskState, len(base.Tasks))
+	for id, task := range base.Tasks {
+		pathConflict.Tasks[id] = task
+	}
+	other := pathConflict.Tasks["M001-T002"]
+	other.AllowedPaths = []string{"a.txt"}
+	pathConflict.Tasks[other.ID] = other
+	if err := validateTaskResumeState(Config{WIPLimit: 2}, pathConflict, "M001-T001"); err == nil {
+		t.Fatal("resume ignored an active path conflict")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-RESUME-PATH-CONFLICT" {
+		t.Fatalf("path resume error = %#v", err)
+	}
+	dependencyLost := base
+	dependencyLost.Tasks = make(map[string]TaskState, len(base.Tasks))
+	for id, task := range base.Tasks {
+		dependencyLost.Tasks[id] = task
+	}
+	dependency := dependencyLost.Tasks["M001-T000"]
+	dependency.Status = "claimed"
+	dependencyLost.Tasks[dependency.ID] = dependency
+	if err := validateTaskResumeState(Config{WIPLimit: 2}, dependencyLost, "M001-T001"); err == nil {
+		t.Fatal("resume ignored a lost dependency")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-RESUME-DEPENDENCY" {
+		t.Fatalf("dependency resume error = %#v", err)
+	}
+}

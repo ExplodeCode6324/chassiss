@@ -90,7 +90,7 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		}
 	}
 	for _, path := range []string{
-		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"), filepath.Join(target, ".chassis", "events"), filepath.Join(target, ".chassis", "operations"),
+		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"), filepath.Join(target, ".chassis", "events"), filepath.Join(target, ".chassis", "operations"), filepath.Join(target, ".chassis", "auth-operations"),
 		filepath.Join(target, "docs", "missions"), filepath.Join(target, "docs", "tasks"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -135,7 +135,7 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		Version: ConfigVersion, ProjectID: projectID, Mode: mode, DefaultBranch: branch, ContentBackend: "local-git",
 		WIPLimit: 2, RootFingerprint: keyFingerprint(public), CreatedAt: now,
 	}
-	trust := Trust{Version: 1, ProjectID: projectID, RootPublicKey: root.PublicKey, Grants: []Grant{}, Revocations: []Revocation{}, UpdatedAt: now}
+	trust := Trust{Version: TrustVersion, Revision: 1, ProjectID: projectID, RootPublicKey: root.PublicKey, Grants: []Grant{}, Revocations: []Revocation{}, UpdatedAt: now}
 	if err := signTrust(&trust, private); err != nil {
 		return emptyConfig, emptyState, err
 	}
@@ -227,10 +227,8 @@ func updateState(root string, principal Principal, eventType, resource string, e
 		return State{}, State{}, Event{}, err
 	}
 	defer lock.release()
-	if pending, err := listOperationJournals(root); err != nil {
+	if err := requireNoPendingOperations(root); err != nil {
 		return State{}, State{}, Event{}, err
-	} else if len(pending) != 0 {
-		return State{}, State{}, Event{}, &CLIError{Code: "CHS-OPERATION-RECOVERY-REQUIRED", Message: "an unfinished operation must be recovered before another write", ExitCode: 40, Remedy: []string{"run chassiss recover"}}
 	}
 	config, _, _, err := loadProject(root)
 	if err != nil {
@@ -361,6 +359,19 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 		if len(public) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(public), []byte(event.Digest), signature) {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d signature is invalid", sequence), ExitCode: 40}
 		}
+		if event.Type == "task.claimed" || event.Type == "task.assigned" {
+			var payload taskClaimedPayload
+			if err := decodePayload(event.Payload, &payload); err != nil {
+				return State{}, fmt.Errorf("event sequence %d task owner payload is invalid: %w", sequence, err)
+			}
+			ownerGrant, ok := grants[payload.OwnerGrantID]
+			if !ok || ownerGrant.Actor != payload.Owner || ownerGrant.Role != "developer" || !containsString(ownerGrant.Actions, "work.open") || event.OccurredAt.Before(ownerGrant.IssuedAt) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d task owner grant is invalid", sequence), ExitCode: 40}
+			}
+			if revoked, ok := revokedAt[ownerGrant.ID]; ok && !event.OccurredAt.Before(revoked) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d assigned a revoked Developer grant", sequence), ExitCode: 40}
+			}
+		}
 		rebuilt, err = reduceEvent(config, rebuilt, event)
 		if err != nil {
 			return State{}, fmt.Errorf("event sequence %d cannot be reduced: %w", sequence, err)
@@ -429,6 +440,15 @@ func recoverProject(root string) (State, error) {
 	var trust Trust
 	configPath, trustPath, statePath, eventsPath := projectPaths(root)
 	if err := loadYAML(configPath, &config); err != nil {
+		return State{}, err
+	}
+	if err := loadYAML(trustPath, &trust); err != nil {
+		return State{}, err
+	}
+	if err := verifyTrust(config, trust); err != nil {
+		return State{}, err
+	}
+	if err := recoverAuthOperationsLocked(root, config); err != nil {
 		return State{}, err
 	}
 	if err := loadYAML(trustPath, &trust); err != nil {

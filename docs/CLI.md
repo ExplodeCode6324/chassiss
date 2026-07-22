@@ -5,7 +5,9 @@
 ## 通用约定
 
 ```text
-chassiss [--root <project>] [--json] [--credential <source>] <group> <action>
+chassiss [--root <project>] [--json] [--credential <source>]
+         [--expect-revision <n>] [--expect-trust-revision <n>]
+         <group> <action>
 ```
 
 - Agent 使用 `--json`；
@@ -32,7 +34,7 @@ chassiss explain <error-code>
 
 `next` 按 role、actor 和当前状态返回候选动作；真正执行时仍会重新验证 credential、revision 和全部前置条件。
 
-`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 先处理 operation journal：仅当 Git 精确匹配签名的预期结果时补写事件和状态；随后从签名事件重建状态投影。Git/journal 不一致时进入 integrity blocked，不隐式 reset 或 force。
+`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 先处理 authorization 与 Git/state operation journal：仅当外部结果精确匹配 journal 时补写或发布，随后从签名事件重建状态投影。不一致时进入 integrity blocked，不隐式 reset、force 或改写 trust。
 
 ## 模板和设计文档
 
@@ -76,7 +78,9 @@ chassiss task resume <task-id>
 
 `activate` 检查 Requirements、Architecture、Mission 和全部 Task 都已被正确接受，Task 图无环且写入范围可调度。
 
-`claim/assign` 原子检查 Task 状态、依赖、WIP、路径冲突和 baseline，并生成 Developer 任务包。
+`claim/assign` 原子检查 Task 状态、依赖、WIP、路径冲突和 baseline；owner 必须在当前 trust 中拥有未回收的 Developer grant，事件会记录该 grant。后续 credential 轮换只要 actor 不变即可继续。
+
+`task block` 释放该 Task 的 WIP 和路径调度占用，但保留冻结状态。`task resume` 会重新检查依赖、WIP、路径冲突、owner/branch/baseline、worktree，以及 review_pending/changes_requested/approved 的 submission 与 Review 证据；任何一项过期都拒绝恢复旧状态。
 
 ## Developer 工作
 
@@ -134,6 +138,8 @@ chassiss --credential <master-root> auth revoke <credential-id> [--reason <text>
 `master-init` 只需由 Master 执行一次。第一版 credential 默认长期有效，由 Master 主动 `revoke`；不要求每个 Task 或 Session 重新签发。项目只保存 Master 签名的公钥授权和回收记录，不保存 Root 私钥或 credential 正文。
 
 credential 必须按 Agent 身份签发，不能由多个 Agent 共享一个 Role credential。Developer 的实际 Task 范围、Reviewer 独立性和其他动态限制仍由状态机检查。
+
+签发与回收使用独立 `trust_revision`、项目授权 journal 和项目写锁。自动化调用可传全局 `--expect-trust-revision <n>`；冲突时刷新 `status` 后重试。签发不会覆盖已有 credential 文件，trust 提交失败也不会发布看似有效的最终 credential。
 
 未来可以增加 `rotate`、可选 `--ttl`、`--resource` 和 broker，不改变现有角色工作流。
 

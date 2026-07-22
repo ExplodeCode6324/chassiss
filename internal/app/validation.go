@@ -14,7 +14,7 @@ var validSubmissionStatuses = stringSet([]string{"review_pending", "changes_requ
 var validReviewVerdicts = stringSet([]string{"approve", "request_changes"})
 
 func isActiveTaskStatus(status string) bool {
-	return containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "blocked"}, status)
+	return containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved"}, status)
 }
 
 func isClosedTaskStatus(status string) bool {
@@ -141,14 +141,14 @@ func validateState(config Config, state State) error {
 				return stateError("CHS-STATE-TASK", fmt.Sprintf("ready task %s has unmet dependency %s", id, dependency))
 			}
 		}
-		if containsString([]string{"planned", "ready"}, task.Status) && (task.Owner != "" || task.Branch != "" || task.Baseline != "" || task.WorktreePath != "" || task.WorktreeID != "" || task.WorktreeDigest != "") {
+		if containsString([]string{"planned", "ready"}, task.Status) && (task.Owner != "" || task.OwnerGrantID != "" || task.Branch != "" || task.Baseline != "" || task.WorktreePath != "" || task.WorktreeID != "" || task.WorktreeDigest != "") {
 			return stateError("CHS-STATE-TASK", "unclaimed task contains ownership data: "+id)
 		}
 		needsOwner := containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "integrated"}, task.Status)
 		if task.Status == "blocked" && containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved"}, task.PreviousStatus) {
 			needsOwner = true
 		}
-		if needsOwner && (task.Owner == "" || task.Branch == "" || task.Baseline == "") {
+		if needsOwner && (!validActor(task.Owner) || task.OwnerGrantID == "" || task.Branch == "" || task.Baseline == "") {
 			return stateError("CHS-STATE-TASK", "active task lacks owner, branch, or baseline: "+id)
 		}
 		needsWorktree := containsString([]string{"in_progress", "review_pending", "changes_requested", "approved"}, task.Status)

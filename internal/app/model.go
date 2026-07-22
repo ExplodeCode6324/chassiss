@@ -9,6 +9,7 @@ const (
 	APIVersion        = "chassiss.dev/v1"
 	ConfigVersion     = 2
 	StateVersion      = 2
+	TrustVersion      = 1
 	CredentialVersion = 1
 	EventVersion      = 2
 )
@@ -50,6 +51,7 @@ type Revocation struct {
 
 type Trust struct {
 	Version       int          `yaml:"version" json:"version"`
+	Revision      int64        `yaml:"revision" json:"revision"`
 	ProjectID     string       `yaml:"project_id" json:"project_id"`
 	RootPublicKey string       `yaml:"root_public_key" json:"root_public_key"`
 	Grants        []Grant      `yaml:"grants" json:"grants"`
@@ -122,6 +124,7 @@ type TaskState struct {
 	ArtifactID     string                 `yaml:"artifact_id" json:"artifact_id"`
 	Status         string                 `yaml:"status" json:"status"`
 	Owner          string                 `yaml:"owner,omitempty" json:"owner,omitempty"`
+	OwnerGrantID   string                 `yaml:"owner_grant_id,omitempty" json:"owner_grant_id,omitempty"`
 	Branch         string                 `yaml:"branch,omitempty" json:"branch,omitempty"`
 	Baseline       string                 `yaml:"baseline,omitempty" json:"baseline,omitempty"`
 	WorktreePath   string                 `yaml:"worktree_path,omitempty" json:"worktree_path,omitempty"`

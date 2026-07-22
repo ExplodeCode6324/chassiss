@@ -35,16 +35,17 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - 每个 Active Task 使用独立 linked worktree；主 worktree 不再被 `work open` 切换。Task 状态绑定路径、Git worktree 身份、branch 和绑定摘要，删除、移动、错分支或重复绑定都会安全拒绝。
 - snapshot digest 基于临时 Git index 的 tree 和 stage manifest，覆盖 symlink、executable bit、文件模式与 rename/type change，不修改真实 index。
 - acceptance check 使用结构化 argv、相对 cwd、显式 env 和 timeout；默认不经过 shell，cwd 经符号链接解析后不能逃出 Task worktree。
+- Task assign/claim 验证当前有效 Developer grant 并记录分派 grant；同 actor 可在旧 credential 回收后使用新 credential 继续。Task block 释放调度占用，resume 重新验证依赖、WIP、路径、Git/worktree、submission 和 Review 证据。
+- `auth issue/revoke` 已使用统一项目锁、独立 trust revision 和授权 journal；签发按“临时 credential → trust 提交 → credential 发布”恢复，并发冲突不会丢失 grant/revocation。
 - 不带 credential 的 `doctor` 仍只能证明 `.chassis` 内部自洽；有能力整体替换项目控制目录的主体可以构造另一套自洽 Root。正式门禁必须传入 Master 分发的 credential，后续可增加 OS Keychain/可信 Root store。
 
 优先级中：
 
 - 长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。下一版可增加 rotate、TTL、Task/submission scope 和 broker。
-- `trust.yaml` 更新与 credential 文件写出不是单个事务，且 trust version 与 workflow revision 分离。应增加授权 journal、原子签发协议和独立 trust revision 输出。
 - Event V2 不再保存完整 State；`state.yaml` 是事件序列的可重建投影。长期项目如出现重放性能问题，再增加带链锚的周期 snapshot。
 - Mission block 保留 Task 原状态，但已关闭 Developer、Reviewer 和 integration 的推进许可；恢复 Mission 后合法 Task 才能继续。
 - 设计变更、Task release/supersede、transactional dry-run、credential rotate/TTL 和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
 
 ## 建议的下一步
 
-下一步完成 Task resume 的完整重验证、Developer 身份校验和授权 journal；之后补齐 release/cancel/supersede 与 credential rotate/TTL。远端 publish adapter 仍在本地事务边界完全稳定后接入。
+下一步补齐 Task release/cancel/supersede 与可选 credential scope/TTL；远端 publish adapter 仍在本地事务边界完全稳定后接入。

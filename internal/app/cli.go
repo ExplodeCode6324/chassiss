@@ -16,11 +16,12 @@ import (
 const Version = "0.1.0-dev"
 
 type globalOptions struct {
-	root       string
-	credential string
-	json       bool
-	dryRun     bool
-	expected   int64
+	root          string
+	credential    string
+	json          bool
+	dryRun        bool
+	expected      int64
+	trustExpected int64
 }
 
 type commandArgs struct {
@@ -61,7 +62,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseGlobals(args []string) (globalOptions, []string, error) {
-	options := globalOptions{expected: -1}
+	options := globalOptions{expected: -1, trustExpected: -1}
 	for len(args) > 0 {
 		switch args[0] {
 		case "--root":
@@ -87,6 +88,15 @@ func parseGlobals(args []string) (globalOptions, []string, error) {
 				return options, nil, usageError("--expect-revision must be a positive integer")
 			}
 			options.expected, args = value, args[2:]
+		case "--expect-trust-revision":
+			if len(args) < 2 {
+				return options, nil, usageError("--expect-trust-revision requires an integer")
+			}
+			value, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil || value < 1 {
+				return options, nil, usageError("--expect-trust-revision must be a positive integer")
+			}
+			options.trustExpected, args = value, args[2:]
 		default:
 			return options, args, nil
 		}
@@ -221,7 +231,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	config, _, state, err := loadProject(root)
+	config, trust, state, err := loadProject(root)
 	if err != nil {
 		return Response{}, err
 	}
@@ -250,11 +260,15 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if rootKey == "" || actor == "" || role == "" || output == "" {
 			return Response{}, usageError("auth issue requires --actor, --role, --output, and a Master Root credential")
 		}
-		credential, err := issueCredential(root, rootKey, actor, role, output, commaList(parsed.values["actions"]))
+		credential, err := issueCredentialExpected(root, rootKey, actor, role, output, commaList(parsed.values["actions"]), options.trustExpected)
 		if err != nil {
 			return Response{}, err
 		}
-		return readResponse(map[string]any{"id": credential.ID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "path": output, "persistent": true}), nil
+		_, updatedTrust, _, err := loadProject(root)
+		if err != nil {
+			return Response{}, err
+		}
+		return readResponse(map[string]any{"id": credential.ID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "path": absolutePath(output), "persistent": true, "trust_revision": updatedTrust.Revision}), nil
 	case "auth revoke":
 		rootKey := firstNonEmpty(parsed.values["master-root"], options.credential)
 		credentialID := parsed.values["id"]
@@ -264,7 +278,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if rootKey == "" || credentialID == "" {
 			return Response{}, usageError("auth revoke requires a credential ID and Master Root credential")
 		}
-		if err := revokeCredential(root, rootKey, credentialID, parsed.values["reason"]); err != nil {
+		if err := revokeCredentialExpected(root, rootKey, credentialID, parsed.values["reason"], options.trustExpected); err != nil {
 			return Response{}, err
 		}
 		_, trust, current, err := loadProject(root)
@@ -272,12 +286,13 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			return Response{}, err
 		}
 		state, _ = current, trust
-		return readResponse(map[string]any{"credential_id": credentialID, "revoked": true, "trust_version": trust.Version}), nil
+		return readResponse(map[string]any{"credential_id": credentialID, "revoked": true, "trust_version": trust.Version, "trust_revision": trust.Revision}), nil
 
 	case "status":
 		result := stateSummary(state)
 		result["root"] = root
 		result["mode"] = config.Mode
+		result["trust_revision"] = trust.Revision
 		return readResponse(result), nil
 	case "next":
 		role := parsed.values["role"]
@@ -988,11 +1003,12 @@ func statusMatchesFilter(status, filter string) bool {
 
 func explainCode(code string) map[string]any {
 	explanations := map[string]string{
-		"CHS-CONFLICT-REVISION":   "State changed since it was read. Refresh status and reconsider the action.",
-		"CHS-AUTH-REVOKED":        "The selected long-lived credential was explicitly revoked by Master.",
-		"CHS-WORK-SCOPE":          "At least one changed file is outside the Task allowed_paths contract.",
-		"CHS-REVIEW-INDEPENDENCE": "The same actor identity cannot author and approve a submission.",
-		"CHS-INTEGRITY-EVENTS":    "The signed event log is missing, reordered, modified, or otherwise invalid.",
+		"CHS-CONFLICT-REVISION":       "State changed since it was read. Refresh status and reconsider the action.",
+		"CHS-CONFLICT-TRUST-REVISION": "Trust grants or revocations changed since they were read. Reload trust metadata and reconsider the authorization action.",
+		"CHS-AUTH-REVOKED":            "The selected long-lived credential was explicitly revoked by Master.",
+		"CHS-WORK-SCOPE":              "At least one changed file is outside the Task allowed_paths contract.",
+		"CHS-REVIEW-INDEPENDENCE":     "The same actor identity cannot author and approve a submission.",
+		"CHS-INTEGRITY-EVENTS":        "The signed event log is missing, reordered, modified, or otherwise invalid.",
 	}
 	message := explanations[code]
 	if message == "" {
@@ -1005,7 +1021,8 @@ const helpText = `CHASSISS ` + Version + `
 
 Usage:
   chassiss [--root PATH] [--credential FILE] [--json]
-           [--expect-revision N] <group> <action> [arguments]
+           [--expect-revision N] [--expect-trust-revision N]
+           <group> <action> [arguments]
 
 Core commands:
   auth master-init|issue|inspect|revoke

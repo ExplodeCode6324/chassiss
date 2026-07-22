@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -99,7 +98,7 @@ func signTrust(trust *Trust, private ed25519.PrivateKey) error {
 }
 
 func verifyTrust(config Config, trust Trust) error {
-	if trust.ProjectID != config.ProjectID || trust.Version < 1 {
+	if trust.ProjectID != config.ProjectID || trust.Version != TrustVersion || trust.Revision < 1 {
 		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata does not match project", ExitCode: 40}
 	}
 	public, err := base64.RawStdEncoding.DecodeString(trust.RootPublicKey)
@@ -128,62 +127,44 @@ func rootPrincipal(root *RootKey, public ed25519.PublicKey, private ed25519.Priv
 }
 
 func issueCredential(rootDir string, rootPath, actor, role, output string, requested []string) (*Credential, error) {
-	rootKey, publicRoot, privateRoot, err := loadRoot(rootPath)
-	if err != nil {
-		return nil, err
+	return issueCredentialExpected(rootDir, rootPath, actor, role, output, requested, -1)
+}
+
+func validActor(actor string) bool {
+	if len(actor) < 1 || len(actor) > 128 {
+		return false
 	}
-	config, trust, _, err := loadProject(rootDir)
-	if err != nil {
-		return nil, err
-	}
-	if keyFingerprint(publicRoot) != config.RootFingerprint {
-		return nil, &CLIError{Code: "CHS-AUTH-ROOT-MISMATCH", Message: "Master Root does not own this project", ExitCode: 11}
-	}
-	allowed, ok := roleActions[role]
-	if !ok {
-		return nil, &CLIError{Code: "CHS-AUTH-ROLE", Message: "unknown role: " + role, ExitCode: 20}
-	}
-	actions := append([]string{}, allowed...)
-	if len(requested) > 0 {
-		allowedSet := stringSet(allowed)
-		actions = nil
-		for _, action := range requested {
-			if _, ok := allowedSet[action]; !ok {
-				return nil, &CLIError{Code: "CHS-AUTH-ACTION", Message: fmt.Sprintf("role %s cannot be granted action %s", role, action), ExitCode: 11}
-			}
-			actions = append(actions, action)
+	for _, value := range actor {
+		if value <= ' ' || value == 0x7f {
+			return false
 		}
 	}
-	sort.Strings(actions)
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
+	return true
+}
+
+func activeDeveloperGrant(trust Trust, actor string, at time.Time) (Grant, bool) {
+	if !validActor(actor) {
+		return Grant{}, false
 	}
-	id, err := newID("CRED")
-	if err != nil {
-		return nil, err
+	revokedAt := map[string]time.Time{}
+	for _, revocation := range trust.Revocations {
+		if current, ok := revokedAt[revocation.CredentialID]; !ok || revocation.RevokedAt.Before(current) {
+			revokedAt[revocation.CredentialID] = revocation.RevokedAt
+		}
 	}
-	now := time.Now().UTC()
-	grant := Grant{ID: id, Actor: actor, Role: role, Actions: actions, PublicKey: base64.RawStdEncoding.EncodeToString(public), IssuedAt: now}
-	trust.Grants = append(trust.Grants, grant)
-	trust.Version++
-	trust.UpdatedAt = now
-	if err := signTrust(&trust, privateRoot); err != nil {
-		return nil, err
+	var selected Grant
+	for _, grant := range trust.Grants {
+		if grant.Actor != actor || grant.Role != "developer" || grant.IssuedAt.After(at) || !containsString(grant.Actions, "work.open") {
+			continue
+		}
+		if revoked, ok := revokedAt[grant.ID]; ok && !at.Before(revoked) {
+			continue
+		}
+		if selected.ID == "" || grant.IssuedAt.After(selected.IssuedAt) || (grant.IssuedAt.Equal(selected.IssuedAt) && grant.ID < selected.ID) {
+			selected = grant
+		}
 	}
-	credential := &Credential{
-		Kind: "chassiss-role-credential", Version: CredentialVersion, ID: id, ProjectID: config.ProjectID,
-		RootFingerprint: keyFingerprint(publicRoot), Actor: actor, Role: role, Actions: actions,
-		PrivateKey: base64.RawStdEncoding.EncodeToString(private), IssuedAt: now,
-	}
-	if err := writeYAMLAtomic(output, credential, 0o600); err != nil {
-		return nil, err
-	}
-	if err := writeYAMLAtomic(filepath.Join(rootDir, ".chassis", "trust.yaml"), &trust, 0o644); err != nil {
-		return nil, err
-	}
-	_ = rootKey
-	return credential, nil
+	return selected, selected.ID != ""
 }
 
 func loadPrincipal(rootDir, credentialPath string, action string) (Principal, error) {
@@ -252,39 +233,7 @@ func loadPrincipal(rootDir, credentialPath string, action string) (Principal, er
 }
 
 func revokeCredential(rootDir, rootPath, credentialID, reason string) error {
-	_, publicRoot, privateRoot, err := loadRoot(rootPath)
-	if err != nil {
-		return err
-	}
-	config, trust, _, err := loadProject(rootDir)
-	if err != nil {
-		return err
-	}
-	if keyFingerprint(publicRoot) != config.RootFingerprint {
-		return &CLIError{Code: "CHS-AUTH-ROOT-MISMATCH", Message: "Master Root does not own this project", ExitCode: 11}
-	}
-	found := false
-	for _, grant := range trust.Grants {
-		if grant.ID == credentialID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return &CLIError{Code: "CHS-AUTH-NOT-FOUND", Message: "credential grant not found", ExitCode: 10}
-	}
-	for _, revoked := range trust.Revocations {
-		if revoked.CredentialID == credentialID {
-			return nil
-		}
-	}
-	trust.Revocations = append(trust.Revocations, Revocation{CredentialID: credentialID, RevokedAt: time.Now().UTC(), Reason: reason})
-	trust.Version++
-	trust.UpdatedAt = time.Now().UTC()
-	if err := signTrust(&trust, privateRoot); err != nil {
-		return err
-	}
-	return writeYAMLAtomic(filepath.Join(rootDir, ".chassis", "trust.yaml"), &trust, 0o644)
+	return revokeCredentialExpected(rootDir, rootPath, credentialID, reason, -1)
 }
 
 func stringSet(values []string) map[string]struct{} {

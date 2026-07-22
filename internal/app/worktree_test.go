@@ -27,6 +27,11 @@ func TestTwoDevelopersUseIndependentTaskWorktrees(t *testing.T) {
 	orchestrator := issueTestPrincipal(t, project, rootPath, testRoot, "agent:orchestrator", "orchestrator")
 	developerA := issueTestPrincipal(t, project, rootPath, testRoot, "agent:developer-a", "developer")
 	developerB := issueTestPrincipal(t, project, rootPath, testRoot, "agent:developer-b", "developer")
+	reviewerOnly := issueTestPrincipal(t, project, rootPath, testRoot, "agent:reviewer-only", "reviewer")
+	revokedDeveloper := issueTestPrincipal(t, project, rootPath, testRoot, "agent:revoked-developer", "developer")
+	if err := revokeCredential(project, rootPath, revokedDeveloper.ID, "test revoked owner"); err != nil {
+		t.Fatal(err)
+	}
 
 	requirements := `---
 kind: requirements
@@ -140,10 +145,34 @@ Create %s.
 	if _, _, err := activateMission(project, "M001", orchestrator, state.Revision); err != nil {
 		t.Fatal(err)
 	}
+	for _, owner := range []string{"agent:missing", reviewerOnly.Actor, revokedDeveloper.Actor} {
+		state = mustProjectState(t, project)
+		if _, _, _, err := taskClaimOrAssign(project, "M001-T001", owner, orchestrator, state.Revision, true); err == nil {
+			t.Fatalf("assignment accepted invalid Developer owner %q", owner)
+		} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-OWNER-AUTH" {
+			t.Fatalf("invalid owner error = %#v, want CHS-TASK-OWNER-AUTH", err)
+		}
+	}
+	state = mustProjectState(t, project)
+	if _, _, _, err := taskClaimOrAssign(project, "M001-T001", developerA.Actor, orchestrator, state.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	assigned := mustProjectState(t, project).Tasks["M001-T001"]
+	if assigned.OwnerGrantID != developerA.ID {
+		t.Fatalf("owner grant = %q, want %q", assigned.OwnerGrantID, developerA.ID)
+	}
+	if err := revokeCredential(project, rootPath, developerA.ID, "rotate Developer credential"); err != nil {
+		t.Fatal(err)
+	}
+	rotatedA := issueTestPrincipal(t, project, rootPath, testRoot, developerA.Actor, "developer")
+	state = mustProjectState(t, project)
+	if _, _, _, err := workOpen(project, "M001-T001", rotatedA, state.Revision); err != nil {
+		t.Fatalf("same-actor rotated credential could not continue assigned Task: %v", err)
+	}
 	for _, assignment := range []struct {
 		ID        string
 		Developer Principal
-	}{{"M001-T001", developerA}, {"M001-T002", developerB}} {
+	}{{"M001-T002", developerB}} {
 		state = mustProjectState(t, project)
 		if _, _, _, err := taskClaimOrAssign(project, assignment.ID, assignment.Developer.Actor, orchestrator, state.Revision, true); err != nil {
 			t.Fatal(err)
@@ -211,7 +240,7 @@ Create %s.
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
-	if _, _, _, err := runTaskCheck(project, taskA.ID, "", true, developerA, state.Revision); err == nil {
+	if _, _, _, err := runTaskCheck(project, taskA.ID, "", true, rotatedA, state.Revision); err == nil {
 		t.Fatal("check accepted a moved task worktree")
 	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-WORKTREE-MISSING" {
 		t.Fatalf("moved worktree error = %#v, want CHS-WORKTREE-MISSING", err)

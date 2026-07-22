@@ -87,10 +87,8 @@ func executeGitOperation(root, action, eventType, resource string, principal Pri
 	if expected >= 0 && previous.Revision != expected {
 		return State{}, State{}, Event{}, &CLIError{Code: "CHS-CONFLICT-REVISION", Message: fmt.Sprintf("expected revision %d, current revision is %d", expected, previous.Revision), ExitCode: 12, Retryable: true, Remedy: []string{"run chassiss status", "re-evaluate the action"}}
 	}
-	if pending, err := listOperationJournals(root); err != nil {
+	if err := requireNoPendingOperations(root); err != nil {
 		return State{}, State{}, Event{}, err
-	} else if len(pending) != 0 {
-		return State{}, State{}, Event{}, &CLIError{Code: "CHS-OPERATION-RECOVERY-REQUIRED", Message: "an unfinished operation must be recovered before another write", ExitCode: 40, Remedy: []string{"run chassiss recover"}}
 	}
 
 	worktreePath := operationTaskWorktreePath(action, resource, previous)

@@ -216,6 +216,14 @@ func gitWorkingDiff(root string) (string, error) {
 }
 
 func gitWorktreeDigest(root string) (string, error) {
+	return gitSnapshotDigest(root, "HEAD", true)
+}
+
+func gitCommitSnapshotDigest(root, commit string) (string, error) {
+	return gitSnapshotDigest(root, commit, false)
+}
+
+func gitSnapshotDigest(root, treeish string, includeWorktree bool) (string, error) {
 	cacheDir := filepath.Join(root, ".git")
 	commonDir, err := git(root, "rev-parse", "--git-common-dir")
 	if err == nil {
@@ -237,11 +245,13 @@ func gitWorktreeDigest(root string) (string, error) {
 	}
 	defer os.Remove(indexPath)
 	environment := []string{"GIT_INDEX_FILE=" + indexPath}
-	if _, err := gitEnvironment(root, environment, "read-tree", "HEAD"); err != nil {
+	if _, err := gitEnvironment(root, environment, "read-tree", treeish); err != nil {
 		return "", err
 	}
-	if _, err := gitEnvironment(root, environment, "add", "-A", "--", "."); err != nil {
-		return "", err
+	if includeWorktree {
+		if _, err := gitEnvironment(root, environment, "add", "-A", "--", "."); err != nil {
+			return "", err
+		}
 	}
 	tree, err := gitEnvironment(root, environment, "write-tree")
 	if err != nil {
