@@ -100,19 +100,21 @@ type workSubmittedPayload struct {
 }
 
 type reviewRecordedPayload struct {
-	ReviewID     string `json:"review_id"`
-	SubmissionID string `json:"submission_id"`
-	Report       string `json:"report"`
+	ReviewID         string `json:"review_id"`
+	SubmissionID     string `json:"submission_id"`
+	SubmissionDigest string `json:"submission_digest"`
+	Report           string `json:"report"`
 }
 
 type integrationAppliedPayload struct {
-	IntegrationID  string                 `json:"integration_id"`
-	SubmissionID   string                 `json:"submission_id"`
-	SubmissionHead string                 `json:"submission_head"`
-	PreviousHead   string                 `json:"previous_head"`
-	IntegratedHead string                 `json:"integrated_head"`
-	IntegratedTree string                 `json:"integrated_tree"`
-	Checks         map[string]CheckResult `json:"checks"`
+	IntegrationID    string                 `json:"integration_id"`
+	SubmissionID     string                 `json:"submission_id"`
+	SubmissionDigest string                 `json:"submission_digest"`
+	SubmissionHead   string                 `json:"submission_head"`
+	PreviousHead     string                 `json:"previous_head"`
+	IntegratedHead   string                 `json:"integrated_head"`
+	IntegratedTree   string                 `json:"integrated_tree"`
+	Checks           map[string]CheckResult `json:"checks"`
 }
 
 func marshalPayload(value any) (json.RawMessage, error) {
@@ -667,7 +669,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		submission, ok := previous.Submissions[payload.SubmissionID]
-		if event.Role != "reviewer" || !ok || submission.Status != "review_pending" || previous.Tasks[submission.TaskID].Status != "review_pending" || submission.Actor == event.Actor || payload.ReviewID == "" {
+		if event.Role != "reviewer" || !ok || submission.Status != "review_pending" || previous.Tasks[submission.TaskID].Status != "review_pending" || submission.Actor == event.Actor || payload.ReviewID == "" || payload.SubmissionDigest != submission.Digest {
 			return transitionError(event, "submission is not independently reviewable")
 		}
 		if _, exists := previous.Reviews[payload.ReviewID]; exists {
@@ -694,7 +696,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		submission, ok := previous.Submissions[payload.SubmissionID]
-		if event.Role != "reviewer" || !ok || submission.Status != "approved" || previous.Tasks[submission.TaskID].Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" || payload.IntegratedTree == "" || payload.SubmissionHead != submission.HeadCommit {
+		if event.Role != "reviewer" || !ok || submission.Status != "approved" || previous.Tasks[submission.TaskID].Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" || payload.IntegratedTree == "" || payload.SubmissionDigest != submission.Digest || payload.SubmissionHead != submission.HeadCommit {
 			return transitionError(event, "submission is not integratable")
 		}
 		if err := requireMissionExecutable(previous, previous.Tasks[submission.TaskID].MissionID); err != nil {
@@ -833,11 +835,11 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 	case "review.approved", "review.changes_requested":
 		submission := candidate.Submissions[resource]
 		review := candidate.Reviews[submission.ReviewID]
-		return reviewRecordedPayload{ReviewID: review.ID, SubmissionID: resource, Report: review.Report}, nil
+		return reviewRecordedPayload{ReviewID: review.ID, SubmissionID: resource, SubmissionDigest: submission.Digest, Report: review.Report}, nil
 	case "integration.applied":
 		submission := candidate.Submissions[resource]
 		integration := candidate.Integrations[submission.IntegrationID]
-		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, SubmissionHead: integration.SubmissionHead, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead, IntegratedTree: integration.IntegratedTree, Checks: integration.Checks}, nil
+		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, SubmissionDigest: submission.Digest, SubmissionHead: integration.SubmissionHead, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead, IntegratedTree: integration.IntegratedTree, Checks: integration.Checks}, nil
 	default:
 		return nil, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "unknown event type: " + eventType, ExitCode: 40}
 	}

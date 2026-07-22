@@ -5,7 +5,7 @@ description: Design requirements, architecture, missions, and atomic tasks insid
 
 # CHASSISS Designer
 
-Use the Designer credential issued for this project and actor. It is long-lived across Tasks and sessions until Master revokes it; rotation means Master issues a replacement and then revokes the old credential. Never copy or use another actor's credential.
+Use the Designer credential issued for this project and actor. It is long-lived by default; if Master declares validity or resource scopes, obey them and request a replacement instead of bypassing expiry or scope. Never copy or use another actor's credential.
 
 ## Start
 

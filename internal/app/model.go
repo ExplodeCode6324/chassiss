@@ -35,12 +35,25 @@ type RootKey struct {
 }
 
 type Grant struct {
-	ID        string    `yaml:"id" json:"id"`
-	Actor     string    `yaml:"actor" json:"actor"`
-	Role      string    `yaml:"role" json:"role"`
-	Actions   []string  `yaml:"actions" json:"actions"`
-	PublicKey string    `yaml:"public_key" json:"public_key"`
-	IssuedAt  time.Time `yaml:"issued_at" json:"issued_at"`
+	ID        string        `yaml:"id" json:"id"`
+	Actor     string        `yaml:"actor" json:"actor"`
+	Role      string        `yaml:"role" json:"role"`
+	Actions   []string      `yaml:"actions" json:"actions"`
+	PublicKey string        `yaml:"public_key" json:"public_key"`
+	IssuedAt  time.Time     `yaml:"issued_at" json:"issued_at"`
+	NotBefore *time.Time    `yaml:"not_before,omitempty" json:"not_before,omitempty"`
+	ExpiresAt *time.Time    `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
+	Resources ResourceScope `yaml:"resources,omitempty" json:"resources,omitempty"`
+}
+
+type ResourceScope struct {
+	Projects          []string `yaml:"projects,omitempty" json:"projects,omitempty"`
+	Missions          []string `yaml:"missions,omitempty" json:"missions,omitempty"`
+	Tasks             []string `yaml:"tasks,omitempty" json:"tasks,omitempty"`
+	Submissions       []string `yaml:"submissions,omitempty" json:"submissions,omitempty"`
+	SubmissionDigests []string `yaml:"submission_digests,omitempty" json:"submission_digests,omitempty"`
+	Heads             []string `yaml:"heads,omitempty" json:"heads,omitempty"`
+	Baselines         []string `yaml:"baselines,omitempty" json:"baselines,omitempty"`
 }
 
 type Revocation struct {
@@ -61,16 +74,19 @@ type Trust struct {
 }
 
 type Credential struct {
-	Kind            string    `yaml:"kind" json:"kind"`
-	Version         int       `yaml:"version" json:"version"`
-	ID              string    `yaml:"id" json:"id"`
-	ProjectID       string    `yaml:"project_id" json:"project_id"`
-	RootFingerprint string    `yaml:"root_fingerprint" json:"root_fingerprint"`
-	Actor           string    `yaml:"actor" json:"actor"`
-	Role            string    `yaml:"role" json:"role"`
-	Actions         []string  `yaml:"actions" json:"actions"`
-	PrivateKey      string    `yaml:"private_key" json:"private_key"`
-	IssuedAt        time.Time `yaml:"issued_at" json:"issued_at"`
+	Kind            string        `yaml:"kind" json:"kind"`
+	Version         int           `yaml:"version" json:"version"`
+	ID              string        `yaml:"id" json:"id"`
+	ProjectID       string        `yaml:"project_id" json:"project_id"`
+	RootFingerprint string        `yaml:"root_fingerprint" json:"root_fingerprint"`
+	Actor           string        `yaml:"actor" json:"actor"`
+	Role            string        `yaml:"role" json:"role"`
+	Actions         []string      `yaml:"actions" json:"actions"`
+	PrivateKey      string        `yaml:"private_key" json:"private_key"`
+	IssuedAt        time.Time     `yaml:"issued_at" json:"issued_at"`
+	NotBefore       *time.Time    `yaml:"not_before,omitempty" json:"not_before,omitempty"`
+	ExpiresAt       *time.Time    `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
+	Resources       ResourceScope `yaml:"resources,omitempty" json:"resources,omitempty"`
 }
 
 type ArtifactState struct {
@@ -243,6 +259,7 @@ type Principal struct {
 	Actions    map[string]struct{}
 	PrivateKey []byte
 	PublicKey  []byte
+	Resources  ResourceScope
 }
 
 type Response struct {

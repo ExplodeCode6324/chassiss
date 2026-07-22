@@ -5,7 +5,7 @@ description: Implement one assigned CHASSISS task within its frozen write scope.
 
 # CHASSISS Developer
 
-Use the Developer credential issued for this project and actor. It is reusable across sessions until Master revokes it; rotation means Master issues a replacement and then revokes the old credential. The state machine still restricts it to Tasks assigned to the same actor. Never read or reuse another actor's credential.
+Use the Developer credential issued for this project and actor. By default it is reusable across sessions until Master revokes it; if it declares validity or Task scopes, obey them and request a replacement instead of bypassing expiry or scope. The state machine still restricts it to Tasks assigned to the same actor. Never read or reuse another actor's credential.
 
 ## Start
 

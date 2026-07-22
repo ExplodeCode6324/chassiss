@@ -38,15 +38,16 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - Task assign/claim 验证当前有效 Developer grant 并记录分派 grant；同 actor 可在旧 credential 回收后使用新 credential 继续。Task block 释放调度占用，resume 重新验证依赖、WIP、路径、Git/worktree、submission 和 Review 证据。
 - `auth issue/revoke` 已使用统一项目锁、独立 trust revision 和授权 journal；签发按“临时 credential → trust 提交 → credential 发布”恢复，并发冲突不会丢失 grant/revocation。
 - Task release 只清理无 submission 且干净位于 baseline 的 worktree/branch，并由 operation journal 恢复；Master cancel 保留取证状态；supersede 使用已接受的新 Task ID 和显式替换链，旧契约不被改写。
+- credential 默认继续长效；显式签发时可增加 not_before/expires_at、Task/Mission/submission 白名单，以及 Reviewer/Integration digest/head/baseline scope。CLI 执行和历史事件重放都会验证这些限制。
 - 不带 credential 的 `doctor` 仍只能证明 `.chassis` 内部自洽；有能力整体替换项目控制目录的主体可以构造另一套自洽 Root。正式门禁必须传入 Master 分发的 credential，后续可增加 OS Keychain/可信 Root store。
 
 优先级中：
 
-- 长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。下一版可增加 rotate、TTL、Task/submission scope 和 broker。
+- 默认长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。高风险动作现在可显式使用 TTL/resource scope，下一版仍可增加 rotate 和 broker。
 - Event V2 不再保存完整 State；`state.yaml` 是事件序列的可重建投影。长期项目如出现重放性能问题，再增加带链锚的周期 snapshot。
 - Mission block 保留 Task 原状态，但已关闭 Developer、Reviewer 和 integration 的推进许可；恢复 Mission 后合法 Task 才能继续。
-- Mission 级设计变更、transactional dry-run、credential rotate/TTL 和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
+- Mission 级设计变更、transactional dry-run、credential rotate 命令和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
 
 ## 建议的下一步
 
-下一步增加可选 credential scope/TTL；远端 publish adapter 仍在本地事务边界完全稳定后接入。
+下一步实现与 local integration 分离的远端 publish adapter，并保持远端只同步代码、不成为工作流事实源。

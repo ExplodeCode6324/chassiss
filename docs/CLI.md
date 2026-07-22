@@ -135,6 +135,11 @@ chassiss integrate apply <submission-id>
 chassiss auth master-init --output <root-file-or-existing-directory>
 chassiss --root <project> --credential <master-root> auth issue
                     --actor <actor> --role <role> [--actions <list>]
+                    [--not-before <rfc3339>]
+                    [--expires-at <rfc3339> | --ttl-seconds <n>]
+                    [--projects <ids>] [--missions <ids>] [--tasks <ids>]
+                    [--submissions <ids>] [--submission-digests <digests>]
+                    [--heads <shas>] [--baselines <shas>]
                     --output <credential-file>
 chassiss auth inspect <credential-source>
 chassiss --credential <master-root> auth revoke <credential-id> [--reason <text>]
@@ -145,6 +150,8 @@ chassiss --credential <master-root> auth revoke <credential-id> [--reason <text>
 credential 必须按 Agent 身份签发，不能由多个 Agent 共享一个 Role credential。Developer 的实际 Task 范围、Reviewer 独立性和其他动态限制仍由状态机检查。
 
 签发与回收使用独立 `trust_revision`、项目授权 journal 和项目写锁。自动化调用可传全局 `--expect-trust-revision <n>`；冲突时刷新 `status` 后重试。签发不会覆盖已有 credential 文件，trust 提交失败也不会发布看似有效的最终 credential。
+
+所有 validity/resource 参数都是可选的，未传时仍是 Master 选定的长效、项目级 credential。资源列表使用逗号分隔并按精确 ID/SHA 匹配：Developer grant 可绑定 Task；Reviewer 可绑定 submission 及 digest；Integration 还可绑定获批 head 和正式 baseline。事件签名重放会再次验证事件时间与这些 scope，不能只靠当前 CLI 前置检查。
 
 未来可以增加 `rotate`、可选 `--ttl`、`--resource` 和 broker，不改变现有角色工作流。
 
@@ -169,4 +176,4 @@ review list/context/check/approve/request-changes
 integrate check/apply
 ```
 
-`publish` adapter、credential rotation/TTL 和可证明无副作用的 transactional dry-run 留待后续版本。
+`publish` adapter、credential rotate 命令和可证明无副作用的 transactional dry-run 留待后续版本。

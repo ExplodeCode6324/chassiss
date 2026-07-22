@@ -135,7 +135,7 @@ v0.1 没有独立 `rotate` 命令；需要轮换时先签发新 credential，确
 - 离线或回滚到旧 `trust.yaml` 的执行环境可能暂时看不到最新回收记录，因此正式集成必须验证最新授权版本；
 - Agent 若能替换 CLI 二进制，可以伪造本地显示结果；正式集成和发布必须由 Master 分发的可信 CLI 重新验证签名、回收状态和事件链。
 
-第一版的主要目标是防止守规 Agent 因遗忘规则而误操作，不声称可以抵御拥有同一用户全部文件权限的恶意 Agent。后续安全版本可以在不改变角色命令的前提下增加：credential 有效期、Task/submission 绑定、每 Session 临时密钥、操作系统钥匙串、独立 credential broker 和 proof-of-possession。
+第一版的主要目标是防止守规 Agent 因遗忘规则而误操作，不声称可以抵御拥有同一用户全部文件权限的恶意 Agent。当前已经支持可选 `not_before/expires_at`、Task/Mission/submission 白名单，以及 Reviewer/Integration 的 digest/head/baseline 绑定；默认仍按 Master 的选择保持长效且不绑定 Task。后续安全版本还可增加每 Session 临时密钥、操作系统钥匙串、独立 credential broker 和 proof-of-possession。
 
 ## 最小生命周期
 
@@ -171,7 +171,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation 和完整 Mission 级设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、默认长期且可选 TTL/resource scope 的 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential rotate 命令和完整 Mission 级设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 

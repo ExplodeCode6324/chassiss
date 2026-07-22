@@ -43,7 +43,17 @@ type AuthOperationJournal struct {
 // authOperationFaultHook is used only by crash-injection tests.
 var authOperationFaultHook func(point string) error
 
+type CredentialPolicy struct {
+	NotBefore *time.Time
+	ExpiresAt *time.Time
+	Resources ResourceScope
+}
+
 func issueCredentialExpected(rootDir, rootPath, actor, role, output string, requested []string, expectedRevision int64) (*Credential, error) {
+	return issueCredentialWithPolicy(rootDir, rootPath, actor, role, output, requested, expectedRevision, CredentialPolicy{})
+}
+
+func issueCredentialWithPolicy(rootDir, rootPath, actor, role, output string, requested []string, expectedRevision int64, policy CredentialPolicy) (*Credential, error) {
 	if !validActor(actor) {
 		return nil, &CLIError{Code: "CHS-AUTH-ACTOR", Message: "actor must be a non-empty stable identifier without whitespace or control characters", ExitCode: 20}
 	}
@@ -72,6 +82,10 @@ func issueCredentialExpected(rootDir, rootPath, actor, role, output string, requ
 	if expectedRevision >= 0 && trust.Revision != expectedRevision {
 		return nil, trustRevisionConflict(expectedRevision, trust.Revision)
 	}
+	policy, err = normalizeCredentialPolicy(policy, config.ProjectID, timeNow())
+	if err != nil {
+		return nil, err
+	}
 	actions, err := grantedActions(role, requested)
 	if err != nil {
 		return nil, err
@@ -85,11 +99,12 @@ func issueCredentialExpected(rootDir, rootPath, actor, role, output string, requ
 		return nil, err
 	}
 	now := timeNow()
-	grant := Grant{ID: id, Actor: actor, Role: role, Actions: actions, PublicKey: base64.RawStdEncoding.EncodeToString(public), IssuedAt: now}
+	grant := Grant{ID: id, Actor: actor, Role: role, Actions: actions, PublicKey: base64.RawStdEncoding.EncodeToString(public), IssuedAt: now, NotBefore: policy.NotBefore, ExpiresAt: policy.ExpiresAt, Resources: policy.Resources}
 	credential := &Credential{
 		Kind: "chassiss-role-credential", Version: CredentialVersion, ID: id, ProjectID: config.ProjectID,
 		RootFingerprint: keyFingerprint(publicRoot), Actor: actor, Role: role, Actions: actions,
 		PrivateKey: base64.RawStdEncoding.EncodeToString(private), IssuedAt: now,
+		NotBefore: policy.NotBefore, ExpiresAt: policy.ExpiresAt, Resources: policy.Resources,
 	}
 	credentialData, err := yaml.Marshal(credential)
 	if err != nil {
@@ -186,6 +201,52 @@ func issueCredentialExpected(rootDir, rootPath, actor, role, output string, requ
 		return nil, err
 	}
 	return credential, nil
+}
+
+func normalizeCredentialPolicy(policy CredentialPolicy, projectID string, now time.Time) (CredentialPolicy, error) {
+	if policy.NotBefore != nil {
+		value := policy.NotBefore.UTC()
+		policy.NotBefore = &value
+	}
+	if policy.ExpiresAt != nil {
+		value := policy.ExpiresAt.UTC()
+		policy.ExpiresAt = &value
+		if !value.After(now) || (policy.NotBefore != nil && !value.After(*policy.NotBefore)) {
+			return CredentialPolicy{}, &CLIError{Code: "CHS-AUTH-VALIDITY", Message: "expires_at must be later than now and not_before", ExitCode: 20}
+		}
+	}
+	policy.Resources = normalizeResourceScope(policy.Resources)
+	if len(policy.Resources.Projects) != 0 && !containsString(policy.Resources.Projects, projectID) {
+		return CredentialPolicy{}, &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "project scope must include the current project ID", ExitCode: 20}
+	}
+	return policy, nil
+}
+
+func normalizeResourceScope(scope ResourceScope) ResourceScope {
+	scope.Projects = normalizeScopeList(scope.Projects)
+	scope.Missions = normalizeScopeList(scope.Missions)
+	scope.Tasks = normalizeScopeList(scope.Tasks)
+	scope.Submissions = normalizeScopeList(scope.Submissions)
+	scope.SubmissionDigests = normalizeScopeList(scope.SubmissionDigests)
+	scope.Heads = normalizeScopeList(scope.Heads)
+	scope.Baselines = normalizeScopeList(scope.Baselines)
+	return scope
+}
+
+func normalizeScopeList(values []string) []string {
+	set := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for value := range set {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func revokeCredentialExpected(rootDir, rootPath, credentialID, reason string, expectedRevision int64) error {

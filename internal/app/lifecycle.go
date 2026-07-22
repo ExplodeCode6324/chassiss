@@ -191,7 +191,7 @@ func taskClaimOrAssign(root, taskID, owner string, principal Principal, expected
 	if owner == "" {
 		owner = principal.Actor
 	}
-	ownerGrant, ok := activeDeveloperGrant(trust, owner, timeNow())
+	ownerGrant, ok := activeDeveloperGrantForTask(trust, owner, taskID, timeNow())
 	if !ok {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-OWNER-AUTH", Message: "task owner has no active Developer grant", ExitCode: 11, Remedy: []string{"issue an active Developer credential for the owner actor", "assign the Task to a different Developer actor"}}
 	}
@@ -1061,7 +1061,7 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-TREE", Message: "integration commit tree differs from checked merge tree", ExitCode: 40}
 		}
 		integration = Integration{ID: id, SubmissionID: submissionID, SubmissionHead: currentSubmission.HeadCommit, PreviousHead: previousHead, IntegratedHead: integratedHead, IntegratedTree: mergedTree, Checks: checks}
-		payload := integrationAppliedPayload{IntegrationID: id, SubmissionID: submissionID, SubmissionHead: currentSubmission.HeadCommit, PreviousHead: previousHead, IntegratedHead: integratedHead, IntegratedTree: mergedTree, Checks: checks}
+		payload := integrationAppliedPayload{IntegrationID: id, SubmissionID: submissionID, SubmissionDigest: currentSubmission.Digest, SubmissionHead: currentSubmission.HeadCommit, PreviousHead: previousHead, IntegratedHead: integratedHead, IntegratedTree: mergedTree, Checks: checks}
 		keepCandidate = true
 		return preparedOperation{
 			Payload:  payload,

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const Version = "0.1.0-dev"
@@ -137,7 +138,7 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 	}
 	allowed := map[string]allowedOptions{
 		"auth master-init":          {values: []string{"output"}},
-		"auth issue":                {values: []string{"master-root", "actor", "role", "output", "actions"}, flags: []string{"persistent"}},
+		"auth issue":                {values: []string{"master-root", "actor", "role", "output", "actions", "not-before", "expires-at", "ttl-seconds", "projects", "missions", "tasks", "submissions", "submission-digests", "heads", "baselines"}, flags: []string{"persistent"}},
 		"auth revoke":               {values: []string{"master-root", "id", "reason"}},
 		"project init":              {values: []string{"master-root"}, flags: []string{"existing"}},
 		"next":                      {values: []string{"role", "actor"}},
@@ -262,7 +263,11 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if rootKey == "" || actor == "" || role == "" || output == "" {
 			return Response{}, usageError("auth issue requires --actor, --role, --output, and a Master Root credential")
 		}
-		credential, err := issueCredentialExpected(root, rootKey, actor, role, output, commaList(parsed.values["actions"]), options.trustExpected)
+		policy, err := credentialPolicyFromArgs(parsed)
+		if err != nil {
+			return Response{}, err
+		}
+		credential, err := issueCredentialWithPolicy(root, rootKey, actor, role, output, commaList(parsed.values["actions"]), options.trustExpected, policy)
 		if err != nil {
 			return Response{}, err
 		}
@@ -270,7 +275,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if err != nil {
 			return Response{}, err
 		}
-		return readResponse(map[string]any{"id": credential.ID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "path": absolutePath(output), "persistent": true, "trust_revision": updatedTrust.Revision}), nil
+		return readResponse(map[string]any{"id": credential.ID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "path": absolutePath(output), "persistent": credential.ExpiresAt == nil, "not_before": credential.NotBefore, "expires_at": credential.ExpiresAt, "resources": credential.Resources, "trust_revision": updatedTrust.Revision}), nil
 	case "auth revoke":
 		rootKey := firstNonEmpty(parsed.values["master-root"], options.credential)
 		credentialID := parsed.values["id"]
@@ -943,7 +948,42 @@ func inspectCredential(path string) (any, error) {
 	if credential.Kind != "chassiss-role-credential" {
 		return nil, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "unsupported credential kind", ExitCode: 11}
 	}
-	return map[string]any{"kind": credential.Kind, "version": credential.Version, "id": credential.ID, "project_id": credential.ProjectID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "issued_at": credential.IssuedAt, "persistent": true}, nil
+	return map[string]any{"kind": credential.Kind, "version": credential.Version, "id": credential.ID, "project_id": credential.ProjectID, "actor": credential.Actor, "role": credential.Role, "actions": credential.Actions, "issued_at": credential.IssuedAt, "not_before": credential.NotBefore, "expires_at": credential.ExpiresAt, "resources": credential.Resources, "persistent": credential.ExpiresAt == nil}, nil
+}
+
+func credentialPolicyFromArgs(parsed commandArgs) (CredentialPolicy, error) {
+	var policy CredentialPolicy
+	if value := parsed.values["not-before"]; value != "" {
+		parsedTime, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return policy, usageError("--not-before must be RFC3339")
+		}
+		policy.NotBefore = &parsedTime
+	}
+	if parsed.values["expires-at"] != "" && parsed.values["ttl-seconds"] != "" {
+		return policy, usageError("use only one of --expires-at or --ttl-seconds")
+	}
+	if value := parsed.values["expires-at"]; value != "" {
+		parsedTime, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return policy, usageError("--expires-at must be RFC3339")
+		}
+		policy.ExpiresAt = &parsedTime
+	}
+	if value := parsed.values["ttl-seconds"]; value != "" {
+		seconds, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || seconds < 1 || seconds > 315360000 {
+			return policy, usageError("--ttl-seconds must be between 1 and 315360000")
+		}
+		expires := timeNow().Add(time.Duration(seconds) * time.Second)
+		policy.ExpiresAt = &expires
+	}
+	policy.Resources = ResourceScope{
+		Projects: commaList(parsed.values["projects"]), Missions: commaList(parsed.values["missions"]), Tasks: commaList(parsed.values["tasks"]),
+		Submissions: commaList(parsed.values["submissions"]), SubmissionDigests: commaList(parsed.values["submission-digests"]),
+		Heads: commaList(parsed.values["heads"]), Baselines: commaList(parsed.values["baselines"]),
+	}
+	return policy, nil
 }
 
 func mustDecodePublic(value string) []byte {

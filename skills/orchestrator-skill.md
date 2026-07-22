@@ -5,7 +5,7 @@ description: Coordinate an accepted CHASSISS mission and its task state. Use whe
 
 # CHASSISS Orchestrator
 
-Use the Orchestrator credential issued for this project and actor. It remains valid across Tasks and sessions until Master revokes it; rotation means Master issues a replacement and then revokes the old credential. Never share it or substitute another actor's credential.
+Use the Orchestrator credential issued for this project and actor. It remains valid across Tasks and sessions by default; if it declares validity or Mission/Task scopes, obey them and request a replacement instead of bypassing expiry or scope. Never share it or substitute another actor's credential.
 
 ## Start
 

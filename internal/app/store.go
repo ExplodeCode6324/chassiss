@@ -206,6 +206,9 @@ func makeEvent(projectID string, sequence int64, eventType, resource string, pri
 		Actor: principal.Actor, Role: principal.Role, CredentialID: principal.ID, Resource: resource,
 		OccurredAt: occurredAt, PreviousDigest: previousDigest, Payload: payloadData,
 	}
+	if err := authorizeEventScope(principal.Resources, event); err != nil {
+		return Event{}, err
+	}
 	data, err := eventSigningBytes(event)
 	if err != nil {
 		return Event{}, err
@@ -351,10 +354,16 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 			if event.OccurredAt.Before(grant.IssuedAt) {
 				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d predates its credential grant", sequence), ExitCode: 40}
 			}
+			if !credentialTimeValid(grant.NotBefore, grant.ExpiresAt, event.OccurredAt) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d falls outside its credential validity window", sequence), ExitCode: 40}
+			}
 			if revoked, ok := revokedAt[event.CredentialID]; ok && !event.OccurredAt.Before(revoked) {
 				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d was signed after credential revocation", sequence), ExitCode: 40}
 			}
 			public, _ = base64.RawStdEncoding.DecodeString(grant.PublicKey)
+			if err := authorizeEventScope(grant.Resources, event); err != nil {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d exceeds its credential resource scope", sequence), ExitCode: 40}
+			}
 		}
 		if len(public) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(public), []byte(event.Digest), signature) {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d signature is invalid", sequence), ExitCode: 40}
@@ -365,7 +374,7 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 				return State{}, fmt.Errorf("event sequence %d task owner payload is invalid: %w", sequence, err)
 			}
 			ownerGrant, ok := grants[payload.OwnerGrantID]
-			if !ok || ownerGrant.Actor != payload.Owner || ownerGrant.Role != "developer" || !containsString(ownerGrant.Actions, "work.open") || event.OccurredAt.Before(ownerGrant.IssuedAt) {
+			if !ok || ownerGrant.Actor != payload.Owner || ownerGrant.Role != "developer" || !containsString(ownerGrant.Actions, "work.open") || event.OccurredAt.Before(ownerGrant.IssuedAt) || !credentialTimeValid(ownerGrant.NotBefore, ownerGrant.ExpiresAt, event.OccurredAt) || !scopeAllows(ownerGrant.Resources.Tasks, payload.TaskID) {
 				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d task owner grant is invalid", sequence), ExitCode: 40}
 			}
 			if revoked, ok := revokedAt[ownerGrant.ID]; ok && !event.OccurredAt.Before(revoked) {

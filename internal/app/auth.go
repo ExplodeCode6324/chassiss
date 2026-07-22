@@ -143,6 +143,10 @@ func validActor(actor string) bool {
 }
 
 func activeDeveloperGrant(trust Trust, actor string, at time.Time) (Grant, bool) {
+	return activeDeveloperGrantForTask(trust, actor, "", at)
+}
+
+func activeDeveloperGrantForTask(trust Trust, actor, taskID string, at time.Time) (Grant, bool) {
 	if !validActor(actor) {
 		return Grant{}, false
 	}
@@ -154,7 +158,7 @@ func activeDeveloperGrant(trust Trust, actor string, at time.Time) (Grant, bool)
 	}
 	var selected Grant
 	for _, grant := range trust.Grants {
-		if grant.Actor != actor || grant.Role != "developer" || grant.IssuedAt.After(at) || !containsString(grant.Actions, "work.open") {
+		if grant.Actor != actor || grant.Role != "developer" || grant.IssuedAt.After(at) || !containsString(grant.Actions, "work.open") || !credentialTimeValid(grant.NotBefore, grant.ExpiresAt, at) || (taskID != "" && !scopeAllows(grant.Resources.Tasks, taskID)) {
 			continue
 		}
 		if revoked, ok := revokedAt[grant.ID]; ok && !at.Before(revoked) {
@@ -212,6 +216,9 @@ func loadPrincipal(rootDir, credentialPath string, action string) (Principal, er
 	if grant == nil || grant.Actor != credential.Actor || grant.Role != credential.Role || strings.Join(grant.Actions, "\x00") != strings.Join(credential.Actions, "\x00") {
 		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential is not present in current trust grants", ExitCode: 11}
 	}
+	if !equalCanonicalJSON(grant.NotBefore, credential.NotBefore) || !equalCanonicalJSON(grant.ExpiresAt, credential.ExpiresAt) || !equalCanonicalJSON(grant.Resources, credential.Resources) {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential policy does not match its trust grant", ExitCode: 11}
+	}
 	for _, revoked := range trust.Revocations {
 		if revoked.CredentialID == credential.ID {
 			return Principal{}, &CLIError{Code: "CHS-AUTH-REVOKED", Message: "credential has been revoked", ExitCode: 11}
@@ -225,11 +232,68 @@ func loadPrincipal(rootDir, credentialPath string, action string) (Principal, er
 	if base64.RawStdEncoding.EncodeToString(public) != grant.PublicKey {
 		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential private key does not match trust grant", ExitCode: 11}
 	}
+	now := timeNow()
+	if credential.NotBefore != nil && now.Before(*credential.NotBefore) {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-NOT-YET-VALID", Message: "credential is not valid yet", ExitCode: 11}
+	}
+	if credential.ExpiresAt != nil && !now.Before(*credential.ExpiresAt) {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-EXPIRED", Message: "credential has expired", ExitCode: 11}
+	}
+	if !scopeAllows(credential.Resources.Projects, config.ProjectID) {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to this project", ExitCode: 11}
+	}
 	actions := stringSet(credential.Actions)
 	if _, ok := actions[action]; action != "" && !ok {
 		return Principal{}, &CLIError{Code: "CHS-AUTH-DENIED", Message: fmt.Sprintf("role %s cannot perform %s", credential.Role, action), ExitCode: 11}
 	}
-	return Principal{ID: credential.ID, Actor: credential.Actor, Role: credential.Role, Actions: actions, PrivateKey: private, PublicKey: public}, nil
+	return Principal{ID: credential.ID, Actor: credential.Actor, Role: credential.Role, Actions: actions, PrivateKey: private, PublicKey: public, Resources: credential.Resources}, nil
+}
+
+func credentialTimeValid(notBefore, expiresAt *time.Time, at time.Time) bool {
+	return (notBefore == nil || !at.Before(*notBefore)) && (expiresAt == nil || at.Before(*expiresAt))
+}
+
+func scopeAllows(values []string, resource string) bool {
+	return len(values) == 0 || containsString(values, resource)
+}
+
+func authorizeEventScope(scope ResourceScope, event Event) error {
+	if !scopeAllows(scope.Projects, event.ProjectID) {
+		return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to this project", ExitCode: 11}
+	}
+	switch {
+	case strings.HasPrefix(event.Type, "mission."):
+		if !scopeAllows(scope.Missions, event.Resource) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to mission " + event.Resource, ExitCode: 11}
+		}
+	case strings.HasPrefix(event.Type, "task."), strings.HasPrefix(event.Type, "work."):
+		if !scopeAllows(scope.Tasks, event.Resource) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to task " + event.Resource, ExitCode: 11}
+		}
+	case strings.HasPrefix(event.Type, "review."):
+		if !scopeAllows(scope.Submissions, event.Resource) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to submission " + event.Resource, ExitCode: 11}
+		}
+		var payload reviewRecordedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if !scopeAllows(scope.SubmissionDigests, payload.SubmissionDigest) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to the submission digest", ExitCode: 11}
+		}
+	case event.Type == "integration.applied":
+		if !scopeAllows(scope.Submissions, event.Resource) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to submission " + event.Resource, ExitCode: 11}
+		}
+		var payload integrationAppliedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if !scopeAllows(scope.SubmissionDigests, payload.SubmissionDigest) || !scopeAllows(scope.Heads, payload.SubmissionHead) || !scopeAllows(scope.Baselines, payload.PreviousHead) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential does not match integration digest, head, or baseline scope", ExitCode: 11}
+		}
+	}
+	return nil
 }
 
 func revokeCredential(rootDir, rootPath, credentialID, reason string) error {

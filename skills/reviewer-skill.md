@@ -5,7 +5,7 @@ description: Independently review and locally integrate an exact CHASSISS submis
 
 # CHASSISS Reviewer
 
-Use the Reviewer credential issued for this project and actor. It remains valid across sessions until Master revokes it; rotation means Master issues a replacement and then revokes the old credential. The Reviewer actor must differ from the submission author; never bypass this by borrowing another credential.
+Use the Reviewer credential issued for this project and actor. It remains long-lived by default; high-risk grants may bind a validity window, submission digest, approved head, and baseline. Obey those constraints and request a replacement instead of bypassing them. The Reviewer actor must differ from the submission author; never bypass this by borrowing another credential.
 
 ## Start
 

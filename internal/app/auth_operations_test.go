@@ -1,11 +1,14 @@
 package app
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAuthIssueJournalRecoversEveryDurablePhase(t *testing.T) {
@@ -243,6 +246,81 @@ func TestConcurrentAuthIssueAndRevokeConvergeDeterministically(t *testing.T) {
 	}
 	if _, ok := activeDeveloperGrant(trust, "agent:new", timeNow()); !ok || !trustHasRevocation(trust, oldCredential.ID) {
 		t.Fatalf("issue/revoke did not converge: trust=%#v", trust)
+	}
+}
+
+func TestCredentialValidityAndResourceScopes(t *testing.T) {
+	project, rootPath := setupAuthProject(t)
+	config, _, state, err := loadProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notBefore := timeNow().Add(time.Hour)
+	expiresAt := notBefore.Add(time.Hour)
+	deferredOutput := filepath.Join(t.TempDir(), "deferred.yaml")
+	deferred, err := issueCredentialWithPolicy(project, rootPath, "agent:deferred", "developer", deferredOutput, nil, -1, CredentialPolicy{
+		NotBefore: &notBefore, ExpiresAt: &expiresAt,
+		Resources: ResourceScope{Projects: []string{config.ProjectID}, Tasks: []string{"M001-T001"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred.NotBefore == nil || deferred.ExpiresAt == nil || !containsString(deferred.Resources.Tasks, "M001-T001") {
+		t.Fatalf("credential policy was not persisted: %#v", deferred)
+	}
+	if _, err := loadPrincipal(project, deferredOutput, "work.open"); err == nil {
+		t.Fatal("not-yet-valid credential was accepted")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-AUTH-NOT-YET-VALID" {
+		t.Fatalf("not-before error = %#v", err)
+	}
+	_, trust, _, err := loadProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := activeDeveloperGrantForTask(trust, deferred.Actor, "M001-T001", notBefore.Add(time.Minute)); !ok {
+		t.Fatal("scoped Developer grant did not authorize its Task")
+	}
+	if _, ok := activeDeveloperGrantForTask(trust, deferred.Actor, "M001-T002", notBefore.Add(time.Minute)); ok {
+		t.Fatal("scoped Developer grant authorized another Task")
+	}
+
+	scopedOutput := filepath.Join(t.TempDir(), "scoped.yaml")
+	if _, err := issueCredentialWithPolicy(project, rootPath, "agent:scoped", "developer", scopedOutput, nil, -1, CredentialPolicy{Resources: ResourceScope{Tasks: []string{"M001-T001"}}}); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := loadPrincipal(project, scopedOutput, "work.open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(project, ".chassis", "events")
+	events, err := readEvents(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unscopedSigner := principal
+	unscopedSigner.Resources = ResourceScope{}
+	forged, err := makeEvent(config.ProjectID, state.Revision+1, "work.opened", "M001-T002", unscopedSigner, events[len(events)-1].Digest, timeNow(), workOpenedPayload{TaskID: "M001-T002", WorktreePath: ".chassis/worktrees/m001-t002", WorktreeID: "id", WorktreeDigest: "digest", Branch: "chassiss/m001-t002", Head: state.Baseline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, trust, _, _ = loadProject(project)
+	if _, err := verifyEventChain(config, trust, append(events, forged)); err == nil || !strings.Contains(err.Error(), "resource scope") {
+		t.Fatalf("event chain accepted out-of-scope Task event: %v", err)
+	}
+
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := Principal{ID: "CRED-R", Actor: "agent:reviewer", Role: "reviewer", PrivateKey: private, Resources: ResourceScope{Submissions: []string{"SUB-1"}, SubmissionDigests: []string{"sha256:approved"}, Heads: []string{"head"}, Baselines: []string{"base"}}}
+	if _, err := makeEvent(config.ProjectID, 1, "review.approved", "SUB-1", reviewer, "", timeNow(), reviewRecordedPayload{ReviewID: "REV-1", SubmissionID: "SUB-1", SubmissionDigest: "sha256:other", Report: "review"}); err == nil {
+		t.Fatal("Reviewer digest scope was not enforced")
+	}
+	if _, err := makeEvent(config.ProjectID, 1, "integration.applied", "SUB-1", reviewer, "", timeNow(), integrationAppliedPayload{IntegrationID: "INT-1", SubmissionID: "SUB-1", SubmissionDigest: "sha256:approved", SubmissionHead: "other-head", PreviousHead: "base", IntegratedHead: "merge", IntegratedTree: "tree", Checks: map[string]CheckResult{}}); err == nil {
+		t.Fatal("integration head scope was not enforced")
+	}
+	if credentialTimeValid(nil, &notBefore, notBefore) {
+		t.Fatal("credential validity accepted its expiration instant")
 	}
 }
 
