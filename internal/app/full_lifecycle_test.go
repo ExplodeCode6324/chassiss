@@ -156,12 +156,15 @@ Create code.txt.
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
-	_, _, submitted, err := workSubmit(project, "M001-T001", "ready", developer, state.Revision)
+	_, _, submitted, err := workSubmit(project, "M001-T001", "ready", "", developer, state.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
 	submitted = state.Submissions[submitted.ID]
+	if submitted.CommitMessage != "M001-T001: ready" || submitted.Metrics == nil || submitted.Metrics.ChangedFiles != 1 || submitted.Metrics.DiffLines != 1 || submitted.Metrics.Commits != 1 {
+		t.Fatalf("submission budget/message evidence = %#v", submitted)
+	}
 	if _, _, _, err := recordReview(project, submitted.ID, "approve", "approved", reviewer, state.Revision); err != nil {
 		t.Fatal(err)
 	}

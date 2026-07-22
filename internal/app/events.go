@@ -639,8 +639,15 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		task, ok := previous.Tasks[submission.TaskID]
-		if event.Role != "developer" || !ok || task.Owner != event.Actor || task.Status != "in_progress" || submission.ID == "" || submission.BaseCommit != task.Baseline || submission.HeadCommit == "" {
+		if event.Role != "developer" || !ok || task.Owner != event.Actor || task.Status != "in_progress" || submission.ID == "" || submission.BaseCommit != task.Baseline || submission.HeadCommit == "" || !validChangedFiles(submission.ChangedFiles) {
 			return transitionError(event, "submission does not match active task")
+		}
+		if submission.Metrics == nil {
+			if taskBudgetEnabled(task.Budget) {
+				return transitionError(event, "budgeted submission lacks change metrics")
+			}
+		} else if submission.CommitMessage == "" || submission.Metrics.ChangedFiles != len(submission.ChangedFiles) || validateTaskBudget(task.Budget, *submission.Metrics) != nil {
+			return transitionError(event, "submission change metrics violate its Task budget")
 		}
 		if err := requireMissionExecutable(previous, task.MissionID); err != nil {
 			return err

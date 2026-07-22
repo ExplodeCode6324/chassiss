@@ -22,6 +22,7 @@ chassiss [--root <project>] [--json] [--credential <source>]
 
 ```text
 chassiss --credential <master-root> project init <path> [--existing]
+         [--max-changed-files <n>] [--max-diff-lines <n>] [--max-commits <n>]
 chassiss status
 chassiss next --role <role> [--actor <actor>]
 chassiss doctor
@@ -33,6 +34,8 @@ chassiss explain <error-code>
 `status` 返回当前 Mission、ready/active/blocked Task、待复核 submission 和 revision。
 
 `next` 按 role、actor 和当前状态返回候选动作；真正执行时仍会重新验证 credential、revision 和全部前置条件。
+
+新项目的默认 Task 预算为 100 个变更文件、20,000 行增删和 20 个提交。三个 `project init` 参数可分别改写；`0` 表示该维度无限制。Task 模板会带入项目默认值，Master 接受 Task 后预算随契约冻结，不能在执行中原位放宽。
 
 `doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 依次处理 authorization、publish 与 Git/state operation journal：仅当外部结果精确匹配 journal 时补写或发布，随后从签名事件重建状态投影。不一致时进入 integrity blocked，不隐式 reset、force 或改写 trust。
 
@@ -56,6 +59,8 @@ chassiss artifact reject <submission-id> --reason <text>
 `check` 验证格式、路径、ID、引用、依赖、allowed paths、结构化验收命令和冻结规则，但不宣称内容语义正确。验收项使用 `argv`、项目内相对 `cwd`、显式 `env` 和 `timeout_seconds`；默认不调用 shell，`shell: true` 必须写入由 Master 接受的 Task 契约。
 
 `submit` 固定精确内容摘要。Master 的 `accept` 只接受该摘要；内容变化必须重新提交。
+
+Designer 的 `next` 在 artifact 被拒绝时优先返回对应 `artifact.submit <path>`，JSON `result.rejections` 同时给出 artifact ID、路径和拒绝理由。Designer 应修订原文档并重新提交，不制造新状态。
 
 ## Mission 和 Task
 
@@ -96,7 +101,7 @@ chassiss work status <task-id>
 chassiss work diff <task-id>
 chassiss work check <task-id> [--all|--id CHECK-001]
 chassiss work checkpoint <task-id> --file <checkpoint.yaml>
-chassiss work submit <task-id> --file <handoff.yaml>
+chassiss work submit <task-id> --file <handoff.yaml> [--message <text>]
 chassiss work block <task-id> --reason <text>
 ```
 
@@ -106,7 +111,9 @@ chassiss work block <task-id> --reason <text>
 
 `work check` 按原样执行 Task 声明的结构化 argv，使用隔离后的基础环境与显式 env，并保存 CheckSpec 摘要、退出码、结果和当前 Git tree/index 摘要。检查后修改内容、symlink 目标或 executable bit 都会使结果失效。
 
-`work submit` 检查改动范围、baseline、依赖、必需 checks、检查快照和 handoff，成功后产生不可变 submission。
+`work submit` 检查改动范围、baseline、依赖、必需 checks、检查快照、handoff 和冻结预算，成功后产生不可变 submission。预算证据记录变更文件数、文本增删行、提交数和二进制文件数，并在 review 时从 Git 精确范围重新计算。
+
+`--message` 是可选单行摘要；CLI 会统一生成 `<task-id>: <摘要>`。未传时使用 handoff 的第一个非空行，再无内容才使用通用默认值。最终 Git subject、submission manifest 和 Reviewer 检查必须一致。
 
 ## Reviewer、集成和发布
 

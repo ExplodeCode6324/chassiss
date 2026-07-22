@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -12,6 +13,8 @@ var validMissionStatuses = stringSet([]string{"planned", "active", "blocked", "a
 var validTaskStatuses = stringSet([]string{"planned", "ready", "claimed", "in_progress", "review_pending", "changes_requested", "approved", "integrated", "blocked", "cancelled", "superseded"})
 var validSubmissionStatuses = stringSet([]string{"review_pending", "changes_requested", "approved", "integrated"})
 var validReviewVerdicts = stringSet([]string{"approve", "request_changes"})
+
+var newProjectDefaultTaskBudget = TaskBudget{MaxChangedFiles: 100, MaxDiffLines: 20000, MaxCommits: 20}
 
 func isActiveTaskStatus(status string) bool {
 	return containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved"}, status)
@@ -35,6 +38,49 @@ func requireMissionExecutable(state State, missionID string) error {
 	return nil
 }
 
+func validChangedFiles(files []string) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for index, file := range files {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(file)))
+		if file == "" || file == "." || filepath.IsAbs(file) || strings.ContainsRune(file, '\x00') || clean != file || strings.HasPrefix(file, "../") || (index > 0 && files[index-1] >= file) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateTaskBudgetDefinition(budget TaskBudget) error {
+	if budget.MaxChangedFiles < 0 || budget.MaxChangedFiles > 1000000 || budget.MaxDiffLines < 0 || budget.MaxDiffLines > 1000000000 || budget.MaxCommits < 0 || budget.MaxCommits > 1000000 {
+		return &CLIError{Code: "CHS-TASK-BUDGET", Message: "Task budget values must be non-negative and within supported limits", ExitCode: 10}
+	}
+	return nil
+}
+
+func taskBudgetEnabled(budget TaskBudget) bool {
+	return budget.MaxChangedFiles > 0 || budget.MaxDiffLines > 0 || budget.MaxCommits > 0
+}
+
+func validateTaskBudget(budget TaskBudget, metrics ChangeMetrics) error {
+	if err := validateTaskBudgetDefinition(budget); err != nil {
+		return err
+	}
+	if metrics.ChangedFiles < 1 || metrics.AddedLines < 0 || metrics.DeletedLines < 0 || metrics.DiffLines != metrics.AddedLines+metrics.DeletedLines || metrics.Commits < 1 || metrics.BinaryFiles < 0 || metrics.BinaryFiles > metrics.ChangedFiles {
+		return &CLIError{Code: "CHS-WORK-BUDGET-EVIDENCE", Message: "change metrics are incomplete or inconsistent", ExitCode: 40}
+	}
+	if budget.MaxChangedFiles > 0 && metrics.ChangedFiles > budget.MaxChangedFiles {
+		return &CLIError{Code: "CHS-WORK-BUDGET-FILES", Message: fmt.Sprintf("change touches %d files; Task limit is %d", metrics.ChangedFiles, budget.MaxChangedFiles), ExitCode: 10, Remedy: []string{"split the change into a replacement Task or ask Master to accept a new Task budget"}}
+	}
+	if budget.MaxDiffLines > 0 && metrics.DiffLines > budget.MaxDiffLines {
+		return &CLIError{Code: "CHS-WORK-BUDGET-LINES", Message: fmt.Sprintf("change has %d added/deleted lines; Task limit is %d", metrics.DiffLines, budget.MaxDiffLines), ExitCode: 10, Remedy: []string{"split the change into a replacement Task or ask Master to accept a new Task budget"}}
+	}
+	if budget.MaxCommits > 0 && metrics.Commits > budget.MaxCommits {
+		return &CLIError{Code: "CHS-WORK-BUDGET-COMMITS", Message: fmt.Sprintf("change contains %d commits; Task limit is %d", metrics.Commits, budget.MaxCommits), ExitCode: 10, Remedy: []string{"create a clean replacement Task branch or ask Master to accept a new Task budget"}}
+	}
+	return nil
+}
+
 func validateState(config Config, state State) error {
 	if config.Version != ConfigVersion {
 		return &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
@@ -50,6 +96,9 @@ func validateState(config Config, state State) error {
 	}
 	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil || state.Publications == nil {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state collections must not be null", ExitCode: 40}
+	}
+	if err := validateTaskBudgetDefinition(config.DefaultTaskBudget); err != nil {
+		return stateError("CHS-STATE-CONFIG", "default Task budget is invalid")
 	}
 
 	for id, artifact := range state.Artifacts {
@@ -122,6 +171,9 @@ func validateState(config Config, state State) error {
 	worktreeIDs := map[string]string{}
 	worktreeDigests := map[string]string{}
 	for id, task := range state.Tasks {
+		if err := validateTaskBudgetDefinition(task.Budget); err != nil {
+			return stateError("CHS-STATE-TASK", "Task budget is invalid: "+id)
+		}
 		mission, missionExists := state.Missions[task.MissionID]
 		listed := missionExists && containsString(mission.TaskIDs, id)
 		if task.ID != id || !missionExists || task.ArtifactID != id || (!listed && task.Status != "planned") {
@@ -225,12 +277,22 @@ func validateState(config Config, state State) error {
 		if submission.ID != id || submission.TaskID == "" || submission.Actor == "" || submission.BaseCommit == "" || submission.HeadCommit == "" || submission.Digest == "" || submission.CreatedAt.IsZero() {
 			return stateError("CHS-STATE-SUBMISSION", "submission identity or evidence is incomplete: "+id)
 		}
+		if !validChangedFiles(submission.ChangedFiles) {
+			return stateError("CHS-STATE-SUBMISSION", "submission changed-file evidence is not canonical: "+id)
+		}
 		if _, ok := validSubmissionStatuses[submission.Status]; !ok {
 			return stateError("CHS-STATE-SUBMISSION", "unknown submission status: "+submission.Status)
 		}
 		task, ok := state.Tasks[submission.TaskID]
 		if !ok || task.Owner != submission.Actor || task.Baseline != submission.BaseCommit {
 			return stateError("CHS-STATE-SUBMISSION", "submission does not match task ownership or baseline: "+id)
+		}
+		if submission.Metrics == nil {
+			if taskBudgetEnabled(task.Budget) {
+				return stateError("CHS-STATE-SUBMISSION", "budgeted submission lacks change metrics: "+id)
+			}
+		} else if submission.CommitMessage == "" || submission.Metrics.ChangedFiles != len(submission.ChangedFiles) || validateTaskBudget(task.Budget, *submission.Metrics) != nil {
+			return stateError("CHS-STATE-SUBMISSION", "submission change metrics violate its Task budget: "+id)
 		}
 		digest, err := calculateSubmissionDigest(submission)
 		if err != nil || digest != submission.Digest {

@@ -83,6 +83,8 @@ func keyFingerprint(public []byte) string {
 
 func trustSigningBytes(trust Trust) ([]byte, error) {
 	trust.Signature = ""
+	trust.Grants = append([]Grant(nil), trust.Grants...)
+	trust.Revocations = append([]Revocation(nil), trust.Revocations...)
 	sort.Slice(trust.Grants, func(i, j int) bool { return trust.Grants[i].ID < trust.Grants[j].ID })
 	sort.Slice(trust.Revocations, func(i, j int) bool { return trust.Revocations[i].CredentialID < trust.Revocations[j].CredentialID })
 	return canonicalJSON(trust)

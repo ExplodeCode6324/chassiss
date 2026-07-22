@@ -320,7 +320,7 @@ Create code.txt.
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
-	_, _, submission, err := workSubmit(project, "M001-T001", "ready", developer, state.Revision)
+	_, _, submission, err := workSubmit(project, "M001-T001", "ready", "", developer, state.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}

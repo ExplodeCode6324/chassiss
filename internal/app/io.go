@@ -29,6 +29,8 @@ func digestBytes(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// canonicalJSON is the frozen Event V2 / Trust V1 signing codec. Changing its
+// byte output requires a new protocol version and a version-selective verifier.
 func canonicalJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
@@ -154,33 +156,49 @@ type projectLock struct {
 
 func acquireLock(root string) (*projectLock, error) {
 	path := filepath.Join(root, ".chassis", "lock")
-	for attempt := 0; attempt < 2; attempt++ {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "pid=%d\nacquired_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
-			_ = file.Sync()
-			return &projectLock{path: path, file: file}, nil
-		}
-		if !os.IsExist(err) {
-			return nil, err
-		}
-		info, statErr := os.Stat(path)
-		if statErr == nil && time.Since(info.ModTime()) > 5*time.Minute {
-			if removeErr := os.Remove(path); removeErr == nil {
-				continue
-			}
-		}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	locked, err := tryAdvisoryLock(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !locked {
+		_ = file.Close()
 		return nil, &CLIError{Code: "CHS-CONFLICT-LOCKED", Message: "project has an active write lock", ExitCode: 12, Retryable: true, Remedy: []string{"retry after the active command completes", "run chassiss doctor if the writer crashed"}}
 	}
-	return nil, fmt.Errorf("unable to acquire project lock")
+	if err := file.Truncate(0); err != nil {
+		_ = unlockAdvisoryLock(file)
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		_ = unlockAdvisoryLock(file)
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := fmt.Fprintf(file, "pid=%d\nacquired_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		_ = unlockAdvisoryLock(file)
+		_ = file.Close()
+		return nil, err
+	}
+	if err := file.Sync(); err != nil {
+		_ = unlockAdvisoryLock(file)
+		_ = file.Close()
+		return nil, err
+	}
+	return &projectLock{path: path, file: file}, nil
 }
 
 func (lock *projectLock) release() {
-	if lock == nil {
+	if lock == nil || lock.file == nil {
 		return
 	}
+	_ = unlockAdvisoryLock(lock.file)
 	_ = lock.file.Close()
-	_ = os.Remove(lock.path)
+	lock.file = nil
 }
 
 func copyStream(dst io.Writer, src io.Reader) error {

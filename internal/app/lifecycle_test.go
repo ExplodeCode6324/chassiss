@@ -36,6 +36,59 @@ func TestCalculateSubmissionDigestBindsImmutableManifest(t *testing.T) {
 	}
 }
 
+func TestChangedFileEvidenceMustBeCanonical(t *testing.T) {
+	for _, files := range [][]string{
+		nil,
+		{},
+		{"b.go", "a.go"},
+		{"a.go", "a.go"},
+		{"../a.go"},
+		{"a\x00b.go"},
+	} {
+		if validChangedFiles(files) {
+			t.Fatalf("invalid changed files were accepted: %#v", files)
+		}
+	}
+	if !validChangedFiles([]string{"a.go", "dir/b.go"}) {
+		t.Fatal("canonical changed files were rejected")
+	}
+}
+
+func TestSubmissionCommitMessageNormalization(t *testing.T) {
+	message, err := submissionCommitMessage("M001-T001", "\nImplement parser\nMore detail", "")
+	if err != nil || message != "M001-T001: Implement parser" {
+		t.Fatalf("derived commit message = %q, %v", message, err)
+	}
+	message, err = submissionCommitMessage("M001-T001", "ignored", "Add parser validation")
+	if err != nil || message != "M001-T001: Add parser validation" {
+		t.Fatalf("explicit commit message = %q, %v", message, err)
+	}
+	if _, err := submissionCommitMessage("M001-T001", "ignored", "line one\nline two"); err == nil {
+		t.Fatal("multiline commit message was accepted")
+	}
+}
+
+func TestTaskBudgetLimitsChangeMetrics(t *testing.T) {
+	metrics := ChangeMetrics{ChangedFiles: 2, AddedLines: 7, DeletedLines: 3, DiffLines: 10, Commits: 2}
+	if err := validateTaskBudget(TaskBudget{MaxChangedFiles: 2, MaxDiffLines: 10, MaxCommits: 2}, metrics); err != nil {
+		t.Fatalf("change at budget boundary was rejected: %v", err)
+	}
+	tests := []struct {
+		Budget TaskBudget
+		Code   string
+	}{
+		{Budget: TaskBudget{MaxChangedFiles: 1}, Code: "CHS-WORK-BUDGET-FILES"},
+		{Budget: TaskBudget{MaxDiffLines: 9}, Code: "CHS-WORK-BUDGET-LINES"},
+		{Budget: TaskBudget{MaxCommits: 1}, Code: "CHS-WORK-BUDGET-COMMITS"},
+	}
+	for _, test := range tests {
+		err := validateTaskBudget(test.Budget, metrics)
+		if typed, ok := err.(*CLIError); !ok || typed.Code != test.Code {
+			t.Fatalf("budget %#v error = %#v, want %s", test.Budget, err, test.Code)
+		}
+	}
+}
+
 func TestEffectiveExpected(t *testing.T) {
 	state := State{Revision: 7}
 	if got, err := effectiveExpected(state, -1); err != nil || got != 7 {
@@ -85,6 +138,21 @@ func TestNextActionsRequireChecksAndOfferMissionAcceptance(t *testing.T) {
 	want = []string{"work.check M001-T001"}
 	if got := nextActions(state, "developer", "agent:developer"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("developer actions = %#v, want %#v", got, want)
+	}
+}
+
+func TestDesignerNextActionsExplainRejectedArtifacts(t *testing.T) {
+	state := State{Artifacts: map[string]ArtifactState{
+		"requirements": {ID: "requirements", Path: "docs/requirements.md", Status: "rejected", RejectionReason: "clarify scope"},
+		"M001-T002":    {ID: "M001-T002", Path: "docs/tasks/M001-T002.md", Status: "rejected", RejectionReason: "split task"},
+	}}
+	want := []string{"artifact.submit docs/requirements.md", "artifact.submit docs/tasks/M001-T002.md"}
+	if got := nextActions(state, "designer", "agent:designer"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("designer rejected actions = %#v, want %#v", got, want)
+	}
+	rejections := designerRejections(state)
+	if len(rejections) != 2 || rejections[0].ID != "M001-T002" || rejections[1].Reason != "clarify scope" {
+		t.Fatalf("designer rejection context = %#v", rejections)
 	}
 }
 

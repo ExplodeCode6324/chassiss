@@ -45,8 +45,15 @@ func loadProject(root string) (Config, Trust, State, error) {
 }
 
 func initializeProject(target, rootKeyPath string, existing bool) (Config, State, error) {
+	return initializeProjectWithBudget(target, rootKeyPath, existing, newProjectDefaultTaskBudget)
+}
+
+func initializeProjectWithBudget(target, rootKeyPath string, existing bool, budget TaskBudget) (Config, State, error) {
 	var emptyConfig Config
 	var emptyState State
+	if err := validateTaskBudgetDefinition(budget); err != nil {
+		return emptyConfig, emptyState, err
+	}
 	absolute, err := filepath.Abs(target)
 	if err != nil {
 		return emptyConfig, emptyState, err
@@ -133,7 +140,7 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 	}
 	config := Config{
 		Version: ConfigVersion, ProjectID: projectID, Mode: mode, DefaultBranch: branch, ContentBackend: "local-git",
-		WIPLimit: 2, RootFingerprint: keyFingerprint(public), CreatedAt: now,
+		WIPLimit: 2, DefaultTaskBudget: budget, RootFingerprint: keyFingerprint(public), CreatedAt: now,
 	}
 	trust := Trust{Version: TrustVersion, Revision: 1, ProjectID: projectID, RootPublicKey: root.PublicKey, Grants: []Grant{}, Revocations: []Revocation{}, UpdatedAt: now}
 	if err := signTrust(&trust, private); err != nil {

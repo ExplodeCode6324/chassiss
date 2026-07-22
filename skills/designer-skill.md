@@ -31,9 +31,9 @@ Do not call `artifact accept|reject`, Mission or Task scheduling commands, Devel
 1. Translate Master's observable objective into Requirements and submit it.
 2. Wait for Master acceptance, then bind Architecture to the accepted Requirements digest.
 3. Wait for Architecture acceptance, then define one outcome-focused Mission and atomic Tasks.
-4. Give each Task explicit dependencies, non-overlapping `allowed_paths` where possible, executable acceptance checks, exclusions, and stop conditions.
+4. Give each Task explicit dependencies, non-overlapping `allowed_paths` where possible, a realistic `budget`, executable acceptance checks, exclusions, and stop conditions. A zero budget dimension means unlimited and must be an intentional Master-visible choice.
 5. Run `artifact check` before every `artifact submit`.
-6. Hand the accepted plan to Orchestrator; do not claim implementation work.
+6. If `next` returns `rejections`, use each path and reason to revise and resubmit that artifact. Otherwise hand the accepted plan to Orchestrator; do not claim implementation work.
 
 ## Stop
 

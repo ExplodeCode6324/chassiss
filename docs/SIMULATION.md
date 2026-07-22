@@ -5,6 +5,8 @@
 二进制：`bin/chassiss-darwin-arm64`
 SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 
+该 SHA 仅对应 2026-07-22 的原始手工推演二进制。2026-07-23 的审计修复以当前源码自动化测试、race、vet 和 build 结果为准，不把旧哈希误作新版本发布证据。
+
 ## 结果
 
 - Greenfield：从空目录初始化 Go greeting CLI，完整执行设计、Master 接受、Mission 激活、Task claim、Developer check/submit、独立 review、local integration 和 Mission 验收；最终 revision 19，签名事件和 Git worktree 验证通过。
@@ -12,6 +14,7 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - 长期 credential：同一角色 credential 跨整个 Mission 和多个 CLI 调用持续有效；额外签发并回收一个测试 credential 后，后续写动作稳定返回 `CHS-AUTH-REVOKED`。
 - 四个角色 Skill 均通过 system `skill-creator` 的 `quick_validate.py`。
 - Go 验证：`go test ./...`、`go test -race ./...` 与 `go vet ./...` 通过。
+- Greenfield/Brownfield 的四角色流程现已转成直接调用真实 CLI 参数和 JSON envelope 的自动化端到端测试，不再只依赖本页手工推演。
 
 ## 推演发现并已修复
 
@@ -24,6 +27,10 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 7. 命令原先可能忽略拼错的 option。现在按命令拒绝未知 flags/options。
 8. 所有领域写入默认锁定其读取到的 revision；显式旧 revision 会在产生 Git 副作用前拒绝。
 9. 每个常规命令现在先验证 `state.yaml` 等于签名事件投影，避免把手工状态修改“洗入”下一事件；事件验证同时检查 event type 是否属于签名 credential 的 action 权限、时间是否单调、是否早于签发或晚于回收。
+10. 项目锁原先按五分钟文件年龄删除，长任务可能被并发写入。现在使用内核 advisory lock，锁文件持久保留且进程退出自动释放，不再以时间猜测锁是否失效。
+11. Trust 签名字节排序改为复制 slice 后排序，不会改变调用者状态；changed files 使用规范、排序、逐元素比较，拒绝空值、NUL、重复和非规范路径。
+12. Event V2/Trust V1 的现有 Go JSON 字节格式通过 golden vectors 冻结，并禁止核心签名结构加入浮点字段。JCS 只能作为未来新协议版本，避免无迁移地破坏历史签名。
+13. Designer `next` 会显示 rejected artifact 的路径和理由；Developer submission 支持审计友好的提交摘要，并记录、复核冻结 Task 预算的 Git 证据。
 
 ## 剩余风险与下一轮建议
 
@@ -40,6 +47,7 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - Task release 只清理无 submission 且干净位于 baseline 的 worktree/branch，并由 operation journal 恢复；Master cancel 保留取证状态；supersede 使用已接受的新 Task ID 和显式替换链，旧契约不被改写。
 - credential 默认继续长效；显式签发时可增加 not_before/expires_at、Task/Mission/submission 白名单，以及 Reviewer/Integration digest/head/baseline scope。CLI 执行和历史事件重放都会验证这些限制。
 - 不带 credential 的 `doctor` 仍只能证明 `.chassis` 内部自洽；有能力整体替换项目控制目录的主体可以构造另一套自洽 Root。正式门禁必须传入 Master 分发的 credential，后续可增加 OS Keychain/可信 Root store。
+- 新项目默认限制单 Task 的文件数、增删行和提交数，Master 可在初始化或接受 Task 时调整；`0` 是明确的无限制取舍。二进制文件只计文件数，不能用文本行预算衡量其体积，必要时后续增加字节数预算。
 
 优先级中：
 

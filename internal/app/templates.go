@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +62,15 @@ func renderTemplate(root, kind, id string) ([]byte, string, error) {
 		text = strings.ReplaceAll(text, "M000-T000", id)
 		text = strings.ReplaceAll(text, "M000", missionID)
 		text = replaceAcceptedDesignDigests(root, text)
+		budget := newProjectDefaultTaskBudget
+		if root != "" {
+			if config, _, _, err := loadProject(root); err == nil {
+				budget = config.DefaultTaskBudget
+			}
+		}
+		text = strings.ReplaceAll(text, "REPLACE_MAX_CHANGED_FILES", strconv.Itoa(budget.MaxChangedFiles))
+		text = strings.ReplaceAll(text, "REPLACE_MAX_DIFF_LINES", strconv.Itoa(budget.MaxDiffLines))
+		text = strings.ReplaceAll(text, "REPLACE_MAX_COMMITS", strconv.Itoa(budget.MaxCommits))
 	}
 	return []byte(text), path, nil
 }
@@ -148,6 +158,11 @@ func validateArtifactDocument(document *ArtifactDocument) error {
 		}
 		expectedPath = "docs/tasks/" + metadata.ID + ".md"
 		requiredHeadings = []string{"# Task " + metadata.ID, "## Objective", "## Inputs and Assumptions", "## Forbidden and Out of Scope", "## Deliverables", "## Stop Conditions", "## Reviewer Attention"}
+		if metadata.Budget != nil {
+			if err := validateTaskBudgetDefinition(*metadata.Budget); err != nil {
+				return err
+			}
+		}
 	}
 	if document.Path != expectedPath {
 		return &CLIError{Code: "CHS-ARTIFACT-PATH", Message: fmt.Sprintf("%s artifact must be stored at %s", metadata.Kind, expectedPath), ExitCode: 10}
@@ -207,7 +222,7 @@ func submitArtifact(root, path string, principal Principal, expected int64) (Sta
 	if err != nil {
 		return State{}, State{}, ArtifactState{}, err
 	}
-	_, _, state, err := loadProject(root)
+	config, _, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, ArtifactState{}, err
 	}
@@ -232,10 +247,14 @@ func submitArtifact(root, path string, principal Principal, expected int64) (Sta
 		case "mission":
 			next.Missions[artifact.ID] = MissionState{ID: artifact.ID, ArtifactID: artifact.ID, Status: "planned", TaskIDs: append([]string{}, document.Metadata.TaskIDs...), UpdatedAt: timeNow()}
 		case "task":
+			budget := config.DefaultTaskBudget
+			if document.Metadata.Budget != nil {
+				budget = *document.Metadata.Budget
+			}
 			next.Tasks[artifact.ID] = TaskState{
 				ID: artifact.ID, MissionID: document.Metadata.MissionID, ArtifactID: artifact.ID, Status: "planned",
 				DependsOn: append([]string{}, document.Metadata.DependsOn...), AllowedPaths: append([]string{}, document.Metadata.AllowedPaths...),
-				Checks: append([]CheckSpec{}, document.Metadata.AcceptanceChecks...), CheckResults: map[string]CheckResult{}, UpdatedAt: timeNow(),
+				Budget: budget, Checks: append([]CheckSpec{}, document.Metadata.AcceptanceChecks...), CheckResults: map[string]CheckResult{}, UpdatedAt: timeNow(),
 			}
 		}
 		return nil

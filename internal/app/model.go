@@ -15,14 +15,15 @@ const (
 )
 
 type Config struct {
-	Version         int       `yaml:"version" json:"version"`
-	ProjectID       string    `yaml:"project_id" json:"project_id"`
-	Mode            string    `yaml:"mode" json:"mode"`
-	DefaultBranch   string    `yaml:"default_branch" json:"default_branch"`
-	ContentBackend  string    `yaml:"content_backend" json:"content_backend"`
-	WIPLimit        int       `yaml:"wip_limit" json:"wip_limit"`
-	RootFingerprint string    `yaml:"root_fingerprint" json:"root_fingerprint"`
-	CreatedAt       time.Time `yaml:"created_at" json:"created_at"`
+	Version           int        `yaml:"version" json:"version"`
+	ProjectID         string     `yaml:"project_id" json:"project_id"`
+	Mode              string     `yaml:"mode" json:"mode"`
+	DefaultBranch     string     `yaml:"default_branch" json:"default_branch"`
+	ContentBackend    string     `yaml:"content_backend" json:"content_backend"`
+	WIPLimit          int        `yaml:"wip_limit" json:"wip_limit"`
+	DefaultTaskBudget TaskBudget `yaml:"default_task_budget,omitempty" json:"default_task_budget,omitempty"`
+	RootFingerprint   string     `yaml:"root_fingerprint" json:"root_fingerprint"`
+	CreatedAt         time.Time  `yaml:"created_at" json:"created_at"`
 }
 
 type RootKey struct {
@@ -123,6 +124,21 @@ type CheckResult struct {
 	CheckedAt      time.Time `yaml:"checked_at" json:"checked_at"`
 }
 
+type TaskBudget struct {
+	MaxChangedFiles int `yaml:"max_changed_files" json:"max_changed_files"`
+	MaxDiffLines    int `yaml:"max_diff_lines" json:"max_diff_lines"`
+	MaxCommits      int `yaml:"max_commits" json:"max_commits"`
+}
+
+type ChangeMetrics struct {
+	ChangedFiles int `yaml:"changed_files" json:"changed_files"`
+	AddedLines   int `yaml:"added_lines" json:"added_lines"`
+	DeletedLines int `yaml:"deleted_lines" json:"deleted_lines"`
+	DiffLines    int `yaml:"diff_lines" json:"diff_lines"`
+	Commits      int `yaml:"commits" json:"commits"`
+	BinaryFiles  int `yaml:"binary_files" json:"binary_files"`
+}
+
 type MissionState struct {
 	ID                 string    `yaml:"id" json:"id"`
 	ArtifactID         string    `yaml:"artifact_id" json:"artifact_id"`
@@ -148,6 +164,7 @@ type TaskState struct {
 	WorktreeDigest string                 `yaml:"worktree_digest,omitempty" json:"worktree_digest,omitempty"`
 	DependsOn      []string               `yaml:"depends_on" json:"depends_on"`
 	AllowedPaths   []string               `yaml:"allowed_paths" json:"allowed_paths"`
+	Budget         TaskBudget             `yaml:"budget,omitempty" json:"budget,omitempty"`
 	Checks         []CheckSpec            `yaml:"checks" json:"checks"`
 	CheckResults   map[string]CheckResult `yaml:"check_results" json:"check_results"`
 	Checkpoint     string                 `yaml:"checkpoint,omitempty" json:"checkpoint,omitempty"`
@@ -169,6 +186,8 @@ type Submission struct {
 	ChangedFiles  []string               `yaml:"changed_files" json:"changed_files"`
 	Checks        map[string]CheckResult `yaml:"checks" json:"checks"`
 	Handoff       string                 `yaml:"handoff" json:"handoff"`
+	CommitMessage string                 `yaml:"commit_message,omitempty" json:"commit_message,omitempty"`
+	Metrics       *ChangeMetrics         `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Digest        string                 `yaml:"digest" json:"digest"`
 	Status        string                 `yaml:"status" json:"status"`
 	ReviewID      string                 `yaml:"review_id,omitempty" json:"review_id,omitempty"`
@@ -254,6 +273,7 @@ type ArtifactMetadata struct {
 	TaskIDs            []string    `yaml:"task_ids,omitempty"`
 	DependsOn          []string    `yaml:"depends_on,omitempty"`
 	AllowedPaths       []string    `yaml:"allowed_paths,omitempty"`
+	Budget             *TaskBudget `yaml:"budget,omitempty"`
 	AcceptanceChecks   []CheckSpec `yaml:"acceptance_checks,omitempty"`
 }
 

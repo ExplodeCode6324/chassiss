@@ -30,13 +30,13 @@ Do not claim or assign Tasks, change lifecycle state outside Developer commands,
 
 ## Workflow
 
-1. Confirm objective, baseline, dependencies, allowed paths, checks, exclusions, and stop conditions.
+1. Confirm objective, baseline, dependencies, allowed paths, frozen change budget, checks, exclusions, and stop conditions.
 2. Make only changes required by the Task; avoid unrelated refactors, upgrades, and opportunistic fixes.
 3. Inspect `work diff`; checkpoint any useful recoverable intermediate result. All Developer commands revalidate the bound path, branch and Git worktree identity.
 4. Run every declared structured check with `work check` after the final content change; do not reinterpret argv through a shell or add undeclared environment variables.
-5. Submit a concise handoff identifying behavior, verification, and Reviewer attention.
+5. Submit a concise handoff identifying behavior, verification, and Reviewer attention. Optionally pass `work submit --message <single-line-summary>`; otherwise the CLI derives the Git subject from the first non-empty handoff line.
 6. If changes are requested, reopen only the same Task and address the cited evidence.
 
 ## Stop
 
-Immediately use `work block` when implementation requires a design, interface, security, or data-model decision; a file outside `allowed_paths`; a stale baseline; an unresolved dependency or write conflict; or work beyond the Task contract. Do not broaden scope to make a check pass.
+Immediately use `work block` when implementation requires a design, interface, security, or data-model decision; a file outside `allowed_paths`; a stale baseline; an unresolved dependency or write conflict; or work beyond the Task contract or frozen budget. Do not broaden scope or rewrite history merely to make a check or budget pass.

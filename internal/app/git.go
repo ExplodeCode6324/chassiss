@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -156,6 +157,48 @@ func gitChangedFiles(root, base, head string) ([]string, error) {
 	files := splitGitPaths(output)
 	sort.Strings(files)
 	return files, nil
+}
+
+func gitChangeMetrics(root, base, head string) (ChangeMetrics, error) {
+	files, err := gitChangedFiles(root, base, head)
+	if err != nil {
+		return ChangeMetrics{}, err
+	}
+	metrics := ChangeMetrics{ChangedFiles: len(files)}
+	numstat, err := gitEnvironmentRaw(root, nil, "diff", "--numstat", "-z", "--no-renames", base, head, "--")
+	if err != nil {
+		return ChangeMetrics{}, err
+	}
+	for _, record := range bytes.Split(numstat, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		fields := bytes.SplitN(record, []byte{'\t'}, 3)
+		if len(fields) != 3 {
+			return ChangeMetrics{}, fmt.Errorf("invalid git numstat record")
+		}
+		if string(fields[0]) == "-" || string(fields[1]) == "-" {
+			metrics.BinaryFiles++
+			continue
+		}
+		added, addErr := strconv.Atoi(string(fields[0]))
+		deleted, deleteErr := strconv.Atoi(string(fields[1]))
+		if addErr != nil || deleteErr != nil || added < 0 || deleted < 0 {
+			return ChangeMetrics{}, fmt.Errorf("invalid git numstat counts")
+		}
+		metrics.AddedLines += added
+		metrics.DeletedLines += deleted
+	}
+	metrics.DiffLines = metrics.AddedLines + metrics.DeletedLines
+	commitCount, err := git(root, "rev-list", "--count", base+".."+head)
+	if err != nil {
+		return ChangeMetrics{}, err
+	}
+	metrics.Commits, err = strconv.Atoi(commitCount)
+	if err != nil || metrics.Commits < 0 {
+		return ChangeMetrics{}, fmt.Errorf("invalid git commit count")
+	}
+	return metrics, nil
 }
 
 func gitWorkingFiles(root string) ([]string, error) {

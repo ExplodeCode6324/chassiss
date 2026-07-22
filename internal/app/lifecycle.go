@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func activateMission(root, missionID string, principal Principal, expected int64) (State, State, error) {
@@ -705,7 +707,44 @@ func workCheckpoint(root, taskID, checkpoint string, principal Principal, expect
 	return previous, next, task, err
 }
 
-func workSubmit(root, taskID, handoff string, principal Principal, expected int64) (State, State, Submission, error) {
+func submissionCommitMessage(taskID, handoff, requested string) (string, error) {
+	if !utf8.ValidString(handoff) || !utf8.ValidString(requested) {
+		return "", &CLIError{Code: "CHS-WORK-COMMIT-MESSAGE", Message: "handoff and commit message must be valid UTF-8", ExitCode: 20}
+	}
+	explicit := strings.TrimSpace(requested) != ""
+	if explicit && strings.ContainsAny(requested, "\r\n") {
+		return "", &CLIError{Code: "CHS-WORK-COMMIT-MESSAGE", Message: "commit message must be a single line", ExitCode: 20}
+	}
+	summary := strings.TrimSpace(requested)
+	if !explicit {
+		for _, line := range strings.Split(handoff, "\n") {
+			if strings.TrimSpace(line) != "" {
+				summary = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+	summary = strings.Join(strings.Fields(summary), " ")
+	for _, value := range summary {
+		if value < 0x20 || value == 0x7f {
+			return "", &CLIError{Code: "CHS-WORK-COMMIT-MESSAGE", Message: "commit message contains a control character", ExitCode: 20}
+		}
+	}
+	if summary == "" {
+		summary = "Complete task"
+	}
+	message := taskID + ": " + summary
+	characters := []rune(message)
+	if len(characters) > 120 {
+		if explicit {
+			return "", &CLIError{Code: "CHS-WORK-COMMIT-MESSAGE", Message: "commit message must not exceed 120 characters including Task ID", ExitCode: 20}
+		}
+		message = strings.TrimSpace(string(characters[:120]))
+	}
+	return message, nil
+}
+
+func workSubmit(root, taskID, handoff, requestedMessage string, principal Principal, expected int64) (State, State, Submission, error) {
 	_, _, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, Submission{}, err
@@ -721,15 +760,20 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, Submission{}, err
 	}
+	commitMessage, err := submissionCommitMessage(taskID, handoff, requestedMessage)
+	if err != nil {
+		return State{}, State{}, Submission{}, err
+	}
 	id, err := newID("SUB")
 	if err != nil {
 		return State{}, State{}, Submission{}, err
 	}
 	intent := struct {
-		TaskID       string `json:"task_id"`
-		SubmissionID string `json:"submission_id"`
-		Handoff      string `json:"handoff"`
-	}{TaskID: taskID, SubmissionID: id, Handoff: handoff}
+		TaskID        string `json:"task_id"`
+		SubmissionID  string `json:"submission_id"`
+		Handoff       string `json:"handoff"`
+		CommitMessage string `json:"commit_message"`
+	}{TaskID: taskID, SubmissionID: id, Handoff: handoff, CommitMessage: commitMessage}
 	var submission Submission
 	previous, next, _, err := executeGitOperation(root, "work.submit", "work.submitted", taskID, principal, expected, intent, func(current State) (preparedOperation, error) {
 		currentTask, ok := current.Tasks[taskID]
@@ -766,7 +810,7 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 		if err := validateTaskChecks(currentTask, snapshotDigest); err != nil {
 			return preparedOperation{}, err
 		}
-		before, head, err := gitPrepareCommit(worktreeRoot, "Complete "+taskID, files...)
+		before, head, err := gitPrepareCommit(worktreeRoot, commitMessage, files...)
 		if err != nil {
 			return preparedOperation{}, err
 		}
@@ -774,7 +818,14 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 		if err != nil {
 			return preparedOperation{}, err
 		}
-		submission = Submission{ID: id, TaskID: taskID, BaseCommit: currentTask.Baseline, HeadCommit: head, ChangedFiles: changed, Checks: currentTask.CheckResults, Handoff: handoff}
+		metrics, err := gitChangeMetrics(worktreeRoot, currentTask.Baseline, head)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if err := validateTaskBudget(currentTask.Budget, metrics); err != nil {
+			return preparedOperation{}, err
+		}
+		submission = Submission{ID: id, TaskID: taskID, BaseCommit: currentTask.Baseline, HeadCommit: head, ChangedFiles: changed, Checks: currentTask.CheckResults, Handoff: handoff, CommitMessage: commitMessage, Metrics: &metrics}
 		tree, err := git(worktreeRoot, "rev-parse", head+"^{tree}")
 		if err != nil {
 			return preparedOperation{}, err
@@ -845,8 +896,28 @@ func reviewCheckState(root string, state State, submissionID string) (Submission
 	if err != nil {
 		return Submission{}, TaskState{}, nil, err
 	}
-	if strings.Join(files, "\x00") != strings.Join(submission.ChangedFiles, "\x00") {
+	if !slices.Equal(files, submission.ChangedFiles) {
 		return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-DIFF", Message: "submission diff no longer matches its manifest", ExitCode: 40}
+	}
+	metrics, err := gitChangeMetrics(root, submission.BaseCommit, submission.HeadCommit)
+	if err != nil {
+		return Submission{}, TaskState{}, nil, err
+	}
+	if submission.Metrics == nil {
+		if taskBudgetEnabled(task.Budget) {
+			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-BUDGET", Message: "budgeted submission lacks change metrics", ExitCode: 40}
+		}
+	} else if *submission.Metrics != metrics {
+		return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-BUDGET", Message: "submission change metrics do not match its exact Git range", ExitCode: 40}
+	}
+	if err := validateTaskBudget(task.Budget, metrics); err != nil {
+		return Submission{}, TaskState{}, nil, err
+	}
+	if submission.CommitMessage != "" {
+		actualMessage, err := git(root, "log", "-1", "--format=%s", submission.HeadCommit)
+		if err != nil || actualMessage != submission.CommitMessage {
+			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-COMMIT-MESSAGE", Message: "submission commit message does not match its manifest", ExitCode: 40}
+		}
 	}
 	for _, file := range files {
 		if !allowedFile(task.AllowedPaths, file) {
@@ -873,20 +944,22 @@ func reviewCheckState(root string, state State, submissionID string) (Submission
 
 func calculateSubmissionDigest(submission Submission) (string, error) {
 	manifest := struct {
-		ID           string                 `json:"id"`
-		TaskID       string                 `json:"task_id"`
-		Actor        string                 `json:"actor"`
-		BaseCommit   string                 `json:"base_commit"`
-		HeadCommit   string                 `json:"head_commit"`
-		ChangedFiles []string               `json:"changed_files"`
-		Checks       map[string]CheckResult `json:"checks"`
-		Handoff      string                 `json:"handoff"`
-		CreatedAt    time.Time              `json:"created_at"`
+		ID            string                 `json:"id"`
+		TaskID        string                 `json:"task_id"`
+		Actor         string                 `json:"actor"`
+		BaseCommit    string                 `json:"base_commit"`
+		HeadCommit    string                 `json:"head_commit"`
+		ChangedFiles  []string               `json:"changed_files"`
+		Checks        map[string]CheckResult `json:"checks"`
+		Handoff       string                 `json:"handoff"`
+		CommitMessage string                 `json:"commit_message,omitempty"`
+		Metrics       *ChangeMetrics         `json:"metrics,omitempty"`
+		CreatedAt     time.Time              `json:"created_at"`
 	}{
 		ID: submission.ID, TaskID: submission.TaskID, Actor: submission.Actor,
 		BaseCommit: submission.BaseCommit, HeadCommit: submission.HeadCommit,
 		ChangedFiles: submission.ChangedFiles, Checks: submission.Checks,
-		Handoff: submission.Handoff, CreatedAt: submission.CreatedAt,
+		Handoff: submission.Handoff, CommitMessage: submission.CommitMessage, Metrics: submission.Metrics, CreatedAt: submission.CreatedAt,
 	}
 	data, err := canonicalJSON(manifest)
 	if err != nil {
@@ -1187,6 +1260,23 @@ func stateSummary(state State) map[string]any {
 	}
 }
 
+type artifactRejectionContext struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+func designerRejections(state State) []artifactRejectionContext {
+	result := []artifactRejectionContext{}
+	for _, id := range sortedArtifactIDs(state.Artifacts) {
+		artifact := state.Artifacts[id]
+		if artifact.Status == "rejected" {
+			result = append(result, artifactRejectionContext{ID: artifact.ID, Path: artifact.Path, Reason: artifact.RejectionReason})
+		}
+	}
+	return result
+}
+
 func nextActions(state State, role, actor string) []string {
 	actions := []string{}
 	if state.ActiveMission != "" && state.Missions[state.ActiveMission].Status == "blocked" && containsString([]string{"developer", "reviewer"}, role) {
@@ -1194,7 +1284,12 @@ func nextActions(state State, role, actor string) []string {
 	}
 	switch role {
 	case "designer":
-		if state.Artifacts["requirements"].Status == "" {
+		rejections := designerRejections(state)
+		if len(rejections) != 0 {
+			for _, rejection := range rejections {
+				actions = append(actions, "artifact.submit "+rejection.Path)
+			}
+		} else if state.Artifacts["requirements"].Status == "" {
 			actions = append(actions, "template.get requirements")
 		} else if state.Artifacts["requirements"].Status == "accepted" && state.Artifacts["architecture"].Status == "" {
 			actions = append(actions, "template.get architecture")

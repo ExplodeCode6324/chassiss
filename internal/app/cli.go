@@ -140,7 +140,7 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 		"auth master-init":          {values: []string{"output"}},
 		"auth issue":                {values: []string{"master-root", "actor", "role", "output", "actions", "not-before", "expires-at", "ttl-seconds", "projects", "missions", "tasks", "submissions", "submission-digests", "heads", "baselines"}, flags: []string{"persistent"}},
 		"auth revoke":               {values: []string{"master-root", "id", "reason"}},
-		"project init":              {values: []string{"master-root"}, flags: []string{"existing"}},
+		"project init":              {values: []string{"master-root", "max-changed-files", "max-diff-lines", "max-commits"}, flags: []string{"existing"}},
 		"next":                      {values: []string{"role", "actor"}},
 		"template get":              {values: []string{"id", "output"}},
 		"artifact list":             {flags: []string{"pending"}},
@@ -154,7 +154,7 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 		"task supersede":            {values: []string{"replacement"}},
 		"work check":                {values: []string{"id"}, flags: []string{"all"}},
 		"work checkpoint":           {values: []string{"file"}},
-		"work submit":               {values: []string{"file"}},
+		"work submit":               {values: []string{"file", "message"}},
 		"work block":                {values: []string{"reason"}},
 		"review approve":            {values: []string{"report"}},
 		"review request-changes":    {values: []string{"report"}},
@@ -211,11 +211,15 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if rootKey == "" {
 			return Response{}, usageError("project init requires --master-root or global --credential")
 		}
-		config, state, err := initializeProject(parsed.positionals[0], rootKey, parsed.flags["existing"])
+		budget, err := projectBudgetFromArgs(parsed)
 		if err != nil {
 			return Response{}, err
 		}
-		return response(command, config.ProjectID, 0, state.Revision, map[string]any{"root": absolutePath(parsed.positionals[0]), "mode": config.Mode, "default_branch": config.DefaultBranch}), nil
+		config, state, err := initializeProjectWithBudget(parsed.positionals[0], rootKey, parsed.flags["existing"], budget)
+		if err != nil {
+			return Response{}, err
+		}
+		return response(command, config.ProjectID, 0, state.Revision, map[string]any{"root": absolutePath(parsed.positionals[0]), "mode": config.Mode, "default_branch": config.DefaultBranch, "default_task_budget": config.DefaultTaskBudget}), nil
 	}
 	if command == "auth inspect" {
 		path := options.credential
@@ -321,7 +325,13 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			return Response{}, usageError("next requires --role")
 		}
 		actions := nextActions(state, role, parsed.values["actor"])
-		item := readResponse(map[string]any{"role": role, "actions": actions})
+		result := map[string]any{"role": role, "actions": actions}
+		if role == "designer" {
+			if rejections := designerRejections(state); len(rejections) != 0 {
+				result["rejections"] = rejections
+			}
+		}
+		item := readResponse(result)
 		item.Next = actions
 		return item, nil
 	case "doctor", "verify":
@@ -750,7 +760,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			}
 			return mutatingResponse(previous, next, task, principal), nil
 		}
-		previous, next, submission, err := workSubmit(root, id, text, principal, options.expected)
+		previous, next, submission, err := workSubmit(root, id, text, parsed.values["message"], principal, options.expected)
 		if err != nil {
 			return Response{}, err
 		}
@@ -1052,6 +1062,31 @@ func commaList(value string) []string {
 	return strings.Split(value, ",")
 }
 
+func projectBudgetFromArgs(parsed commandArgs) (TaskBudget, error) {
+	budget := newProjectDefaultTaskBudget
+	fields := []struct {
+		Name   string
+		Target *int
+		Max    int64
+	}{
+		{Name: "max-changed-files", Target: &budget.MaxChangedFiles, Max: 1000000},
+		{Name: "max-diff-lines", Target: &budget.MaxDiffLines, Max: 1000000000},
+		{Name: "max-commits", Target: &budget.MaxCommits, Max: 1000000},
+	}
+	for _, field := range fields {
+		value := parsed.values[field.Name]
+		if value == "" {
+			continue
+		}
+		parsedValue, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsedValue < 0 || parsedValue > field.Max {
+			return TaskBudget{}, usageError("--" + field.Name + " must be a non-negative integer within the supported limit")
+		}
+		*field.Target = int(parsedValue)
+	}
+	return budget, nil
+}
+
 func absolutePath(path string) string {
 	absolute, _ := filepath.Abs(path)
 	return absolute
@@ -1127,8 +1162,12 @@ func explainCode(code string) map[string]any {
 	explanations := map[string]string{
 		"CHS-CONFLICT-REVISION":       "State changed since it was read. Refresh status and reconsider the action.",
 		"CHS-CONFLICT-TRUST-REVISION": "Trust grants or revocations changed since they were read. Reload trust metadata and reconsider the authorization action.",
+		"CHS-CONFLICT-LOCKED":         "Another process holds the kernel-backed project write lock. Retry after that command exits; lock-file age is not evidence that the lock is stale.",
 		"CHS-AUTH-REVOKED":            "The selected long-lived credential was explicitly revoked by Master.",
 		"CHS-WORK-SCOPE":              "At least one changed file is outside the Task allowed_paths contract.",
+		"CHS-WORK-BUDGET-FILES":       "The exact submission range changes more files than the frozen Task budget permits. Split or supersede the Task instead of widening it during execution.",
+		"CHS-WORK-BUDGET-LINES":       "The exact submission range has more added and deleted text lines than the frozen Task budget permits.",
+		"CHS-WORK-BUDGET-COMMITS":     "The exact submission range contains more commits than the frozen Task budget permits.",
 		"CHS-REVIEW-INDEPENDENCE":     "The same actor identity cannot author and approve a submission.",
 		"CHS-INTEGRITY-EVENTS":        "The signed event log is missing, reordered, modified, or otherwise invalid.",
 	}

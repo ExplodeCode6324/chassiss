@@ -327,6 +327,32 @@ func TestCredentialValidityAndResourceScopes(t *testing.T) {
 	}
 }
 
+func TestTrustSigningBytesDoesNotMutateCallerOrder(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	trust := Trust{
+		Version: TrustVersion, Revision: 1, ProjectID: "PRJ-1", RootPublicKey: "root", UpdatedAt: now,
+		Grants:      []Grant{{ID: "CRED-B"}, {ID: "CRED-A"}},
+		Revocations: []Revocation{{CredentialID: "CRED-B"}, {CredentialID: "CRED-A"}},
+	}
+	first, err := trustSigningBytes(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trust.Grants[0].ID != "CRED-B" || trust.Revocations[0].CredentialID != "CRED-B" {
+		t.Fatalf("trustSigningBytes mutated caller order: %#v", trust)
+	}
+	reordered := trust
+	reordered.Grants = []Grant{{ID: "CRED-A"}, {ID: "CRED-B"}}
+	reordered.Revocations = []Revocation{{CredentialID: "CRED-A"}, {CredentialID: "CRED-B"}}
+	second, err := trustSigningBytes(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("equivalent trust order produced different signing bytes\n%s\n%s", first, second)
+	}
+}
+
 func setupAuthProject(t *testing.T) (project, rootPath string) {
 	t.Helper()
 	testRoot := t.TempDir()

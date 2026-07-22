@@ -166,3 +166,41 @@ func TestGitWorkingFilesReportsBothSidesOfRename(t *testing.T) {
 		t.Fatalf("rename files = %#v, want %#v", files, want)
 	}
 }
+
+func TestGitChangeMetricsBindFilesLinesAndCommits(t *testing.T) {
+	root := t.TempDir()
+	if _, err := git(root, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, err := gitCommit(root, "base", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("three\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommit(root, "first", "a.txt", "b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("three\nfour\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitCommit(root, "second", "b.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := gitChangeMetrics(root, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ChangeMetrics{ChangedFiles: 2, AddedLines: 3, DeletedLines: 0, DiffLines: 3, Commits: 2, BinaryFiles: 0}
+	if metrics != want {
+		t.Fatalf("change metrics = %#v, want %#v", metrics, want)
+	}
+}

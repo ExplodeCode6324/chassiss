@@ -7,6 +7,10 @@ architecture_digest: REPLACE_ARCHITECTURE_DIGEST
 depends_on: []
 allowed_paths:
   - REPLACE_ALLOWED_PATH/**
+budget:
+  max_changed_files: REPLACE_MAX_CHANGED_FILES
+  max_diff_lines: REPLACE_MAX_DIFF_LINES
+  max_commits: REPLACE_MAX_COMMITS
 acceptance_checks:
   - id: CHECK-001
     argv: ["REPLACE_COMMAND", "REPLACE_ARGUMENT"]

@@ -1,6 +1,6 @@
 # CHASSISS v0.1
 
-> CLI、四个角色 Skill 和本地/远端边界已完成，等待 Master 复核后再扩展规范。
+> CLI、四个角色 Skill、本地/远端边界及无人值守前的主要完整性修复已实现。
 
 CHASSISS 是一个以 CLI 为核心的软件开发工作流。Agent 负责需求、架构、实现和复核中的语义判断；CLI 负责模板、权限、状态、任务分派、范围检查、并发和恢复。
 
@@ -69,11 +69,15 @@ chassiss template get task --id M001-T001
 
 Task 进入 ready 后，目标、依赖、允许路径和验收冻结。需要改变时停止并进入后续设计变更流程，不原位改写契约。
 
+新项目默认冻结每个 Task 的变更预算：最多 100 个文件、20,000 行增删和 20 个提交。Master 可在 `project init` 调整项目默认值，Designer 也可在 Task front matter 的 `budget` 中提出单 Task 值；该值随 Task artifact 被接受后冻结。某项为 `0` 表示该维度不设上限。二进制文件计入文件数，但因 Git 不提供文本行数而不计入增删行数。
+
 ## 状态与权限
 
 `.chassis/events/` 是工作流唯一事实源；GitHub 只用于不同实例之间同步代码版本，不决定 Mission、Task、Review 或 Integration 状态。`.chassis/state.yaml` 是可重建投影，不是编辑接口。
 
 Event V2 只携带当前动作的严格 payload。未知字段、未知事件和非法领域转换全部拒绝；CLI 通过确定性 reducer 重放事件，再用 State/transition validator 检查不变量。Config/Event V1 明确拒绝，不做隐式迁移。
+
+Event V2、Trust V1、CheckSpec 和 submission digest 使用当前 Go JSON 编码的精确字节协议，并由 golden vectors 和“签名结构禁止浮点字段”测试冻结。它不是 RFC 8785/JCS；为避免让既有签名整体失效，本版本不会在原协议内替换序列化器。未来若采用 JCS，必须提升协议版本并提供显式迁移或拒绝策略。
 
 所有状态写命令执行同一事务：
 
@@ -87,6 +91,8 @@ Event V2 只携带当前动作的严格 payload。未知字段、未知事件和
 ```
 
 所有正式 Git 副作用都在同一项目写锁和 operation journal 内。恢复只在 Git 精确匹配 journal 的 before/after 时补写状态；不匹配则进入 `CHS-INTEGRITY-BLOCKED`，不会猜测 reset 或 force。每次状态变化增加 revision；状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
+
+项目写锁使用操作系统 advisory lock。`.chassis/lock` 是持久锁文件，PID 和获取时间只用于诊断；锁的所有权由内核和打开的文件描述符决定，不按文件年龄删除，因此长测试不会在五分钟后被另一个 Agent 抢锁，进程退出后锁会由内核释放。
 
 Reviewer 批准和集成都绑定 `submission.HeadCommit`。集成在临时候选 worktree 合并精确 SHA、重跑 Task checks 并保存 merged-tree 证据，checks 通过后才推进正式分支并记录 `integration.applied`。
 
@@ -174,7 +180,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、默认长期且可选 TTL/resource scope 的 credential、授权/Git/publish operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环、可选远端 publish adapter 和四个角色 Skill。当前不实现 credential rotate 命令和完整 Mission 级设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、advisory 项目锁、默认长期且可选 TTL/resource scope 的 credential、授权/Git/publish operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、冻结 Task 预算、本地 Git 闭环、可选远端 publish adapter 和四个角色 Skill。Greenfield 与 Brownfield 的四角色 CLI 生命周期已固化为自动化测试。当前不实现 credential rotate 命令和完整 Mission 级设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 
