@@ -15,7 +15,7 @@ import (
 
 func projectPaths(root string) (configPath, trustPath, statePath, eventsPath string) {
 	control := filepath.Join(root, ".chassis")
-	return filepath.Join(control, "config.yaml"), filepath.Join(control, "trust.yaml"), filepath.Join(control, "state.yaml"), filepath.Join(control, "events.jsonl")
+	return filepath.Join(control, "config.yaml"), filepath.Join(control, "trust.yaml"), filepath.Join(control, "state.yaml"), filepath.Join(control, "events")
 }
 
 func loadProject(root string) (Config, Trust, State, error) {
@@ -25,6 +25,9 @@ func loadProject(root string) (Config, Trust, State, error) {
 	configPath, trustPath, statePath, _ := projectPaths(root)
 	if err := loadYAML(configPath, &config); err != nil {
 		return config, trust, state, err
+	}
+	if config.Version != ConfigVersion {
+		return config, trust, state, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
 	}
 	if err := loadYAML(trustPath, &trust); err != nil {
 		return config, trust, state, err
@@ -87,7 +90,7 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		}
 	}
 	for _, path := range []string{
-		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"),
+		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"), filepath.Join(target, ".chassis", "events"), filepath.Join(target, ".chassis", "operations"),
 		filepath.Join(target, "docs", "missions"), filepath.Join(target, "docs", "tasks"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -129,18 +132,12 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		mode = "brownfield"
 	}
 	config := Config{
-		Version: 1, ProjectID: projectID, Mode: mode, DefaultBranch: branch, ContentBackend: "local-git",
+		Version: ConfigVersion, ProjectID: projectID, Mode: mode, DefaultBranch: branch, ContentBackend: "local-git",
 		WIPLimit: 2, RootFingerprint: keyFingerprint(public), CreatedAt: now,
 	}
 	trust := Trust{Version: 1, ProjectID: projectID, RootPublicKey: root.PublicKey, Grants: []Grant{}, Revocations: []Revocation{}, UpdatedAt: now}
 	if err := signTrust(&trust, private); err != nil {
 		return emptyConfig, emptyState, err
-	}
-	state := State{
-		Version: StateVersion, ProjectID: projectID, Revision: 1, Phase: "design", Baseline: baseline,
-		Artifacts: map[string]ArtifactState{}, Missions: map[string]MissionState{}, Tasks: map[string]TaskState{},
-		Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{},
-		UpdatedAt: now, UpdatedBy: "master",
 	}
 	configPath, trustPath, statePath, eventsPath := projectPaths(target)
 	if err := writeYAMLAtomic(configPath, &config, 0o644); err != nil {
@@ -150,11 +147,16 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		return emptyConfig, emptyState, err
 	}
 	principal := rootPrincipal(root, public, private)
-	event, err := makeEvent(state, "project.initialized", projectID, principal, "")
+	payload := projectInitializedPayload{Config: config, Baseline: baseline}
+	event, err := makeEvent(projectID, 1, "project.initialized", projectID, principal, "", now, payload)
 	if err != nil {
 		return emptyConfig, emptyState, err
 	}
-	if err := appendJSONLine(eventsPath, &event); err != nil {
+	state, err := reduceEvent(config, State{}, event)
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	if err := writeEventAtomic(eventsPath, event); err != nil {
 		return emptyConfig, emptyState, err
 	}
 	if err := writeYAMLAtomic(statePath, &state, 0o644); err != nil {
@@ -190,15 +192,19 @@ func cloneState(state State) (State, error) {
 	return copy, nil
 }
 
-func makeEvent(state State, eventType, resource string, principal Principal, previousDigest string) (Event, error) {
+func makeEvent(projectID string, sequence int64, eventType, resource string, principal Principal, previousDigest string, occurredAt time.Time, payload any) (Event, error) {
 	id, err := newID("EVT")
 	if err != nil {
 		return Event{}, err
 	}
+	payloadData, err := marshalPayload(payload)
+	if err != nil {
+		return Event{}, err
+	}
 	event := Event{
-		Version: EventVersion, ProjectID: state.ProjectID, Sequence: state.Revision, ID: id, Type: eventType,
+		Version: EventVersion, ProjectID: projectID, Sequence: sequence, ID: id, Type: eventType,
 		Actor: principal.Actor, Role: principal.Role, CredentialID: principal.ID, Resource: resource,
-		OccurredAt: time.Now().UTC(), PreviousDigest: previousDigest, State: state,
+		OccurredAt: occurredAt, PreviousDigest: previousDigest, Payload: payloadData,
 	}
 	data, err := eventSigningBytes(event)
 	if err != nil {
@@ -239,12 +245,6 @@ func updateState(root string, principal Principal, eventType, resource string, e
 	if err := mutate(&next); err != nil {
 		return State{}, State{}, Event{}, err
 	}
-	next.Revision = previous.Revision + 1
-	next.UpdatedAt = time.Now().UTC()
-	next.UpdatedBy = principal.Actor
-	if err := validateState(config, next); err != nil {
-		return State{}, State{}, Event{}, err
-	}
 	_, _, statePath, eventsPath := projectPaths(root)
 	events, err := readEvents(eventsPath)
 	if err != nil {
@@ -254,11 +254,19 @@ func updateState(root string, principal Principal, eventType, resource string, e
 	if len(events) > 0 {
 		previousDigest = events[len(events)-1].Digest
 	}
-	event, err := makeEvent(next, eventType, resource, principal, previousDigest)
+	payload, err := eventPayloadFromCandidate(previous, next, eventType, resource)
 	if err != nil {
 		return State{}, State{}, Event{}, err
 	}
-	if err := appendJSONLine(eventsPath, &event); err != nil {
+	event, err := makeEvent(previous.ProjectID, previous.Revision+1, eventType, resource, principal, previousDigest, time.Now().UTC(), payload)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	next, err = reduceEvent(config, previous, event)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	if err := writeEventAtomic(eventsPath, event); err != nil {
 		return State{}, State{}, Event{}, err
 	}
 	if err := writeYAMLAtomic(statePath, &next, 0o644); err != nil {
@@ -291,9 +299,13 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 	}
 	previousDigest := ""
 	var previousOccurredAt time.Time
+	var rebuilt State
 	for index, event := range events {
 		sequence := int64(index + 1)
-		if event.Version != EventVersion || event.ProjectID != config.ProjectID || event.Sequence != sequence || event.State.Revision != sequence {
+		if event.Version != EventVersion {
+			return State{}, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Event V1 is not supported; initialize a V2 project", ExitCode: 40}
+		}
+		if event.ProjectID != config.ProjectID || event.Sequence != sequence {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has invalid envelope", sequence), ExitCode: 40}
 		}
 		if event.PreviousDigest != previousDigest {
@@ -316,9 +328,6 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 		requiredAction, knownEvent := eventRequiredAction(event.Type)
 		if !knownEvent {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has an unknown event type", sequence), ExitCode: 40}
-		}
-		if event.State.UpdatedBy != event.Actor {
-			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d state actor is inconsistent", sequence), ExitCode: 40}
 		}
 		var public []byte
 		if event.Role == "master" {
@@ -347,13 +356,14 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 		if len(public) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(public), []byte(event.Digest), signature) {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d signature is invalid", sequence), ExitCode: 40}
 		}
-		if err := validateState(config, event.State); err != nil {
-			return State{}, fmt.Errorf("event sequence %d contains invalid state: %w", sequence, err)
+		rebuilt, err = reduceEvent(config, rebuilt, event)
+		if err != nil {
+			return State{}, fmt.Errorf("event sequence %d cannot be reduced: %w", sequence, err)
 		}
 		previousDigest = event.Digest
 		previousOccurredAt = event.OccurredAt
 	}
-	return events[len(events)-1].State, nil
+	return rebuilt, nil
 }
 
 func eventRequiredAction(eventType string) (string, bool) {
@@ -434,48 +444,6 @@ func recoverProject(root string) (State, error) {
 		return State{}, err
 	}
 	return rebuilt, nil
-}
-
-func validateState(config Config, state State) error {
-	if state.Version != StateVersion || state.ProjectID != config.ProjectID || state.Revision < 1 {
-		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state version, project, or revision is invalid", ExitCode: 40}
-	}
-	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil {
-		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state collections must not be null", ExitCode: 40}
-	}
-	activeCount := 0
-	for id, mission := range state.Missions {
-		if mission.ID != id {
-			return &CLIError{Code: "CHS-STATE-MISSION", Message: "mission map key does not match mission ID", ExitCode: 40}
-		}
-		if mission.Status == "active" || mission.Status == "blocked" || mission.Status == "acceptance_pending" {
-			activeCount++
-			if state.ActiveMission != id {
-				return &CLIError{Code: "CHS-STATE-MISSION", Message: "active mission pointer is inconsistent", ExitCode: 40}
-			}
-		}
-	}
-	if activeCount > 1 {
-		return &CLIError{Code: "CHS-STATE-MISSION", Message: "only one mission may be active", ExitCode: 40}
-	}
-	for id, task := range state.Tasks {
-		if task.ID != id || state.Missions[task.MissionID].ID == "" {
-			return &CLIError{Code: "CHS-STATE-TASK", Message: "task identity or mission reference is invalid", ExitCode: 40}
-		}
-		for _, dependency := range task.DependsOn {
-			dep, ok := state.Tasks[dependency]
-			if !ok {
-				return &CLIError{Code: "CHS-STATE-TASK", Message: fmt.Sprintf("task %s has unknown dependency %s", id, dependency), ExitCode: 40}
-			}
-			if task.Status == "ready" && dep.Status != "integrated" {
-				return &CLIError{Code: "CHS-STATE-TASK", Message: fmt.Sprintf("ready task %s has unmet dependency %s", id, dependency), ExitCode: 40}
-			}
-		}
-		if containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "integrated", "blocked"}, task.Status) && task.Owner == "" {
-			return &CLIError{Code: "CHS-STATE-TASK", Message: "active task requires an owner: " + id, ExitCode: 40}
-		}
-	}
-	return nil
 }
 
 func containsString(values []string, target string) bool {

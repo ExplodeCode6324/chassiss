@@ -1,12 +1,16 @@
 package app
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	APIVersion        = "chassiss.dev/v1"
-	StateVersion      = 1
+	ConfigVersion     = 2
+	StateVersion      = 2
 	CredentialVersion = 1
-	EventVersion      = 1
+	EventVersion      = 2
 )
 
 type Config struct {
@@ -180,20 +184,20 @@ type State struct {
 }
 
 type Event struct {
-	Version        int       `json:"version"`
-	ProjectID      string    `json:"project_id"`
-	Sequence       int64     `json:"sequence"`
-	ID             string    `json:"id"`
-	Type           string    `json:"type"`
-	Actor          string    `json:"actor"`
-	Role           string    `json:"role"`
-	CredentialID   string    `json:"credential_id"`
-	Resource       string    `json:"resource,omitempty"`
-	OccurredAt     time.Time `json:"occurred_at"`
-	PreviousDigest string    `json:"previous_digest,omitempty"`
-	State          State     `json:"state"`
-	Digest         string    `json:"digest"`
-	Signature      string    `json:"signature"`
+	Version        int             `json:"version"`
+	ProjectID      string          `json:"project_id"`
+	Sequence       int64           `json:"sequence"`
+	ID             string          `json:"id"`
+	Type           string          `json:"type"`
+	Actor          string          `json:"actor"`
+	Role           string          `json:"role"`
+	CredentialID   string          `json:"credential_id"`
+	Resource       string          `json:"resource,omitempty"`
+	OccurredAt     time.Time       `json:"occurred_at"`
+	PreviousDigest string          `json:"previous_digest,omitempty"`
+	Payload        json.RawMessage `json:"payload"`
+	Digest         string          `json:"digest"`
+	Signature      string          `json:"signature"`
 }
 
 type ArtifactMetadata struct {

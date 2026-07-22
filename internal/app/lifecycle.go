@@ -153,6 +153,9 @@ func taskClaimOrAssign(root, taskID, owner string, principal Principal, expected
 	if !ok || task.Status != "ready" || task.MissionID != state.ActiveMission {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-NOT-READY", Message: "task is not ready in the active mission", ExitCode: 10}
 	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
 	if activeWIP(state) >= config.WIPLimit {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-WIP", Message: "project WIP limit is reached", ExitCode: 10}
 	}
@@ -228,6 +231,9 @@ func taskResume(root, taskID string, principal Principal, expected int64) (State
 	if !ok || task.Status != "blocked" || task.PreviousStatus == "" {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-NOT-BLOCKED", Message: "task is not resumable", ExitCode: 10}
 	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
 	task.Status = task.PreviousStatus
 	task.PreviousStatus = ""
 	task.BlockReason = ""
@@ -251,6 +257,9 @@ func workOpen(root, taskID string, principal Principal, expected int64) (State, 
 	task, ok := state.Tasks[taskID]
 	if !ok || task.Owner != principal.Actor || !containsString([]string{"claimed", "changes_requested"}, task.Status) {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-WORK-NOT-ASSIGNED", Message: "task is not assigned to this developer or cannot be opened", ExitCode: 11}
+	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
 	}
 	clean, status, err := gitClean(root)
 	if err != nil {
@@ -290,6 +299,9 @@ func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, e
 	task, ok := state.Tasks[taskID]
 	if !ok || task.Owner != principal.Actor || task.Status != "in_progress" {
 		return State{}, State{}, nil, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
+	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, nil, err
 	}
 	var selected []CheckSpec
 	for _, check := range task.Checks {
@@ -352,6 +364,9 @@ func workCheckpoint(root, taskID, checkpoint string, principal Principal, expect
 	if !ok || task.Owner != principal.Actor || task.Status != "in_progress" {
 		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
 	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
 	task.Checkpoint = checkpoint
 	task.UpdatedAt = timeNow()
 	previous, next, _, err := updateState(root, principal, "work.checkpointed", taskID, expected, func(next *State) error {
@@ -373,6 +388,9 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 	task, ok := state.Tasks[taskID]
 	if !ok || task.Owner != principal.Actor || task.Status != "in_progress" {
 		return State{}, State{}, Submission{}, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
+	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, Submission{}, err
 	}
 	branch, err := currentBranch(root)
 	if err != nil || branch != task.Branch {
@@ -522,6 +540,9 @@ func recordReview(root, submissionID, verdict, report string, principal Principa
 	if submission.Status != "review_pending" {
 		return State{}, State{}, Review{}, &CLIError{Code: "CHS-REVIEW-STATE", Message: "submission is not pending review", ExitCode: 10}
 	}
+	if err := requireMissionExecutable(state, state.Tasks[submission.TaskID].MissionID); err != nil {
+		return State{}, State{}, Review{}, err
+	}
 	id, err := newID("REV")
 	if err != nil {
 		return State{}, State{}, Review{}, err
@@ -565,6 +586,9 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission is not approved", ExitCode: 10}
 	}
 	task := state.Tasks[submission.TaskID]
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, Integration{}, err
+	}
 	review := state.Reviews[submission.ReviewID]
 	if review.SubmissionDigest != submission.Digest || review.Verdict != "approve" || review.Reviewer != principal.Actor {
 		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-REVIEW", Message: "integration must be performed by the approving Reviewer against the same digest", ExitCode: 11}
@@ -717,6 +741,9 @@ func stateSummary(state State) map[string]any {
 
 func nextActions(state State, role, actor string) []string {
 	actions := []string{}
+	if state.ActiveMission != "" && state.Missions[state.ActiveMission].Status == "blocked" && containsString([]string{"developer", "reviewer"}, role) {
+		return actions
+	}
 	switch role {
 	case "designer":
 		if state.Artifacts["requirements"].Status == "" {

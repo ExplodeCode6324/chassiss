@@ -1,7 +1,7 @@
 package app
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -86,53 +86,63 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
-func appendJSONLine(path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
+func writeEventAtomic(eventsDir string, event Event) error {
+	if event.Sequence < 1 || event.ID == "" {
+		return &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "event file identity is invalid", ExitCode: 40}
+	}
+	name := fmt.Sprintf("%020d-%s.json", event.Sequence, event.ID)
+	path := filepath.Join(eventsDir, name)
+	if _, err := os.Stat(path); err == nil {
+		return &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "event file already exists", ExitCode: 40}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	return file.Sync()
+	return writeJSONAtomic(path, event, 0o644)
 }
 
 func readEvents(path string) ([]Event, error) {
-	file, err := os.Open(path)
+	entries, err := os.ReadDir(path)
 	if os.IsNotExist(err) {
 		return []Event{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	var events []Event
-	scanner := bufio.NewScanner(file)
-	buffer := make([]byte, 64*1024)
-	scanner.Buffer(buffer, 8*1024*1024)
-	line := 0
-	for scanner.Scan() {
-		line++
-		text := strings.TrimSpace(scanner.Text())
-		if text == "" {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	var events []Event
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(path, name))
+		if err != nil {
+			return nil, err
+		}
 		var event Event
-		if err := json.Unmarshal([]byte(text), &event); err != nil {
-			return nil, fmt.Errorf("parse event line %d: %w", line, err)
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&event); err != nil {
+			return nil, fmt.Errorf("parse event %s: %w", name, err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return nil, fmt.Errorf("parse event %s: trailing data", name)
 		}
 		events = append(events, event)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return events, nil
 }

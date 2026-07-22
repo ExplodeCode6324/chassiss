@@ -29,7 +29,7 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 
 优先级高：
 
-- event verifier 已验证链、签名、role action 和状态合法性，但尚未按每种 event 做完整的确定性 transition replay。持有合法角色私钥的恶意主体仍可能在自己的 action 名下离线签出越权 state delta。要抵御这一点，需要逐事件 delta validator，或让私钥不可直接被 Agent 读取并通过独立 broker 执行领域命令。
+- Event V2 已改为严格最小 payload、确定性 reducer 和 State/transition validator；持有合法角色私钥的主体不能再借自己的 action 写入任意 State delta。仍需通过 operation journal 把 Git 副作用纳入同一恢复协议。
 - Git checkout/commit/merge 与 state/event 写入尚未处于同一个跨介质事务锁内。极窄并发窗口或磁盘故障可能留下“Git 已变化、state CAS 失败”的可恢复不一致。下一版应增加 operation journal、全流程锁和确定性补偿/恢复命令。
 - integration 在正式分支已被其他 Task 推进时只依赖 Git merge 成功，不会在合并结果上重跑 Task checks。并行 Task 应引入临时 integration tree、合并后 checks 和 baseline policy。
 - snapshot digest 目前绑定路径和普通文件内容，但没有完整绑定 symlink 目标、文件模式和其他 Git index 元数据。allowed-path 与快照检查需要改为 Git tree/index 级实现。
@@ -39,9 +39,9 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 
 - 长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。下一版可增加 rotate、TTL、Task/submission scope 和 broker。
 - `trust.yaml` 更新与 credential 文件写出不是单个事务，且 trust version 与 workflow revision 分离。应增加授权 journal、原子签发协议和独立 trust revision 输出。
-- event 每条保存完整 State 快照，长期项目体积增长快。可改为签名 delta + 周期 snapshot。
+- Event V2 不再保存完整 State；`state.yaml` 是事件序列的可重建投影。长期项目如出现重放性能问题，再增加带链锚的周期 snapshot。
 - acceptance command 使用安全但有限的 argv 切分，不支持引号、环境变量或管道。应改为模板中的结构化 argv/env/timeout，而不是默认开放 shell。
-- Mission block 目前只改变 Mission 状态，不会自动暂停已打开的 Task；需要 Master 决定传播语义。
+- Mission block 保留 Task 原状态，但已关闭 Developer、Reviewer 和 integration 的推进许可；恢复 Mission 后合法 Task 才能继续。
 - 设计变更、Task release/supersede、transactional dry-run、credential rotate/TTL 和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
 
 ## 建议的下一步

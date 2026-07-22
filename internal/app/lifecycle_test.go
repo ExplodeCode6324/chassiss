@@ -80,3 +80,29 @@ func TestNextActionsRequireChecksAndOfferMissionAcceptance(t *testing.T) {
 		t.Fatalf("developer actions = %#v, want %#v", got, want)
 	}
 }
+
+func TestMissionBlockDisablesDeveloperAndReviewerProgress(t *testing.T) {
+	state := State{
+		ActiveMission: "M001",
+		Missions:      map[string]MissionState{"M001": {ID: "M001", Status: "blocked", TaskIDs: []string{"M001-T001"}, PreviousStatus: "active", BlockReason: "stop"}},
+		Tasks: map[string]TaskState{"M001-T001": {
+			ID: "M001-T001", MissionID: "M001", Status: "in_progress", Owner: "agent:developer",
+		}},
+		Submissions: map[string]Submission{"SUB-1": {ID: "SUB-1", TaskID: "M001-T001", Actor: "agent:developer", Status: "review_pending"}},
+	}
+	if err := requireMissionExecutable(state, "M001"); err == nil {
+		t.Fatal("blocked mission was treated as executable")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-MISSION-BLOCKED" {
+		t.Fatalf("error = %#v, want CHS-MISSION-BLOCKED", err)
+	}
+	if got := nextActions(state, "developer", "agent:developer"); len(got) != 0 {
+		t.Fatalf("blocked developer actions = %#v, want none", got)
+	}
+	if got := nextActions(state, "reviewer", "agent:reviewer"); len(got) != 0 {
+		t.Fatalf("blocked reviewer actions = %#v, want none", got)
+	}
+	want := []string{"mission.resume M001"}
+	if got := nextActions(state, "orchestrator", "agent:orchestrator"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocked orchestrator actions = %#v, want %#v", got, want)
+	}
+}
