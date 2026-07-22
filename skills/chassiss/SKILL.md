@@ -7,13 +7,22 @@ description: Bootstrap and operate any CHASSISS-managed project through the cred
 
 Treat the trusted CLI as the execution and policy authority. Let the credential select the actor, role, grants, and resource scopes; never self-declare or substitute a role.
 
+## CLI
+
+Resolve executable paths relative to the directory containing this `SKILL.md`, never relative to the managed project or the current working directory.
+
+- Linux `x86_64`: `bin/linux-amd64/chassiss`
+- Linux `aarch64` or `arm64`: `bin/linux-arm64/chassiss`
+
+Use `uname -m` only to select the matching bundled executable. Do not substitute a `chassiss` found on `PATH` when a matching bundled binary exists.
+
 ## Bootstrap
 
 1. Locate the project root and the credential assigned by Master.
 2. Run:
 
    ```text
-   chassiss --json --root <project> --credential <credential> bootstrap
+   <skill-dir>/bin/linux-<arch>/chassiss --json --root <project> --credential <credential> bootstrap
    ```
 
 3. Read `principal`, `policy`, `capabilities`, `available_actions`, and `context_requests` from the JSON result.
