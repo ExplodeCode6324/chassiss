@@ -123,7 +123,8 @@ func validateState(config Config, state State) error {
 	worktreeDigests := map[string]string{}
 	for id, task := range state.Tasks {
 		mission, missionExists := state.Missions[task.MissionID]
-		if task.ID != id || !missionExists || !containsString(mission.TaskIDs, id) || task.ArtifactID != id {
+		listed := missionExists && containsString(mission.TaskIDs, id)
+		if task.ID != id || !missionExists || task.ArtifactID != id || (!listed && task.Status != "planned") {
 			return stateError("CHS-STATE-TASK", "task identity or mission membership is invalid: "+id)
 		}
 		if _, ok := validTaskStatuses[task.Status]; !ok {
@@ -137,7 +138,7 @@ func validateState(config Config, state State) error {
 			if !ok || dep.MissionID != task.MissionID {
 				return stateError("CHS-STATE-TASK", fmt.Sprintf("task %s has invalid dependency %s", id, dependency))
 			}
-			if task.Status == "ready" && dep.Status != "integrated" {
+			if task.Status == "ready" && !dependencySatisfied(state, dependency) {
 				return stateError("CHS-STATE-TASK", fmt.Sprintf("ready task %s has unmet dependency %s", id, dependency))
 			}
 		}
@@ -178,6 +179,23 @@ func validateState(config Config, state State) error {
 		}
 		if task.Status == "blocked" && (task.PreviousStatus == "" || strings.TrimSpace(task.BlockReason) == "") {
 			return stateError("CHS-STATE-TASK", "blocked task lacks resumable evidence: "+id)
+		}
+		if task.Status == "cancelled" && strings.TrimSpace(task.ClosureReason) == "" {
+			return stateError("CHS-STATE-TASK", "cancelled task lacks a closure reason: "+id)
+		}
+		if task.Status == "superseded" {
+			replacement, ok := state.Tasks[task.ReplacementID]
+			if !ok || replacement.SupersedesID != task.ID || replacement.MissionID != task.MissionID {
+				return stateError("CHS-STATE-TASK", "superseded task lacks a valid replacement: "+id)
+			}
+		} else if task.ReplacementID != "" {
+			return stateError("CHS-STATE-TASK", "non-superseded task names a replacement: "+id)
+		}
+		if task.SupersedesID != "" {
+			original, ok := state.Tasks[task.SupersedesID]
+			if !ok || original.ReplacementID != task.ID || original.Status != "superseded" {
+				return stateError("CHS-STATE-TASK", "replacement task has an invalid predecessor: "+id)
+			}
 		}
 		if isActiveTaskStatus(task.Status) {
 			activeTasks = append(activeTasks, task)
@@ -293,10 +311,24 @@ func validateTaskDAGs(state State) error {
 			visited[id] = true
 			return nil
 		}
-		for _, id := range mission.TaskIDs {
+		for id, task := range state.Tasks {
+			if task.MissionID != mission.ID {
+				continue
+			}
 			if err := visit(id); err != nil {
 				return err
 			}
+		}
+	}
+	for id := range state.Tasks {
+		seen := map[string]bool{}
+		current := id
+		for current != "" {
+			if seen[current] {
+				return stateError("CHS-STATE-TASK-CYCLE", "task replacement graph contains a cycle at "+current)
+			}
+			seen[current] = true
+			current = state.Tasks[current].ReplacementID
 		}
 	}
 	return nil

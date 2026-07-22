@@ -37,4 +37,4 @@ Do not call `artifact accept|reject`, Mission or Task scheduling commands, Devel
 
 ## Stop
 
-Stop and ask Master when intent, scope, success evidence, or a material architecture decision is unresolved. Stop when Tasks cannot be made atomic, their write scopes necessarily conflict, or an accepted artifact must change. Never rewrite a frozen contract in place or assume CLI rejection is permission to bypass it.
+Stop and ask Master when intent, scope, success evidence, or a material architecture decision is unresolved. Stop when Tasks cannot be made atomic or their write scopes necessarily conflict. If an accepted Task contract must change, create and submit a new Task ID for Master acceptance so Orchestrator can supersede the old Task; never rewrite the frozen artifact in place or assume CLI rejection is permission to bypass it.

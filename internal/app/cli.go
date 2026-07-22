@@ -149,6 +149,8 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 		"task list":                 {flags: []string{"ready", "active", "blocked", "review"}},
 		"task assign":               {values: []string{"owner"}},
 		"task block":                {values: []string{"reason"}},
+		"task cancel":               {values: []string{"reason"}},
+		"task supersede":            {values: []string{"replacement"}},
 		"work check":                {values: []string{"id"}, flags: []string{"all"}},
 		"work checkpoint":           {values: []string{"file"}},
 		"work submit":               {values: []string{"file"}},
@@ -605,6 +607,56 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			return Response{}, err
 		}
 		return mutatingResponse(previous, next, task, principal), nil
+	case "task release":
+		id, err := exactlyOne(parsed.positionals, "task release requires a task ID")
+		if err != nil {
+			return Response{}, err
+		}
+		principal, err := principalFor("task.release")
+		if err != nil {
+			return Response{}, err
+		}
+		previous, next, task, err := taskRelease(root, id, principal, options.expected)
+		if err != nil {
+			return Response{}, err
+		}
+		return mutatingResponse(previous, next, task, principal), nil
+	case "task cancel":
+		id, err := exactlyOne(parsed.positionals, "task cancel requires a task ID")
+		if err != nil {
+			return Response{}, err
+		}
+		reason := parsed.values["reason"]
+		if reason == "" {
+			return Response{}, usageError("task cancel requires --reason")
+		}
+		principal, err := principalFor("task.cancel")
+		if err != nil {
+			return Response{}, err
+		}
+		previous, next, task, err := taskCancel(root, id, reason, principal, options.expected)
+		if err != nil {
+			return Response{}, err
+		}
+		return mutatingResponse(previous, next, task, principal), nil
+	case "task supersede":
+		id, err := exactlyOne(parsed.positionals, "task supersede requires a task ID")
+		if err != nil {
+			return Response{}, err
+		}
+		replacement := parsed.values["replacement"]
+		if replacement == "" {
+			return Response{}, usageError("task supersede requires --replacement")
+		}
+		principal, err := principalFor("task.supersede")
+		if err != nil {
+			return Response{}, err
+		}
+		previous, next, task, err := taskSupersede(root, id, replacement, principal, options.expected)
+		if err != nil {
+			return Response{}, err
+		}
+		return mutatingResponse(previous, next, task, principal), nil
 
 	case "work open":
 		id, err := exactlyOne(parsed.positionals, "work open requires a task ID")
@@ -793,7 +845,7 @@ func isWriteCommand(command string) bool {
 	return containsString([]string{
 		"auth master-init", "auth issue", "auth revoke", "project init", "recover", "template get",
 		"artifact submit", "artifact accept", "artifact reject", "mission activate", "mission block", "mission resume", "mission submit-acceptance", "mission accept",
-		"task claim", "task assign", "task block", "task resume", "work open", "work check", "work checkpoint", "work submit", "work block",
+		"task claim", "task assign", "task block", "task resume", "task release", "task cancel", "task supersede", "work open", "work check", "work checkpoint", "work submit", "work block",
 		"review approve", "review request-changes", "integrate apply",
 	}, command)
 }
@@ -1031,7 +1083,7 @@ Core commands:
   template list|get
   artifact check|submit|list|context|accept|reject
   mission list|context|activate|block|resume|submit-acceptance|accept
-  task list|context|claim|assign|block|resume
+  task list|context|claim|assign|block|resume|release|cancel|supersede
   work open|context|status|diff|check|checkpoint|submit|block
   review list|context|check|approve|request-changes
   integrate check|apply

@@ -138,6 +138,9 @@ type TaskState struct {
 	BlockReason    string                 `yaml:"block_reason,omitempty" json:"block_reason,omitempty"`
 	PreviousStatus string                 `yaml:"previous_status,omitempty" json:"previous_status,omitempty"`
 	SubmissionID   string                 `yaml:"submission_id,omitempty" json:"submission_id,omitempty"`
+	ReplacementID  string                 `yaml:"replacement_id,omitempty" json:"replacement_id,omitempty"`
+	SupersedesID   string                 `yaml:"supersedes_id,omitempty" json:"supersedes_id,omitempty"`
+	ClosureReason  string                 `yaml:"closure_reason,omitempty" json:"closure_reason,omitempty"`
 	UpdatedAt      time.Time              `yaml:"updated_at" json:"updated_at"`
 }
 

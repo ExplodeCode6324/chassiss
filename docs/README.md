@@ -171,7 +171,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation、Task supersede/release 和完整设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、长期 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential TTL/rotation 和完整 Mission 级设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 

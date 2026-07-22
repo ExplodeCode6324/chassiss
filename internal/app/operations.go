@@ -65,6 +65,13 @@ type integrationOperationIntent struct {
 	TaskWorktreePath string `json:"task_worktree_path"`
 }
 
+type taskReleaseOperationIntent struct {
+	TaskID       string `json:"task_id"`
+	Branch       string `json:"branch"`
+	Baseline     string `json:"baseline"`
+	WorktreePath string `json:"worktree_path"`
+}
+
 // operationFaultHook is used only by crash-injection tests. A non-nil error
 // simulates process loss: the journal is intentionally left for recover.
 var operationFaultHook func(point string) error
@@ -295,6 +302,12 @@ func recoverOperationsLocked(root string, config Config) error {
 				return err
 			}
 		case reflect.DeepEqual(current, journal.GitBefore):
+			if journal.Action == "task.release" {
+				if err := removeOperationJournal(root, journal.ID); err != nil {
+					return err
+				}
+				continue
+			}
 			if journal.Action == "work.open" && journal.Event != nil {
 				applied, err := recoverWorkOpenGit(root, journal)
 				if err != nil {
@@ -451,7 +464,32 @@ func finalizeRecoveredOperation(root string, journal OperationJournal) error {
 			return err
 		}
 	}
+	if journal.Action == "task.release" {
+		var intent taskReleaseOperationIntent
+		if err := decodePayload(journal.Intent, &intent); err != nil {
+			return err
+		}
+		if err := cleanupReleasedTaskBranch(root, intent); err != nil {
+			return err
+		}
+	}
 	return removeOperationJournal(root, journal.ID)
+}
+
+func cleanupReleasedTaskBranch(root string, intent taskReleaseOperationIntent) error {
+	if intent.Branch == "" || intent.Baseline == "" {
+		return &CLIError{Code: "CHS-OPERATION-INVALID", Message: "task release cleanup intent is incomplete", ExitCode: 40}
+	}
+	ref := "refs/heads/" + intent.Branch
+	head, err := git(root, "rev-parse", "--verify", ref)
+	if err != nil {
+		return nil
+	}
+	if head != intent.Baseline {
+		return &CLIError{Code: "CHS-INTEGRITY-BLOCKED", Message: "released task branch moved before cleanup", ExitCode: 40, Remedy: []string{"do not reset or force the task branch", "inspect the task release operation journal"}}
+	}
+	_, err = git(root, "update-ref", "-d", ref, intent.Baseline)
+	return err
 }
 
 func cleanupIntegrationWorktrees(root string, intent integrationOperationIntent, payload integrationAppliedPayload) error {
@@ -586,6 +624,8 @@ func operationTaskWorktreePath(action, resource string, state State) string {
 	case "work.open":
 		return taskWorktreeRelativePath(resource)
 	case "work.submit":
+		return state.Tasks[resource].WorktreePath
+	case "task.release":
 		return state.Tasks[resource].WorktreePath
 	default:
 		return ""

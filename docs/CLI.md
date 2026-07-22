@@ -74,6 +74,9 @@ chassiss task claim <task-id>
 chassiss task assign <task-id> --owner <actor>
 chassiss task block <task-id> --reason <text>
 chassiss task resume <task-id>
+chassiss task release <task-id>
+chassiss task cancel <task-id> --reason <text>
+chassiss task supersede <task-id> --replacement <new-task-id>
 ```
 
 `activate` 检查 Requirements、Architecture、Mission 和全部 Task 都已被正确接受，Task 图无环且写入范围可调度。
@@ -81,6 +84,8 @@ chassiss task resume <task-id>
 `claim/assign` 原子检查 Task 状态、依赖、WIP、路径冲突和 baseline；owner 必须在当前 trust 中拥有未回收的 Developer grant，事件会记录该 grant。后续 credential 轮换只要 actor 不变即可继续。
 
 `task block` 释放该 Task 的 WIP 和路径调度占用，但保留冻结状态。`task resume` 会重新检查依赖、WIP、路径冲突、owner/branch/baseline、worktree，以及 review_pending/changes_requested/approved 的 submission 与 Review 证据；任何一项过期都拒绝恢复旧状态。
+
+`task release` 仅供 Orchestrator 释放没有任何 submission 的 claimed/in-progress Task；worktree 必须干净、Task branch 必须仍等于 baseline。CLI 通过 operation journal 删除 linked worktree 和精确匹配的 Task branch，再把 Task 恢复为 ready，不丢弃工作。`task cancel` 只能由 Master 执行，保留现有 branch/worktree 作为取证并记录理由。`task supersede` 要求 replacement 是同 Mission 下已由 Master 接受、尚未加入执行图的新 Task；旧 Task 永久标记 superseded，新 Task 使用新 ID 和冻结契约，依赖通过替换链解析。
 
 ## Developer 工作
 
@@ -157,11 +162,11 @@ artifact check
 artifact submit
 artifact accept/reject
 mission list/context/activate/block/resume/submit-acceptance/accept
-task list/context/claim/assign/block/resume
+task list/context/claim/assign/block/resume/release/cancel/supersede
 work open/check/checkpoint/submit
 work context/status/diff/block
 review list/context/check/approve/request-changes
 integrate check/apply
 ```
 
-`publish` adapter、credential rotation/TTL、Task supersede/release 和可证明无副作用的 transactional dry-run 留待后续版本。
+`publish` adapter、credential rotation/TTL 和可证明无副作用的 transactional dry-run 留待后续版本。

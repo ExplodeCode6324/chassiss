@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -199,6 +200,46 @@ Create %s.
 	if branch, _ := currentBranch(project); branch != "main" {
 		t.Fatalf("opening Tasks switched primary worktree to %q", branch)
 	}
+	releasedPath, releasedBranch := rootB, taskB.Branch
+	state = mustProjectState(t, project)
+	operationFaultHook = func(point string) error {
+		if point == "state_committed" {
+			return errors.New("injected crash before release cleanup")
+		}
+		return nil
+	}
+	_, _, _, releaseErr := taskRelease(project, taskB.ID, orchestrator, state.Revision)
+	operationFaultHook = nil
+	if releaseErr == nil {
+		t.Fatal("injected release unexpectedly completed")
+	}
+	recovered, err := recoverProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released := recovered.Tasks[taskB.ID]; released.Status != "ready" || released.Owner != "" {
+		t.Fatalf("recovered released Task = %#v", released)
+	}
+	if _, err := os.Stat(releasedPath); !os.IsNotExist(err) {
+		t.Fatalf("released worktree still exists: %v", err)
+	}
+	if _, err := git(project, "rev-parse", "--verify", "refs/heads/"+releasedBranch); err == nil {
+		t.Fatal("released baseline-only Task branch was retained")
+	}
+	state = mustProjectState(t, project)
+	if _, _, _, err := taskClaimOrAssign(project, taskB.ID, developerB.Actor, orchestrator, state.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	if _, _, _, err := workOpen(project, taskB.ID, developerB, state.Revision); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	taskA, taskB = state.Tasks["M001-T001"], state.Tasks["M001-T002"]
+	rootB, err = taskWorktreeRoot(project, taskB)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(rootA, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +256,12 @@ Create %s.
 	}
 	if !reflect.DeepEqual(filesA, []string{"a.txt"}) || !reflect.DeepEqual(filesB, []string{"b.txt"}) {
 		t.Fatalf("worktree changes leaked: A=%#v B=%#v", filesA, filesB)
+	}
+	state = mustProjectState(t, project)
+	if _, _, _, err := taskRelease(project, taskA.ID, orchestrator, state.Revision); err == nil {
+		t.Fatal("release discarded dirty Task work")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-TASK-RELEASE-CHANGES" {
+		t.Fatalf("dirty release error = %#v", err)
 	}
 
 	config, _, _, err := loadProject(project)
@@ -244,5 +291,50 @@ Create %s.
 		t.Fatal("check accepted a moved task worktree")
 	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-WORKTREE-MISSING" {
 		t.Fatalf("moved worktree error = %#v, want CHS-WORKTREE-MISSING", err)
+	}
+
+	replacementDocument := fmt.Sprintf(`---
+kind: task
+id: M001-T003
+mission_id: M001
+requirements_digest: %s
+architecture_digest: %s
+depends_on: []
+allowed_paths:
+  - a-v2.txt
+acceptance_checks:
+  - id: CHECK-001
+    argv: ["true"]
+    cwd: "."
+    env: {}
+    timeout_seconds: 10
+---
+# Task M001-T003
+## Objective
+Replace the frozen contract of M001-T001.
+## Inputs and Assumptions
+- The old Task remains immutable.
+## Forbidden and Out of Scope
+- Editing the old Task contract.
+## Deliverables
+- a-v2.txt
+## Stop Conditions
+- Scope change.
+## Reviewer Attention
+- Supersede linkage.
+`, requirementsState.Digest, architectureState.Digest)
+	writeTestArtifact(t, project, "docs/tasks/M001-T003.md", replacementDocument)
+	submitAndAcceptTestArtifact(t, project, "docs/tasks/M001-T003.md", designer, master)
+	state = mustProjectState(t, project)
+	if _, next, oldTask, err := taskSupersede(project, taskA.ID, "M001-T003", orchestrator, state.Revision); err != nil {
+		t.Fatal(err)
+	} else if oldTask.Status != "superseded" || oldTask.ReplacementID != "M001-T003" || next.Tasks["M001-T003"].Status != "ready" || next.Tasks["M001-T003"].SupersedesID != taskA.ID {
+		t.Fatalf("supersede state: old=%#v new=%#v", oldTask, next.Tasks["M001-T003"])
+	}
+	state = mustProjectState(t, project)
+	if _, next, cancelled, err := taskCancel(project, "M001-T003", "Master waived replacement", master, state.Revision); err != nil {
+		t.Fatal(err)
+	} else if cancelled.Status != "cancelled" || cancelled.ClosureReason == "" || !dependencySatisfied(next, taskA.ID) {
+		t.Fatalf("cancelled replacement state = %#v", cancelled)
 	}
 }

@@ -18,7 +18,7 @@ Use the Orchestrator credential issued for this project and actor. It remains va
 Use these lifecycle commands:
 
 - `mission list|context|activate|submit-acceptance`
-- `task list|context|claim|assign|block|resume`
+- `task list|context|claim|assign|block|resume|release|supersede`
 - `status`, `next`, `doctor`, `verify`, `recover`, and `explain`
 
 Do not edit design documents or product files, open Developer work, approve submissions, or integrate changes. Never edit `.chassis/` or convert an unverified result into a state fact.
@@ -29,8 +29,9 @@ Do not edit design documents or product files, open Developer work, approve subm
 2. Select only ready Tasks. Let the CLI enforce dependencies, WIP, baseline, actor ownership, active Developer grant, and overlapping paths.
 3. Use `claim` only when the Orchestrator actor also has an active Developer grant and is the intended Developer actor; otherwise use `assign --owner` with that Developer's exact actor ID.
 4. Treat `task block` as releasing WIP/path scheduling occupancy. Before `task resume`, expect the CLI to reacquire those constraints and revalidate worktree/submission/review evidence; do not bypass a rejected resume.
-5. Route each submission to a Reviewer whose actor differs from its author.
-6. After every required Task is integrated, submit concrete Mission evidence and wait for Master acceptance.
+5. Use `task release` only for an unsubmitted Task whose worktree is clean at baseline. If a frozen contract must change, wait for Designer to submit and Master to accept a new Task ID, then use `task supersede --replacement`; never edit the old Task.
+6. Route each submission to a Reviewer whose actor differs from its author.
+7. After every required Task is integrated, cancelled by Master, or superseded by an accepted replacement, submit concrete Mission evidence and wait for Master acceptance.
 
 ## Stop
 

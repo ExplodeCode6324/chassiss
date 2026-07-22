@@ -42,7 +42,7 @@ func activateMission(root, missionID string, principal Principal, expected int64
 		next.Phase = "execution"
 		for _, taskID := range mission.TaskIDs {
 			task := next.Tasks[taskID]
-			if len(task.DependsOn) == 0 {
+			if taskDependenciesSatisfied(*next, task) {
 				task.Status = "ready"
 			}
 			task.UpdatedAt = timeNow()
@@ -113,6 +113,35 @@ func activeWIP(state State) int {
 		}
 	}
 	return count
+}
+
+func dependencySatisfied(state State, taskID string) bool {
+	seen := map[string]bool{}
+	for taskID != "" && !seen[taskID] {
+		seen[taskID] = true
+		task, ok := state.Tasks[taskID]
+		if !ok {
+			return false
+		}
+		switch task.Status {
+		case "integrated", "cancelled":
+			return true
+		case "superseded":
+			taskID = task.ReplacementID
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func taskDependenciesSatisfied(state State, task TaskState) bool {
+	for _, dependency := range task.DependsOn {
+		if !dependencySatisfied(state, dependency) {
+			return false
+		}
+	}
+	return true
 }
 
 func literalPatternRoot(pattern string) string {
@@ -265,7 +294,7 @@ func validateTaskResumeState(config Config, state State, taskID string) error {
 	}
 	if target != "planned" {
 		for _, dependency := range task.DependsOn {
-			if state.Tasks[dependency].Status != "integrated" {
+			if !dependencySatisfied(state, dependency) {
 				return &CLIError{Code: "CHS-TASK-RESUME-DEPENDENCY", Message: "task dependency is no longer integrated: " + dependency, ExitCode: 10}
 			}
 		}
@@ -341,6 +370,154 @@ func validateTaskResumeGit(root string, state State, taskID string) error {
 		}
 	}
 	return nil
+}
+
+func taskRelease(root, taskID string, principal Principal, expected int64) (State, State, TaskState, error) {
+	_, _, state, err := loadProject(root)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	expected, err = effectiveExpected(state, expected)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	task, ok := state.Tasks[taskID]
+	if !ok {
+		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-NOT-FOUND", Message: "task not found", ExitCode: 10}
+	}
+	intent := taskReleaseOperationIntent{TaskID: taskID, Branch: task.Branch, Baseline: task.Baseline, WorktreePath: task.WorktreePath}
+	previous, next, _, err := executeGitOperation(root, "task.release", "task.released", taskID, principal, expected, intent, func(current State) (preparedOperation, error) {
+		currentTask, ok := current.Tasks[taskID]
+		resumableBlocked := currentTask.Status == "blocked" && containsString([]string{"claimed", "in_progress"}, currentTask.PreviousStatus)
+		if !ok || (!containsString([]string{"claimed", "in_progress"}, currentTask.Status) && !resumableBlocked) || currentTask.SubmissionID != "" {
+			return preparedOperation{}, &CLIError{Code: "CHS-TASK-RELEASE-STATE", Message: "only an unsubmitted claimed or in-progress Task can be released", ExitCode: 10}
+		}
+		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
+			return preparedOperation{}, err
+		}
+		for _, submission := range current.Submissions {
+			if submission.TaskID == taskID {
+				return preparedOperation{}, &CLIError{Code: "CHS-TASK-RELEASE-SUBMISSION", Message: "Task with a submission cannot be released", ExitCode: 10}
+			}
+		}
+		branchHead, branchErr := git(root, "rev-parse", "--verify", "refs/heads/"+currentTask.Branch)
+		if branchErr == nil && branchHead != currentTask.Baseline {
+			return preparedOperation{}, &CLIError{Code: "CHS-TASK-RELEASE-CHANGES", Message: "Task branch contains commits beyond its baseline", ExitCode: 10, Remedy: []string{"submit the Task or preserve it as blocked"}}
+		}
+		if branchErr != nil && currentTask.WorktreePath != "" {
+			return preparedOperation{}, &CLIError{Code: "CHS-TASK-RELEASE-BRANCH", Message: "bound Task branch is missing", ExitCode: 40}
+		}
+		if currentTask.WorktreePath != "" {
+			worktreeRoot, err := taskWorktreeRoot(root, currentTask)
+			if err != nil {
+				return preparedOperation{}, err
+			}
+			clean, status, err := gitClean(worktreeRoot)
+			if err != nil {
+				return preparedOperation{}, err
+			}
+			head, err := gitHead(worktreeRoot)
+			if err != nil || !clean || head != currentTask.Baseline {
+				return preparedOperation{}, &CLIError{Code: "CHS-TASK-RELEASE-CHANGES", Message: "Task worktree must be clean at its baseline before release: " + status, ExitCode: 10, Remedy: []string{"submit the Task or preserve it as blocked"}}
+			}
+		}
+		after, err := captureGitOperationState(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		after.WorktreePath = currentTask.WorktreePath
+		currentIntent := taskReleaseOperationIntent{TaskID: taskID, Branch: currentTask.Branch, Baseline: currentTask.Baseline, WorktreePath: currentTask.WorktreePath}
+		return preparedOperation{
+			Payload:  taskPayload{TaskID: taskID},
+			GitAfter: after,
+			ApplyGit: func() error {
+				if currentTask.WorktreePath == "" {
+					return nil
+				}
+				worktreePath, err := pathWithin(root, currentTask.WorktreePath)
+				if err != nil {
+					return err
+				}
+				_, err = git(root, "worktree", "remove", worktreePath)
+				return err
+			},
+			Finalize: func() error { return cleanupReleasedTaskBranch(root, currentIntent) },
+		}, nil
+	})
+	if err == nil {
+		task = next.Tasks[taskID]
+	}
+	return previous, next, task, err
+}
+
+func taskCancel(root, taskID, reason string, principal Principal, expected int64) (State, State, TaskState, error) {
+	_, _, state, err := loadProject(root)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	expected, err = effectiveExpected(state, expected)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	task, ok := state.Tasks[taskID]
+	if !ok || isClosedTaskStatus(task.Status) || strings.TrimSpace(reason) == "" {
+		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-CANCEL-STATE", Message: "Task is not cancellable or lacks a reason", ExitCode: 10}
+	}
+	task.Status = "cancelled"
+	task.ClosureReason = reason
+	task.BlockReason, task.PreviousStatus = "", ""
+	task.UpdatedAt = timeNow()
+	previous, next, _, err := updateState(root, principal, "task.cancelled", taskID, expected, func(next *State) error {
+		next.Tasks[taskID] = task
+		for otherID, other := range next.Tasks {
+			if other.Status == "planned" && other.MissionID == next.ActiveMission && containsString(next.Missions[other.MissionID].TaskIDs, otherID) && taskDependenciesSatisfied(*next, other) {
+				other.Status = "ready"
+				other.UpdatedAt = timeNow()
+				next.Tasks[otherID] = other
+			}
+		}
+		return nil
+	})
+	return previous, next, task, err
+}
+
+func taskSupersede(root, taskID, replacementID string, principal Principal, expected int64) (State, State, TaskState, error) {
+	_, _, state, err := loadProject(root)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	expected, err = effectiveExpected(state, expected)
+	if err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	task, ok := state.Tasks[taskID]
+	replacement, replacementOK := state.Tasks[replacementID]
+	mission := state.Missions[task.MissionID]
+	if !ok || !replacementOK || isClosedTaskStatus(task.Status) || replacementID == taskID || task.ReplacementID != "" || replacement.MissionID != task.MissionID || replacement.Status != "planned" || replacement.SupersedesID != "" || containsString(mission.TaskIDs, replacementID) || state.Artifacts[replacementID].Status != "accepted" || containsString(replacement.DependsOn, taskID) {
+		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-TASK-SUPERSEDE-STATE", Message: "replacement must be a detached, accepted, planned Task in the same Mission", ExitCode: 10}
+	}
+	if err := requireMissionExecutable(state, task.MissionID); err != nil {
+		return State{}, State{}, TaskState{}, err
+	}
+	task.Status = "superseded"
+	task.ReplacementID = replacementID
+	task.BlockReason, task.PreviousStatus = "", ""
+	task.UpdatedAt = timeNow()
+	replacement.SupersedesID = taskID
+	if taskDependenciesSatisfied(state, replacement) {
+		replacement.Status = "ready"
+	}
+	replacement.UpdatedAt = timeNow()
+	previous, next, _, err := updateState(root, principal, "task.superseded", taskID, expected, func(next *State) error {
+		next.Tasks[taskID] = task
+		next.Tasks[replacementID] = replacement
+		mission := next.Missions[task.MissionID]
+		mission.TaskIDs = append(mission.TaskIDs, replacementID)
+		mission.UpdatedAt = timeNow()
+		next.Missions[mission.ID] = mission
+		return nil
+	})
+	return previous, next, task, err
 }
 
 func workOpen(root, taskID string, principal Principal, expected int64) (State, State, TaskState, error) {
@@ -939,7 +1116,7 @@ func submitMissionAcceptance(root, missionID, evidence string, principal Princip
 		return State{}, State{}, MissionState{}, &CLIError{Code: "CHS-MISSION-NOT-ACTIVE", Message: "mission is not active", ExitCode: 10}
 	}
 	for _, taskID := range mission.TaskIDs {
-		if state.Tasks[taskID].Status != "integrated" {
+		if !containsString([]string{"integrated", "cancelled", "superseded"}, state.Tasks[taskID].Status) {
 			return State{}, State{}, MissionState{}, &CLIError{Code: "CHS-MISSION-INCOMPLETE", Message: "mission task is not integrated: " + taskID, ExitCode: 10}
 		}
 	}
@@ -1036,17 +1213,20 @@ func nextActions(state State, role, actor string) []string {
 			if mission.Status == "blocked" {
 				actions = append(actions, "mission.resume "+mission.ID)
 			} else {
-				allIntegrated := true
+				allClosed := true
 				for _, id := range mission.TaskIDs {
 					task := state.Tasks[id]
-					if task.Status != "integrated" {
-						allIntegrated = false
+					if !containsString([]string{"integrated", "cancelled", "superseded"}, task.Status) {
+						allClosed = false
 					}
 					if task.Status == "ready" {
 						actions = append(actions, "task.claim "+id, "task.assign "+id)
 					}
+					if containsString([]string{"claimed", "in_progress"}, task.Status) && task.SubmissionID == "" {
+						actions = append(actions, "task.release "+id)
+					}
 				}
-				if allIntegrated && mission.Status == "active" {
+				if allClosed && mission.Status == "active" {
 					actions = append(actions, "mission.submit-acceptance "+mission.ID)
 				}
 			}
@@ -1079,9 +1259,10 @@ func nextActions(state State, role, actor string) []string {
 			if submission.Actor == actor {
 				continue
 			}
-			if submission.Status == "review_pending" {
+			taskStatus := state.Tasks[submission.TaskID].Status
+			if submission.Status == "review_pending" && taskStatus == "review_pending" {
 				actions = append(actions, "review.check "+id, "review.approve "+id, "review.request-changes "+id)
-			} else if submission.Status == "approved" {
+			} else if submission.Status == "approved" && taskStatus == "approved" {
 				actions = append(actions, "integrate.apply "+id)
 			}
 		}

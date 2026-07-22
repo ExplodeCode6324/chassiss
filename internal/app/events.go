@@ -66,6 +66,16 @@ type taskPayload struct {
 	TaskID string `json:"task_id"`
 }
 
+type taskCancelledPayload struct {
+	TaskID string `json:"task_id"`
+	Reason string `json:"reason"`
+}
+
+type taskSupersededPayload struct {
+	TaskID        string `json:"task_id"`
+	ReplacementID string `json:"replacement_id"`
+}
+
 type workOpenedPayload struct {
 	TaskID         string `json:"task_id"`
 	WorktreePath   string `json:"worktree_path"`
@@ -233,7 +243,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			}
 			task := *payload.Task
 			task.Status = "planned"
-			task.Owner, task.OwnerGrantID, task.Branch, task.Baseline, task.WorktreePath, task.WorktreeID, task.WorktreeDigest, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID = "", "", "", "", "", "", "", "", "", "", ""
+			task.Owner, task.OwnerGrantID, task.Branch, task.Baseline, task.WorktreePath, task.WorktreeID, task.WorktreeDigest, task.Checkpoint, task.BlockReason, task.PreviousStatus, task.SubmissionID, task.ReplacementID, task.SupersedesID, task.ClosureReason = "", "", "", "", "", "", "", "", "", "", "", "", "", ""
 			task.CheckResults = map[string]CheckResult{}
 			task.UpdatedAt = event.OccurredAt
 			next.Tasks[task.ID] = task
@@ -295,7 +305,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 				return transitionError(event, "mission task is not accepted")
 			}
 			task := next.Tasks[taskID]
-			if len(task.DependsOn) == 0 {
+			if taskDependenciesSatisfied(*next, task) {
 				task.Status = "ready"
 			}
 			task.UpdatedAt = event.OccurredAt
@@ -351,7 +361,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return transitionError(event, "mission acceptance is not submittable")
 		}
 		for _, taskID := range mission.TaskIDs {
-			if previous.Tasks[taskID].Status != "integrated" {
+			if !containsString([]string{"integrated", "cancelled", "superseded"}, previous.Tasks[taskID].Status) {
 				return transitionError(event, "mission has incomplete tasks")
 			}
 		}
@@ -454,6 +464,89 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		task.Status, task.PreviousStatus, task.BlockReason = task.PreviousStatus, "", ""
 		task.UpdatedAt = event.OccurredAt
 		next.Tasks[task.ID] = task
+	case "task.released":
+		var payload taskPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := payloadResource(event, payload.TaskID); err != nil {
+			return err
+		}
+		task, ok := previous.Tasks[payload.TaskID]
+		resumableBlocked := task.Status == "blocked" && containsString([]string{"claimed", "in_progress"}, task.PreviousStatus)
+		if event.Role != "orchestrator" || !ok || (!containsString([]string{"claimed", "in_progress"}, task.Status) && !resumableBlocked) || task.SubmissionID != "" {
+			return transitionError(event, "task is not safely releasable")
+		}
+		if err := requireMissionExecutable(previous, task.MissionID); err != nil {
+			return err
+		}
+		for _, submission := range previous.Submissions {
+			if submission.TaskID == task.ID {
+				return transitionError(event, "task with a submission cannot be released")
+			}
+		}
+		task.Status = "ready"
+		task.Owner, task.OwnerGrantID, task.Branch, task.Baseline = "", "", "", ""
+		task.WorktreePath, task.WorktreeID, task.WorktreeDigest = "", "", ""
+		task.CheckResults = map[string]CheckResult{}
+		task.Checkpoint, task.BlockReason, task.PreviousStatus = "", "", ""
+		task.UpdatedAt = event.OccurredAt
+		next.Tasks[task.ID] = task
+	case "task.cancelled":
+		var payload taskCancelledPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := payloadResource(event, payload.TaskID); err != nil {
+			return err
+		}
+		task, ok := previous.Tasks[payload.TaskID]
+		if event.Role != "master" || !ok || isClosedTaskStatus(task.Status) || strings.TrimSpace(payload.Reason) == "" {
+			return transitionError(event, "task is not cancellable")
+		}
+		task.Status = "cancelled"
+		task.ClosureReason = payload.Reason
+		task.BlockReason, task.PreviousStatus = "", ""
+		task.UpdatedAt = event.OccurredAt
+		next.Tasks[task.ID] = task
+		for otherID, other := range next.Tasks {
+			if other.Status == "planned" && other.MissionID == next.ActiveMission && containsString(next.Missions[other.MissionID].TaskIDs, otherID) && taskDependenciesSatisfied(*next, other) {
+				other.Status = "ready"
+				other.UpdatedAt = event.OccurredAt
+				next.Tasks[otherID] = other
+			}
+		}
+	case "task.superseded":
+		var payload taskSupersededPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := payloadResource(event, payload.TaskID); err != nil {
+			return err
+		}
+		task, ok := previous.Tasks[payload.TaskID]
+		replacement, replacementOK := previous.Tasks[payload.ReplacementID]
+		mission := previous.Missions[task.MissionID]
+		if event.Role != "orchestrator" || !ok || !replacementOK || isClosedTaskStatus(task.Status) || payload.ReplacementID == payload.TaskID || task.ReplacementID != "" || replacement.MissionID != task.MissionID || replacement.Status != "planned" || replacement.SupersedesID != "" || containsString(mission.TaskIDs, replacement.ID) || previous.Artifacts[replacement.ID].Status != "accepted" || containsString(replacement.DependsOn, task.ID) {
+			return transitionError(event, "replacement Task is not a valid accepted successor")
+		}
+		if err := requireMissionExecutable(previous, task.MissionID); err != nil {
+			return err
+		}
+		task.Status = "superseded"
+		task.ReplacementID = replacement.ID
+		task.BlockReason, task.PreviousStatus = "", ""
+		task.UpdatedAt = event.OccurredAt
+		next.Tasks[task.ID] = task
+		replacement.SupersedesID = task.ID
+		if taskDependenciesSatisfied(*next, replacement) {
+			replacement.Status = "ready"
+		}
+		replacement.UpdatedAt = event.OccurredAt
+		next.Tasks[replacement.ID] = replacement
+		mission.TaskIDs = append(mission.TaskIDs, replacement.ID)
+		mission.UpdatedAt = event.OccurredAt
+		next.Missions[mission.ID] = mission
 	case "work.opened":
 		var payload workOpenedPayload
 		if err := decodePayload(event.Payload, &payload); err != nil {
@@ -639,14 +732,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			if other.Status != "planned" || other.MissionID != next.ActiveMission {
 				continue
 			}
-			ready := true
-			for _, dependency := range other.DependsOn {
-				if next.Tasks[dependency].Status != "integrated" {
-					ready = false
-					break
-				}
-			}
-			if ready {
+			if taskDependenciesSatisfied(*next, other) {
 				other.Status = "ready"
 				other.UpdatedAt = event.OccurredAt
 				next.Tasks[otherID] = other
@@ -708,6 +794,12 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 		return taskBlockedPayload{TaskID: resource, Reason: candidate.Tasks[resource].BlockReason}, nil
 	case "task.resumed":
 		return taskPayload{TaskID: resource}, nil
+	case "task.released":
+		return taskPayload{TaskID: resource}, nil
+	case "task.cancelled":
+		return taskCancelledPayload{TaskID: resource, Reason: candidate.Tasks[resource].ClosureReason}, nil
+	case "task.superseded":
+		return taskSupersededPayload{TaskID: resource, ReplacementID: candidate.Tasks[resource].ReplacementID}, nil
 	case "work.opened":
 		task := candidate.Tasks[resource]
 		return workOpenedPayload{TaskID: resource, WorktreePath: task.WorktreePath, WorktreeID: task.WorktreeID, WorktreeDigest: task.WorktreeDigest, Branch: task.Branch, Head: task.Baseline}, nil
