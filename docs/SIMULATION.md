@@ -30,8 +30,8 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 优先级高：
 
 - Event V2 已改为严格最小 payload、确定性 reducer 和 State/transition validator；持有合法角色私钥的主体不能再借自己的 action 写入任意 State delta。仍需通过 operation journal 把 Git 副作用纳入同一恢复协议。
-- Git checkout/commit/merge 与 state/event 写入尚未处于同一个跨介质事务锁内。极窄并发窗口或磁盘故障可能留下“Git 已变化、state CAS 失败”的可恢复不一致。下一版应增加 operation journal、全流程锁和确定性补偿/恢复命令。
-- integration 在正式分支已被其他 Task 推进时只依赖 Git merge 成功，不会在合并结果上重跑 Task checks。并行 Task 应引入临时 integration tree、合并后 checks 和 baseline policy。
+- Git checkout/commit/merge 与 state/event 已纳入项目写锁和 operation journal；崩溃恢复只补全 journal 中预先签名且与 Git 精确一致的事件，不对正式分支隐式 reset/force。
+- integration 已验证 task branch tip 等于获批 `HeadCommit`，在临时候选 worktree 合并精确提交并重跑 checks；正式分支推进和 `integration.applied` 由同一 journal 恢复协议保护。
 - snapshot digest 目前绑定路径和普通文件内容，但没有完整绑定 symlink 目标、文件模式和其他 Git index 元数据。allowed-path 与快照检查需要改为 Git tree/index 级实现。
 - 不带 credential 的 `doctor` 仍只能证明 `.chassis` 内部自洽；有能力整体替换项目控制目录的主体可以构造另一套自洽 Root。正式门禁必须传入 Master 分发的 credential，后续可增加 OS Keychain/可信 Root store。
 
@@ -46,4 +46,4 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 
 ## 建议的下一步
 
-先实现 Git/state operation journal 与合并后重跑 checks，再做 credential rotate/TTL。两者分别解决当前最大的一致性风险和长期密钥的主要暴露窗口；远端 publish adapter 可在本地事务边界稳定后再接入。
+下一步把 Developer 工作区迁移到每 Task 独立 worktree，并把快照升级为 Git tree/index 摘要；之后完成授权 journal、resume/supersede 和 credential rotate/TTL。远端 publish adapter 仍在本地事务边界完全稳定后接入。

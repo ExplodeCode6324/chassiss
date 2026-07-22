@@ -86,10 +86,13 @@ type reviewRecordedPayload struct {
 }
 
 type integrationAppliedPayload struct {
-	IntegrationID  string `json:"integration_id"`
-	SubmissionID   string `json:"submission_id"`
-	PreviousHead   string `json:"previous_head"`
-	IntegratedHead string `json:"integrated_head"`
+	IntegrationID  string                 `json:"integration_id"`
+	SubmissionID   string                 `json:"submission_id"`
+	SubmissionHead string                 `json:"submission_head"`
+	PreviousHead   string                 `json:"previous_head"`
+	IntegratedHead string                 `json:"integrated_head"`
+	IntegratedTree string                 `json:"integrated_tree"`
+	Checks         map[string]CheckResult `json:"checks"`
 }
 
 func marshalPayload(value any) (json.RawMessage, error) {
@@ -581,7 +584,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 			return err
 		}
 		submission, ok := previous.Submissions[payload.SubmissionID]
-		if event.Role != "reviewer" || !ok || submission.Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" {
+		if event.Role != "reviewer" || !ok || submission.Status != "approved" || payload.IntegrationID == "" || payload.PreviousHead == "" || payload.IntegratedHead == "" || payload.IntegratedTree == "" || payload.SubmissionHead != submission.HeadCommit {
 			return transitionError(event, "submission is not integratable")
 		}
 		if err := requireMissionExecutable(previous, previous.Tasks[submission.TaskID].MissionID); err != nil {
@@ -594,7 +597,16 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		if _, exists := previous.Integrations[payload.IntegrationID]; exists {
 			return transitionError(event, "integration ID already exists")
 		}
-		integration := Integration{ID: payload.IntegrationID, SubmissionID: submission.ID, PreviousHead: payload.PreviousHead, IntegratedHead: payload.IntegratedHead, IntegratedBy: event.Actor, CreatedAt: event.OccurredAt}
+		checks := map[string]CheckResult{}
+		for _, spec := range previous.Tasks[submission.TaskID].Checks {
+			result, ok := payload.Checks[spec.ID]
+			if !ok || !result.Passed || result.Command != spec.Command || result.SnapshotDigest != payload.IntegratedTree {
+				return transitionError(event, "integration result lacks a passed merged-tree check")
+			}
+			result.CheckedAt = event.OccurredAt
+			checks[result.ID] = result
+		}
+		integration := Integration{ID: payload.IntegrationID, SubmissionID: submission.ID, SubmissionHead: payload.SubmissionHead, PreviousHead: payload.PreviousHead, IntegratedHead: payload.IntegratedHead, IntegratedTree: payload.IntegratedTree, Checks: checks, IntegratedBy: event.Actor, CreatedAt: event.OccurredAt}
 		next.Integrations[integration.ID] = integration
 		submission.Status, submission.IntegrationID = "integrated", integration.ID
 		next.Submissions[submission.ID] = submission
@@ -710,7 +722,7 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 	case "integration.applied":
 		submission := candidate.Submissions[resource]
 		integration := candidate.Integrations[submission.IntegrationID]
-		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead}, nil
+		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, SubmissionHead: integration.SubmissionHead, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead, IntegratedTree: integration.IntegratedTree, Checks: integration.Checks}, nil
 	default:
 		return nil, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "unknown event type: " + eventType, ExitCode: 40}
 	}

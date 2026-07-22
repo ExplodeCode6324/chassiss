@@ -158,12 +158,15 @@ type Review struct {
 }
 
 type Integration struct {
-	ID             string    `yaml:"id" json:"id"`
-	SubmissionID   string    `yaml:"submission_id" json:"submission_id"`
-	PreviousHead   string    `yaml:"previous_head" json:"previous_head"`
-	IntegratedHead string    `yaml:"integrated_head" json:"integrated_head"`
-	IntegratedBy   string    `yaml:"integrated_by" json:"integrated_by"`
-	CreatedAt      time.Time `yaml:"created_at" json:"created_at"`
+	ID             string                 `yaml:"id" json:"id"`
+	SubmissionID   string                 `yaml:"submission_id" json:"submission_id"`
+	SubmissionHead string                 `yaml:"submission_head" json:"submission_head"`
+	PreviousHead   string                 `yaml:"previous_head" json:"previous_head"`
+	IntegratedHead string                 `yaml:"integrated_head" json:"integrated_head"`
+	IntegratedTree string                 `yaml:"integrated_tree" json:"integrated_tree"`
+	Checks         map[string]CheckResult `yaml:"checks" json:"checks"`
+	IntegratedBy   string                 `yaml:"integrated_by" json:"integrated_by"`
+	CreatedAt      time.Time              `yaml:"created_at" json:"created_at"`
 }
 
 type State struct {

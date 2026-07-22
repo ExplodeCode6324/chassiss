@@ -227,6 +227,11 @@ func updateState(root string, principal Principal, eventType, resource string, e
 		return State{}, State{}, Event{}, err
 	}
 	defer lock.release()
+	if pending, err := listOperationJournals(root); err != nil {
+		return State{}, State{}, Event{}, err
+	} else if len(pending) != 0 {
+		return State{}, State{}, Event{}, &CLIError{Code: "CHS-OPERATION-RECOVERY-REQUIRED", Message: "an unfinished operation must be recovered before another write", ExitCode: 40, Remedy: []string{"run chassiss recover"}}
+	}
 	config, _, _, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, Event{}, err
@@ -430,6 +435,9 @@ func recoverProject(root string) (State, error) {
 		return State{}, err
 	}
 	if err := verifyTrust(config, trust); err != nil {
+		return State{}, err
+	}
+	if err := recoverOperationsLocked(root, config); err != nil {
 		return State{}, err
 	}
 	events, err := readEvents(eventsPath)

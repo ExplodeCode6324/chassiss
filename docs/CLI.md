@@ -32,7 +32,7 @@ chassiss explain <error-code>
 
 `next` 按 role、actor 和当前状态返回候选动作；真正执行时仍会重新验证 credential、revision 和全部前置条件。
 
-`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 从签名事件重建候选状态，验证通过后才替换旧状态。
+`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 先处理 operation journal：仅当 Git 精确匹配签名的预期结果时补写事件和状态；随后从签名事件重建状态投影。Git/journal 不一致时进入 integrity blocked，不隐式 reset 或 force。
 
 ## 模板和设计文档
 

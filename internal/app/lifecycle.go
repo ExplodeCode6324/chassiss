@@ -246,7 +246,7 @@ func taskResume(root, taskID string, principal Principal, expected int64) (State
 }
 
 func workOpen(root, taskID string, principal Principal, expected int64) (State, State, TaskState, error) {
-	config, _, state, err := loadProject(root)
+	_, _, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
@@ -261,29 +261,52 @@ func workOpen(root, taskID string, principal Principal, expected int64) (State, 
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, TaskState{}, err
 	}
-	clean, status, err := gitClean(root)
-	if err != nil {
-		return State{}, State{}, TaskState{}, err
-	}
-	if !clean {
-		return State{}, State{}, TaskState{}, &CLIError{Code: "CHS-WORK-DIRTY", Message: "worktree must be clean before opening task: " + status, ExitCode: 10}
-	}
-	if _, err := git(root, "show-ref", "--verify", "--quiet", "refs/heads/"+task.Branch); err == nil {
-		if _, err := git(root, "checkout", task.Branch); err != nil {
-			return State{}, State{}, TaskState{}, err
+	intent := taskPayload{TaskID: taskID}
+	previous, next, _, err := executeGitOperation(root, "work.open", "work.opened", taskID, principal, expected, intent, func(current State) (preparedOperation, error) {
+		currentTask, ok := current.Tasks[taskID]
+		if !ok || currentTask.Owner != principal.Actor || !containsString([]string{"claimed", "changes_requested"}, currentTask.Status) {
+			return preparedOperation{}, &CLIError{Code: "CHS-WORK-NOT-ASSIGNED", Message: "task is not assigned to this developer or cannot be opened", ExitCode: 11}
 		}
-	} else {
-		if _, err := git(root, "checkout", "-b", task.Branch, task.Baseline); err != nil {
-			return State{}, State{}, TaskState{}, err
+		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
+			return preparedOperation{}, err
 		}
-	}
-	task.Status = "in_progress"
-	task.UpdatedAt = timeNow()
-	previous, next, _, err := updateState(root, principal, "work.opened", taskID, expected, func(next *State) error {
-		next.Tasks[taskID] = task
-		return nil
+		clean, status, err := gitClean(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if !clean {
+			return preparedOperation{}, &CLIError{Code: "CHS-WORK-DIRTY", Message: "worktree must be clean before opening task: " + status, ExitCode: 10}
+		}
+		targetHead := currentTask.Baseline
+		branchExists := false
+		if head, err := git(root, "rev-parse", "--verify", "refs/heads/"+currentTask.Branch); err == nil {
+			targetHead = head
+			branchExists = true
+		}
+		tree, err := git(root, "rev-parse", targetHead+"^{tree}")
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		return preparedOperation{
+			Payload:  taskPayload{TaskID: taskID},
+			GitAfter: GitOperationState{Branch: currentTask.Branch, Head: targetHead, IndexTree: tree},
+			ApplyGit: func() error {
+				if !branchExists {
+					if _, err := git(root, "branch", currentTask.Branch, currentTask.Baseline); err != nil {
+						return err
+					}
+					if err := injectOperationFault("git_branch_created"); err != nil {
+						return err
+					}
+				}
+				_, err := git(root, "checkout", currentTask.Branch)
+				return err
+			},
+		}, nil
 	})
-	_ = config
+	if err == nil {
+		task = next.Tasks[taskID]
+	}
 	return previous, next, task, err
 }
 
@@ -392,58 +415,69 @@ func workSubmit(root, taskID, handoff string, principal Principal, expected int6
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
 		return State{}, State{}, Submission{}, err
 	}
-	branch, err := currentBranch(root)
-	if err != nil || branch != task.Branch {
-		return State{}, State{}, Submission{}, &CLIError{Code: "CHS-WORK-BRANCH", Message: "current branch is not the task branch", ExitCode: 10}
-	}
-	files, err := gitWorkingFiles(root)
-	if err != nil {
-		return State{}, State{}, Submission{}, err
-	}
-	if len(files) == 0 {
-		return State{}, State{}, Submission{}, &CLIError{Code: "CHS-WORK-NO-CHANGES", Message: "task has no content changes to submit", ExitCode: 10}
-	}
-	for _, file := range files {
-		if !allowedFile(task.AllowedPaths, file) {
-			return State{}, State{}, Submission{}, &CLIError{Code: "CHS-WORK-SCOPE", Message: "changed file is outside allowed_paths: " + file, ExitCode: 10}
-		}
-	}
-	snapshotDigest, err := gitWorktreeDigest(root)
-	if err != nil {
-		return State{}, State{}, Submission{}, err
-	}
-	if err := validateTaskChecks(task, snapshotDigest); err != nil {
-		return State{}, State{}, Submission{}, err
-	}
-	head, err := gitCommit(root, "Complete "+taskID, files...)
-	if err != nil {
-		return State{}, State{}, Submission{}, err
-	}
-	changed, err := gitChangedFiles(root, task.Baseline, head)
-	if err != nil {
-		return State{}, State{}, Submission{}, err
-	}
 	id, err := newID("SUB")
 	if err != nil {
 		return State{}, State{}, Submission{}, err
 	}
-	submission := Submission{
-		ID: id, TaskID: taskID, Actor: principal.Actor, BaseCommit: task.Baseline, HeadCommit: head,
-		ChangedFiles: changed, Checks: task.CheckResults, Handoff: handoff, Status: "review_pending", CreatedAt: timeNow(),
-	}
-	submission.Digest, err = calculateSubmissionDigest(submission)
-	if err != nil {
-		return State{}, State{}, Submission{}, err
-	}
-	previous, next, _, err := updateState(root, principal, "work.submitted", taskID, expected, func(next *State) error {
-		task := next.Tasks[taskID]
-		task.Status = "review_pending"
-		task.SubmissionID = id
-		task.UpdatedAt = timeNow()
-		next.Tasks[taskID] = task
-		next.Submissions[id] = submission
-		return nil
+	intent := struct {
+		TaskID       string `json:"task_id"`
+		SubmissionID string `json:"submission_id"`
+		Handoff      string `json:"handoff"`
+	}{TaskID: taskID, SubmissionID: id, Handoff: handoff}
+	var submission Submission
+	previous, next, _, err := executeGitOperation(root, "work.submit", "work.submitted", taskID, principal, expected, intent, func(current State) (preparedOperation, error) {
+		currentTask, ok := current.Tasks[taskID]
+		if !ok || currentTask.Owner != principal.Actor || currentTask.Status != "in_progress" {
+			return preparedOperation{}, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
+		}
+		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
+			return preparedOperation{}, err
+		}
+		branch, err := currentBranch(root)
+		if err != nil || branch != currentTask.Branch {
+			return preparedOperation{}, &CLIError{Code: "CHS-WORK-BRANCH", Message: "current branch is not the task branch", ExitCode: 10}
+		}
+		files, err := gitWorkingFiles(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if len(files) == 0 {
+			return preparedOperation{}, &CLIError{Code: "CHS-WORK-NO-CHANGES", Message: "task has no content changes to submit", ExitCode: 10}
+		}
+		for _, file := range files {
+			if !allowedFile(currentTask.AllowedPaths, file) {
+				return preparedOperation{}, &CLIError{Code: "CHS-WORK-SCOPE", Message: "changed file is outside allowed_paths: " + file, ExitCode: 10}
+			}
+		}
+		snapshotDigest, err := gitWorktreeDigest(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if err := validateTaskChecks(currentTask, snapshotDigest); err != nil {
+			return preparedOperation{}, err
+		}
+		before, head, err := gitPrepareCommit(root, "Complete "+taskID, files...)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		changed, err := gitChangedFiles(root, currentTask.Baseline, head)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		submission = Submission{ID: id, TaskID: taskID, BaseCommit: currentTask.Baseline, HeadCommit: head, ChangedFiles: changed, Checks: currentTask.CheckResults, Handoff: handoff}
+		tree, err := git(root, "rev-parse", head+"^{tree}")
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		return preparedOperation{
+			Payload:  workSubmittedPayload{Submission: submission},
+			GitAfter: GitOperationState{Branch: branch, Head: head, IndexTree: tree},
+			ApplyGit: func() error { return applyPreparedCommit(root, branch, before, head) },
+		}, nil
 	})
+	if err == nil {
+		submission = next.Submissions[id]
+	}
 	return previous, next, submission, err
 }
 
@@ -465,6 +499,10 @@ func reviewCheck(root, submissionID string) (Submission, TaskState, []string, er
 	if err != nil {
 		return Submission{}, TaskState{}, nil, err
 	}
+	return reviewCheckState(root, state, submissionID)
+}
+
+func reviewCheckState(root string, state State, submissionID string) (Submission, TaskState, []string, error) {
 	submission, ok := state.Submissions[submissionID]
 	if !ok {
 		return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-NOT-FOUND", Message: "submission not found", ExitCode: 10}
@@ -593,65 +631,142 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 	if review.SubmissionDigest != submission.Digest || review.Verdict != "approve" || review.Reviewer != principal.Actor {
 		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-REVIEW", Message: "integration must be performed by the approving Reviewer against the same digest", ExitCode: 11}
 	}
-	clean, status, err := gitClean(root)
-	if err != nil {
-		return State{}, State{}, Integration{}, err
-	}
-	if !clean {
-		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-DIRTY", Message: "worktree must be clean before integration: " + status, ExitCode: 10}
-	}
-	if _, err := git(root, "checkout", config.DefaultBranch); err != nil {
-		return State{}, State{}, Integration{}, err
-	}
-	previousHead, err := gitHead(root)
-	if err != nil {
-		return State{}, State{}, Integration{}, err
-	}
-	mergeArgs := []string{"-c", "user.name=CHASSISS Reviewer", "-c", "user.email=reviewer@chassiss.local", "merge", "--no-ff", "-m", "Integrate " + task.ID, task.Branch}
-	if _, err := git(root, mergeArgs...); err != nil {
-		_, _ = git(root, "merge", "--abort")
-		return State{}, State{}, Integration{}, &CLIError{Code: "CHS-INTEGRATION-CONFLICT", Message: "local integration failed: " + err.Error(), ExitCode: 12, Retryable: false}
-	}
-	newHead, err := gitHead(root)
-	if err != nil {
-		return State{}, State{}, Integration{}, err
-	}
 	id, err := newID("INT")
 	if err != nil {
 		return State{}, State{}, Integration{}, err
 	}
-	integration := Integration{ID: id, SubmissionID: submissionID, PreviousHead: previousHead, IntegratedHead: newHead, IntegratedBy: principal.Actor, CreatedAt: timeNow()}
-	previous, next, _, err := updateState(root, principal, "integration.applied", submissionID, expected, func(next *State) error {
-		next.Integrations[id] = integration
-		submission := next.Submissions[submissionID]
-		submission.Status = "integrated"
-		submission.IntegrationID = id
-		next.Submissions[submissionID] = submission
-		task := next.Tasks[submission.TaskID]
-		task.Status = "integrated"
-		task.UpdatedAt = timeNow()
-		next.Tasks[task.ID] = task
-		next.Baseline = newHead
-		for otherID, other := range next.Tasks {
-			if other.Status != "planned" || other.MissionID != next.ActiveMission {
-				continue
-			}
-			ready := true
-			for _, dependency := range other.DependsOn {
-				if next.Tasks[dependency].Status != "integrated" {
-					ready = false
-					break
-				}
-			}
-			if ready {
-				other.Status = "ready"
-				other.UpdatedAt = timeNow()
-				next.Tasks[otherID] = other
-			}
+	candidateRelative := filepath.ToSlash(filepath.Join(".chassis", "cache", "integration-"+id))
+	candidatePath := filepath.Join(root, filepath.FromSlash(candidateRelative))
+	intent := integrationOperationIntent{SubmissionID: submissionID, CandidatePath: candidateRelative}
+	var integration Integration
+	previous, next, _, err := executeGitOperation(root, "integrate.apply", "integration.applied", submissionID, principal, expected, intent, func(current State) (preparedOperation, error) {
+		currentSubmission, currentTask, _, err := reviewCheckState(root, current, submissionID)
+		if err != nil {
+			return preparedOperation{}, err
 		}
-		return nil
+		if currentSubmission.Status != "approved" {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission is not approved", ExitCode: 10}
+		}
+		if err := requireMissionExecutable(current, currentTask.MissionID); err != nil {
+			return preparedOperation{}, err
+		}
+		currentReview, ok := current.Reviews[currentSubmission.ReviewID]
+		if !ok || currentReview.SubmissionDigest != currentSubmission.Digest || currentReview.Verdict != "approve" || currentReview.Reviewer != principal.Actor {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-REVIEW", Message: "integration must use the approving Reviewer and exact submission digest", ExitCode: 11}
+		}
+		branchHead, err := git(root, "rev-parse", "--verify", "refs/heads/"+currentTask.Branch)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if branchHead != currentSubmission.HeadCommit {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-HEAD-MOVED", Message: "task branch moved after review approval", ExitCode: 10, Remedy: []string{"create a new submission for the new branch head"}}
+		}
+		previousHead, err := git(root, "rev-parse", "--verify", "refs/heads/"+config.DefaultBranch)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if previousHead != current.Baseline {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-BASELINE-MOVED", Message: "formal branch does not match the recorded baseline", ExitCode: 40, Remedy: []string{"run chassiss verify", "do not force the formal branch"}}
+		}
+		clean, status, err := gitClean(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if !clean {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-DIRTY", Message: "worktree must be clean before integration: " + status, ExitCode: 10}
+		}
+		if _, err := os.Stat(candidatePath); err == nil {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-CANDIDATE", Message: "integration candidate path already exists", ExitCode: 40}
+		} else if !os.IsNotExist(err) {
+			return preparedOperation{}, err
+		}
+		if _, err := git(root, "worktree", "add", "--detach", candidatePath, previousHead); err != nil {
+			return preparedOperation{}, err
+		}
+		keepCandidate := false
+		defer func() {
+			if !keepCandidate {
+				_, _ = git(root, "worktree", "remove", "--force", candidatePath)
+			}
+		}()
+		mergeArgs := []string{"-c", "user.name=CHASSISS Reviewer", "-c", "user.email=reviewer@chassiss.local", "merge", "--no-ff", "--no-commit", currentSubmission.HeadCommit}
+		if _, err := git(candidatePath, mergeArgs...); err != nil {
+			_, _ = git(candidatePath, "merge", "--abort")
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-CONFLICT", Message: "local integration failed: " + err.Error(), ExitCode: 12}
+		}
+		mergedTree, err := git(candidatePath, "write-tree")
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		checks, err := runIntegrationChecks(candidatePath, currentTask, mergedTree)
+		if err != nil {
+			_, _ = git(candidatePath, "merge", "--abort")
+			return preparedOperation{}, err
+		}
+		commitArgs := []string{"-c", "user.name=CHASSISS Reviewer", "-c", "user.email=reviewer@chassiss.local", "commit", "-m", "Integrate " + currentTask.ID}
+		if _, err := git(candidatePath, commitArgs...); err != nil {
+			return preparedOperation{}, err
+		}
+		integratedHead, err := gitHead(candidatePath)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		actualTree, err := git(candidatePath, "rev-parse", integratedHead+"^{tree}")
+		if err != nil || actualTree != mergedTree {
+			return preparedOperation{}, &CLIError{Code: "CHS-INTEGRATION-TREE", Message: "integration commit tree differs from checked merge tree", ExitCode: 40}
+		}
+		integration = Integration{ID: id, SubmissionID: submissionID, SubmissionHead: currentSubmission.HeadCommit, PreviousHead: previousHead, IntegratedHead: integratedHead, IntegratedTree: mergedTree, Checks: checks}
+		payload := integrationAppliedPayload{IntegrationID: id, SubmissionID: submissionID, SubmissionHead: currentSubmission.HeadCommit, PreviousHead: previousHead, IntegratedHead: integratedHead, IntegratedTree: mergedTree, Checks: checks}
+		keepCandidate = true
+		return preparedOperation{
+			Payload:  payload,
+			GitAfter: GitOperationState{Branch: config.DefaultBranch, Head: integratedHead, IndexTree: mergedTree},
+			ApplyGit: func() error {
+				formalHead, err := git(root, "rev-parse", "--verify", "refs/heads/"+config.DefaultBranch)
+				if err != nil || formalHead != previousHead {
+					return &CLIError{Code: "CHS-INTEGRATION-BASELINE-MOVED", Message: "formal branch moved while integration was prepared", ExitCode: 12, Retryable: true}
+				}
+				if _, err := git(root, "checkout", config.DefaultBranch); err != nil {
+					return err
+				}
+				if err := injectOperationFault("integration_default_checked_out"); err != nil {
+					return err
+				}
+				_, err = git(root, "merge", "--ff-only", integratedHead)
+				return err
+			},
+			Finalize: func() error {
+				if _, err := git(root, "worktree", "remove", "--force", candidatePath); err != nil {
+					return err
+				}
+				_, _ = git(root, "worktree", "prune")
+				return nil
+			},
+		}, nil
 	})
+	if err == nil {
+		integration = next.Integrations[id]
+	}
 	return previous, next, integration, err
+}
+
+func runIntegrationChecks(root string, task TaskState, tree string) (map[string]CheckResult, error) {
+	results := make(map[string]CheckResult, len(task.Checks))
+	for _, check := range task.Checks {
+		arguments := strings.Fields(check.Command)
+		if len(arguments) == 0 {
+			return nil, &CLIError{Code: "CHS-INTEGRATION-CHECKS", Message: "acceptance check command is empty", ExitCode: 10}
+		}
+		output, runErr := runCommand(root, arguments[0], arguments[1:]...)
+		result := CheckResult{ID: check.ID, Command: check.Command, Passed: runErr == nil, Output: trimOutput(output), SnapshotDigest: tree, CheckedAt: timeNow()}
+		if runErr != nil {
+			result.ExitCode = 1
+			result.Output = trimOutput(runErr.Error())
+			return nil, &CLIError{Code: "CHS-INTEGRATION-CHECKS", Message: "merged result failed acceptance check " + check.ID + ": " + result.Output, ExitCode: 10}
+		}
+		results[check.ID] = result
+	}
+	return results, nil
 }
 
 func submitMissionAcceptance(root, missionID, evidence string, principal Principal, expected int64) (State, State, MissionState, error) {

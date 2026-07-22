@@ -244,7 +244,7 @@ func submitArtifact(root, path string, principal Principal, expected int64) (Sta
 }
 
 func acceptArtifact(root, submissionID string, principal Principal, expected int64) (State, State, ArtifactState, error) {
-	_, _, state, err := loadProject(root)
+	config, _, state, err := loadProject(root)
 	if err != nil {
 		return State{}, State{}, ArtifactState{}, err
 	}
@@ -263,34 +263,51 @@ func acceptArtifact(root, submissionID string, principal Principal, expected int
 	if !found || artifact.Status != "submitted" {
 		return State{}, State{}, ArtifactState{}, &CLIError{Code: "CHS-ARTIFACT-NOT-PENDING", Message: "artifact submission is not pending", ExitCode: 10}
 	}
-	document, err := parseArtifact(root, artifact.Path)
-	if err != nil {
-		return State{}, State{}, ArtifactState{}, err
-	}
-	if document.Digest != artifact.Digest {
-		return State{}, State{}, ArtifactState{}, &CLIError{Code: "CHS-ARTIFACT-CHANGED", Message: "artifact content changed after submission", ExitCode: 10}
-	}
-	branch, err := currentBranch(root)
-	if err != nil {
-		return State{}, State{}, ArtifactState{}, err
-	}
-	config, _, _, _ := loadProject(root)
-	if branch != config.DefaultBranch {
-		return State{}, State{}, ArtifactState{}, &CLIError{Code: "CHS-ARTIFACT-BRANCH", Message: "artifacts must be accepted on the default branch", ExitCode: 10}
-	}
-	commit, err := gitCommit(root, "Accept "+artifact.Kind+" "+artifact.ID, artifact.Path)
-	if err != nil {
-		return State{}, State{}, ArtifactState{}, err
-	}
-	artifact.Status = "accepted"
-	artifact.AcceptedBy = principal.Actor
-	artifact.AcceptedCommit = commit
-	artifact.UpdatedAt = timeNow()
-	previous, next, _, err := updateState(root, principal, "artifact.accepted", artifact.ID, expected, func(next *State) error {
-		next.Artifacts[artifact.ID] = artifact
-		next.Baseline = commit
-		return nil
+	intent := struct {
+		SubmissionID string `json:"submission_id"`
+		ArtifactID   string `json:"artifact_id"`
+		Path         string `json:"path"`
+		Digest       string `json:"digest"`
+	}{SubmissionID: submissionID, ArtifactID: artifact.ID, Path: artifact.Path, Digest: artifact.Digest}
+	previous, next, _, err := executeGitOperation(root, "artifact.accept", "artifact.accepted", artifact.ID, principal, expected, intent, func(current State) (preparedOperation, error) {
+		currentArtifact, found := artifactBySubmission(current, submissionID)
+		if !found || currentArtifact.ID != artifact.ID || currentArtifact.Status != "submitted" {
+			return preparedOperation{}, &CLIError{Code: "CHS-ARTIFACT-NOT-PENDING", Message: "artifact submission is not pending", ExitCode: 10}
+		}
+		document, err := parseArtifact(root, currentArtifact.Path)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if document.Digest != currentArtifact.Digest {
+			return preparedOperation{}, &CLIError{Code: "CHS-ARTIFACT-CHANGED", Message: "artifact content changed after submission", ExitCode: 10}
+		}
+		branch, err := currentBranch(root)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if branch != config.DefaultBranch {
+			return preparedOperation{}, &CLIError{Code: "CHS-ARTIFACT-BRANCH", Message: "artifacts must be accepted on the default branch", ExitCode: 10}
+		}
+		before, commit, err := gitPrepareCommit(root, "Accept "+currentArtifact.Kind+" "+currentArtifact.ID, currentArtifact.Path)
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		if before != current.Baseline {
+			return preparedOperation{}, &CLIError{Code: "CHS-ARTIFACT-BASELINE-MOVED", Message: "default branch no longer matches the state baseline", ExitCode: 12, Retryable: true}
+		}
+		tree, err := git(root, "rev-parse", commit+"^{tree}")
+		if err != nil {
+			return preparedOperation{}, err
+		}
+		return preparedOperation{
+			Payload:  artifactAcceptedPayload{ArtifactID: currentArtifact.ID, AcceptedCommit: commit},
+			GitAfter: GitOperationState{Branch: branch, Head: commit, IndexTree: tree},
+			ApplyGit: func() error { return applyPreparedCommit(root, branch, before, commit) },
+		}, nil
 	})
+	if err == nil {
+		artifact = next.Artifacts[artifact.ID]
+	}
 	return previous, next, artifact, err
 }
 

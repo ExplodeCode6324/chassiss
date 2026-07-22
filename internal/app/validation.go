@@ -218,16 +218,22 @@ func validateState(config Config, state State) error {
 	}
 
 	for id, integration := range state.Integrations {
-		if integration.ID != id || integration.SubmissionID == "" || integration.PreviousHead == "" || integration.IntegratedHead == "" || integration.IntegratedBy == "" || integration.CreatedAt.IsZero() {
+		if integration.ID != id || integration.SubmissionID == "" || integration.SubmissionHead == "" || integration.PreviousHead == "" || integration.IntegratedHead == "" || integration.IntegratedTree == "" || integration.Checks == nil || integration.IntegratedBy == "" || integration.CreatedAt.IsZero() {
 			return stateError("CHS-STATE-INTEGRATION", "integration identity or evidence is incomplete: "+id)
 		}
 		submission, ok := state.Submissions[integration.SubmissionID]
-		if !ok || submission.Status != "integrated" || submission.IntegrationID != id {
+		if !ok || submission.Status != "integrated" || submission.IntegrationID != id || submission.HeadCommit != integration.SubmissionHead {
 			return stateError("CHS-STATE-INTEGRATION", "integration does not match submission: "+id)
 		}
 		review, ok := state.Reviews[submission.ReviewID]
 		if !ok || review.Verdict != "approve" || review.Reviewer != integration.IntegratedBy || review.SubmissionDigest != submission.Digest {
 			return stateError("CHS-STATE-INTEGRATION", "integration is not backed by the approving review: "+id)
+		}
+		for _, spec := range state.Tasks[submission.TaskID].Checks {
+			result, ok := integration.Checks[spec.ID]
+			if !ok || !result.Passed || result.Command != spec.Command || result.SnapshotDigest != integration.IntegratedTree {
+				return stateError("CHS-STATE-INTEGRATION", "integration lacks merged-tree check evidence: "+id)
+			}
 		}
 	}
 	return nil

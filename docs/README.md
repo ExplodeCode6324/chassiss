@@ -75,16 +75,17 @@ Event V2 只携带当前动作的严格 payload。未知字段、未知事件和
 所有状态写命令执行同一事务：
 
 ```text
-读取当前 revision
-→ 验证 credential
-→ 验证动作前置条件
-→ 计算新状态
-→ 运行完整合法性检查
-→ 写入事件
-→ 原子更新状态
+获取项目写锁并验证 revision/credential
+→ 写 prepared operation journal
+→ 准备确定 Git SHA 和签名事件
+→ 应用 Git 并标记 git_applied
+→ 原子写事件与状态投影
+→ 标记 state_committed 并清理 journal
 ```
 
-每次状态变化增加 revision。并发写入使用文件锁和 revision compare-and-swap；两个 Agent 同时领取一个 Task 时只能有一个成功。状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
+所有正式 Git 副作用都在同一项目写锁和 operation journal 内。恢复只在 Git 精确匹配 journal 的 before/after 时补写状态；不匹配则进入 `CHS-INTEGRITY-BLOCKED`，不会猜测 reset 或 force。每次状态变化增加 revision；状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
+
+Reviewer 批准和集成都绑定 `submission.HeadCommit`。集成在临时候选 worktree 合并精确 SHA、重跑 Task checks 并保存 merged-tree 证据，checks 通过后才推进正式分支并记录 `integration.applied`。
 
 `trust.yaml` 不是秘密，只保存由 Master Root 签名的角色公钥、授权版本和回收记录。单独修改它会使签名失效。写命令以及带 `--credential` 的 `doctor/verify` 还会用 Master 分发的 Root/角色 credential 所携带的 Root fingerprint 锚定项目；不带 credential 的读检查只能证明项目内部自洽。私钥和角色 credential 不进入项目仓库。
 

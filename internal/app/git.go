@@ -12,8 +12,15 @@ import (
 )
 
 func runCommand(root, name string, args ...string) (string, error) {
+	return runCommandEnvironment(root, nil, name, args...)
+}
+
+func runCommandEnvironment(root string, extraEnvironment []string, name string, args ...string) (string, error) {
 	command := exec.Command(name, args...)
 	command.Dir = root
+	if len(extraEnvironment) != 0 {
+		command.Env = append(os.Environ(), extraEnvironment...)
+	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -26,6 +33,10 @@ func runCommand(root, name string, args ...string) (string, error) {
 		return strings.TrimSpace(stdout.String()), fmt.Errorf("%s", message)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func gitEnvironment(root string, environment []string, args ...string) (string, error) {
+	return runCommandEnvironment(root, environment, "git", args...)
 }
 
 func git(root string, args ...string) (string, error) {
@@ -42,6 +53,70 @@ func gitCommit(root, message string, paths ...string) (string, error) {
 		return "", err
 	}
 	return git(root, "rev-parse", "HEAD")
+}
+
+func gitPrepareCommit(root, message string, paths ...string) (string, string, error) {
+	before, err := gitHead(root)
+	if err != nil {
+		return "", "", err
+	}
+	cacheDir := filepath.Join(root, ".chassis", "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return "", "", err
+	}
+	temporary, err := os.CreateTemp(cacheDir, "prepare-index-*")
+	if err != nil {
+		return "", "", err
+	}
+	indexPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		return "", "", err
+	}
+	if err := os.Remove(indexPath); err != nil {
+		return "", "", err
+	}
+	defer os.Remove(indexPath)
+	environment := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := gitEnvironment(root, environment, "read-tree", before); err != nil {
+		return "", "", err
+	}
+	addArgs := append([]string{"add", "--"}, paths...)
+	if _, err := gitEnvironment(root, environment, addArgs...); err != nil {
+		return "", "", err
+	}
+	tree, err := gitEnvironment(root, environment, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	after, err := gitEnvironment(root, environment,
+		"-c", "user.name=CHASSISS", "-c", "user.email=chassiss@local.invalid",
+		"commit-tree", tree, "-p", before, "-m", message,
+	)
+	if err != nil {
+		return "", "", err
+	}
+	return before, after, nil
+}
+
+func applyPreparedCommit(root, branch, before, after string) error {
+	currentBranchName, err := currentBranch(root)
+	if err != nil || currentBranchName != branch {
+		return &CLIError{Code: "CHS-OPERATION-BRANCH", Message: "current branch changed while preparing commit", ExitCode: 40}
+	}
+	currentHead, err := gitHead(root)
+	if err != nil || currentHead != before {
+		return &CLIError{Code: "CHS-OPERATION-HEAD", Message: "branch head changed while preparing commit", ExitCode: 40}
+	}
+	if _, err := git(root, "update-ref", "refs/heads/"+branch, after, before); err != nil {
+		return err
+	}
+	if err := injectOperationFault("git_ref_applied"); err != nil {
+		return err
+	}
+	if _, err := git(root, "read-tree", "--reset", after); err != nil {
+		return err
+	}
+	return nil
 }
 
 func gitDefaultBranch(root string) (string, error) {
