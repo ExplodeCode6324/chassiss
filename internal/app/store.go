@@ -1,0 +1,514 @@
+package app
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+)
+
+func projectPaths(root string) (configPath, trustPath, statePath, eventsPath string) {
+	control := filepath.Join(root, ".chassis")
+	return filepath.Join(control, "config.yaml"), filepath.Join(control, "trust.yaml"), filepath.Join(control, "state.yaml"), filepath.Join(control, "events.jsonl")
+}
+
+func loadProject(root string) (Config, Trust, State, error) {
+	var config Config
+	var trust Trust
+	var state State
+	configPath, trustPath, statePath, _ := projectPaths(root)
+	if err := loadYAML(configPath, &config); err != nil {
+		return config, trust, state, err
+	}
+	if err := loadYAML(trustPath, &trust); err != nil {
+		return config, trust, state, err
+	}
+	if err := verifyTrust(config, trust); err != nil {
+		return config, trust, state, err
+	}
+	if err := loadYAML(statePath, &state); err != nil {
+		return config, trust, state, err
+	}
+	if err := validateState(config, state); err != nil {
+		return config, trust, state, err
+	}
+	return config, trust, state, nil
+}
+
+func initializeProject(target, rootKeyPath string, existing bool) (Config, State, error) {
+	var emptyConfig Config
+	var emptyState State
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	target = absolute
+	if _, err := os.Stat(filepath.Join(target, ".chassis")); err == nil {
+		return emptyConfig, emptyState, &CLIError{Code: "CHS-PROJECT-EXISTS", Message: "project already contains .chassis", ExitCode: 10}
+	} else if !os.IsNotExist(err) {
+		return emptyConfig, emptyState, err
+	}
+	root, public, private, err := loadRoot(rootKeyPath)
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	if existing {
+		top, gitErr := git(target, "rev-parse", "--show-toplevel")
+		if gitErr != nil || !samePath(top, target) {
+			return emptyConfig, emptyState, &CLIError{Code: "CHS-PROJECT-NOT-GIT", Message: "--existing requires the target itself to be an existing Git repository root", ExitCode: 10}
+		}
+		clean, status, err := gitClean(target)
+		if err != nil {
+			return emptyConfig, emptyState, err
+		}
+		if !clean {
+			return emptyConfig, emptyState, &CLIError{Code: "CHS-PROJECT-DIRTY", Message: "--existing requires a clean worktree: " + status, ExitCode: 10}
+		}
+		if _, err := gitHead(target); err != nil {
+			return emptyConfig, emptyState, &CLIError{Code: "CHS-PROJECT-NO-BASELINE", Message: "--existing requires at least one commit", ExitCode: 10}
+		}
+	} else {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return emptyConfig, emptyState, err
+		}
+		top, _ := git(target, "rev-parse", "--show-toplevel")
+		if samePath(top, target) {
+			if _, err := gitHead(target); err == nil {
+				return emptyConfig, emptyState, &CLIError{Code: "CHS-PROJECT-HAS-HISTORY", Message: "repository has commits; use --existing", ExitCode: 10}
+			}
+		} else if _, err := git(target, "init", "-b", "main"); err != nil {
+			return emptyConfig, emptyState, err
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"),
+		filepath.Join(target, "docs", "missions"), filepath.Join(target, "docs", "tasks"),
+	} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return emptyConfig, emptyState, err
+		}
+	}
+	if existing {
+		excludePath := filepath.Join(target, ".git", "info", "exclude")
+		file, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return emptyConfig, emptyState, err
+		}
+		_, _ = fmt.Fprintln(file, "\n# CHASSISS local control state\n.chassis/")
+		_ = file.Close()
+	} else {
+		ignorePath := filepath.Join(target, ".gitignore")
+		if err := writeAtomic(ignorePath, []byte(".chassis/\n"), 0o644); err != nil {
+			return emptyConfig, emptyState, err
+		}
+		if _, err := gitCommit(target, "Initialize CHASSISS project", ".gitignore"); err != nil {
+			return emptyConfig, emptyState, err
+		}
+	}
+	branch, err := gitDefaultBranch(target)
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	baseline, err := gitHead(target)
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	projectID, err := newID("PRJ")
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	now := time.Now().UTC()
+	mode := "greenfield"
+	if existing {
+		mode = "brownfield"
+	}
+	config := Config{
+		Version: 1, ProjectID: projectID, Mode: mode, DefaultBranch: branch, ContentBackend: "local-git",
+		WIPLimit: 2, RootFingerprint: keyFingerprint(public), CreatedAt: now,
+	}
+	trust := Trust{Version: 1, ProjectID: projectID, RootPublicKey: root.PublicKey, Grants: []Grant{}, Revocations: []Revocation{}, UpdatedAt: now}
+	if err := signTrust(&trust, private); err != nil {
+		return emptyConfig, emptyState, err
+	}
+	state := State{
+		Version: StateVersion, ProjectID: projectID, Revision: 1, Phase: "design", Baseline: baseline,
+		Artifacts: map[string]ArtifactState{}, Missions: map[string]MissionState{}, Tasks: map[string]TaskState{},
+		Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{},
+		UpdatedAt: now, UpdatedBy: "master",
+	}
+	configPath, trustPath, statePath, eventsPath := projectPaths(target)
+	if err := writeYAMLAtomic(configPath, &config, 0o644); err != nil {
+		return emptyConfig, emptyState, err
+	}
+	if err := writeYAMLAtomic(trustPath, &trust, 0o644); err != nil {
+		return emptyConfig, emptyState, err
+	}
+	principal := rootPrincipal(root, public, private)
+	event, err := makeEvent(state, "project.initialized", projectID, principal, "")
+	if err != nil {
+		return emptyConfig, emptyState, err
+	}
+	if err := appendJSONLine(eventsPath, &event); err != nil {
+		return emptyConfig, emptyState, err
+	}
+	if err := writeYAMLAtomic(statePath, &state, 0o644); err != nil {
+		return emptyConfig, emptyState, err
+	}
+	return config, state, nil
+}
+
+func samePath(left, right string) bool {
+	canonical := func(path string) string {
+		absolute, err := filepath.Abs(path)
+		if err == nil {
+			path = absolute
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			path = resolved
+		}
+		return filepath.Clean(path)
+	}
+	return canonical(left) == canonical(right)
+}
+
+func cloneState(state State) (State, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return State{}, err
+	}
+	var copy State
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return State{}, err
+	}
+	return copy, nil
+}
+
+func makeEvent(state State, eventType, resource string, principal Principal, previousDigest string) (Event, error) {
+	id, err := newID("EVT")
+	if err != nil {
+		return Event{}, err
+	}
+	event := Event{
+		Version: EventVersion, ProjectID: state.ProjectID, Sequence: state.Revision, ID: id, Type: eventType,
+		Actor: principal.Actor, Role: principal.Role, CredentialID: principal.ID, Resource: resource,
+		OccurredAt: time.Now().UTC(), PreviousDigest: previousDigest, State: state,
+	}
+	data, err := eventSigningBytes(event)
+	if err != nil {
+		return Event{}, err
+	}
+	event.Digest = digestBytes(data)
+	event.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(principal.PrivateKey), []byte(event.Digest)))
+	return event, nil
+}
+
+func eventSigningBytes(event Event) ([]byte, error) {
+	event.Digest = ""
+	event.Signature = ""
+	return canonicalJSON(event)
+}
+
+func updateState(root string, principal Principal, eventType, resource string, expected int64, mutate func(*State) error) (State, State, Event, error) {
+	lock, err := acquireLock(root)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	defer lock.release()
+	config, _, _, err := loadProject(root)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	previous, err := verifyProject(root)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	if expected >= 0 && previous.Revision != expected {
+		return State{}, State{}, Event{}, &CLIError{Code: "CHS-CONFLICT-REVISION", Message: fmt.Sprintf("expected revision %d, current revision is %d", expected, previous.Revision), ExitCode: 12, Retryable: true, Remedy: []string{"run chassiss status", "re-evaluate the action"}}
+	}
+	next, err := cloneState(previous)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	if err := mutate(&next); err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	next.Revision = previous.Revision + 1
+	next.UpdatedAt = time.Now().UTC()
+	next.UpdatedBy = principal.Actor
+	if err := validateState(config, next); err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	_, _, statePath, eventsPath := projectPaths(root)
+	events, err := readEvents(eventsPath)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	previousDigest := ""
+	if len(events) > 0 {
+		previousDigest = events[len(events)-1].Digest
+	}
+	event, err := makeEvent(next, eventType, resource, principal, previousDigest)
+	if err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	if err := appendJSONLine(eventsPath, &event); err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	if err := writeYAMLAtomic(statePath, &next, 0o644); err != nil {
+		return State{}, State{}, Event{}, err
+	}
+	return previous, next, event, nil
+}
+
+func effectiveExpected(state State, requested int64) (int64, error) {
+	if requested >= 0 && requested != state.Revision {
+		return 0, &CLIError{Code: "CHS-CONFLICT-REVISION", Message: fmt.Sprintf("expected revision %d, current revision is %d", requested, state.Revision), ExitCode: 12, Retryable: true, Remedy: []string{"run chassiss status", "re-evaluate the action"}}
+	}
+	return state.Revision, nil
+}
+
+func verifyEventChain(config Config, trust Trust, events []Event) (State, error) {
+	if len(events) == 0 {
+		return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "event log is empty", ExitCode: 40}
+	}
+	rootPublic, _ := base64.RawStdEncoding.DecodeString(trust.RootPublicKey)
+	grants := map[string]Grant{}
+	for _, grant := range trust.Grants {
+		grants[grant.ID] = grant
+	}
+	revokedAt := map[string]time.Time{}
+	for _, revocation := range trust.Revocations {
+		if current, ok := revokedAt[revocation.CredentialID]; !ok || revocation.RevokedAt.Before(current) {
+			revokedAt[revocation.CredentialID] = revocation.RevokedAt
+		}
+	}
+	previousDigest := ""
+	var previousOccurredAt time.Time
+	for index, event := range events {
+		sequence := int64(index + 1)
+		if event.Version != EventVersion || event.ProjectID != config.ProjectID || event.Sequence != sequence || event.State.Revision != sequence {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has invalid envelope", sequence), ExitCode: 40}
+		}
+		if event.PreviousDigest != previousDigest {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d breaks the digest chain", sequence), ExitCode: 40}
+		}
+		if event.OccurredAt.IsZero() || (!previousOccurredAt.IsZero() && event.OccurredAt.Before(previousOccurredAt)) {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has a non-monotonic timestamp", sequence), ExitCode: 40}
+		}
+		data, err := eventSigningBytes(event)
+		if err != nil {
+			return State{}, err
+		}
+		if digestBytes(data) != event.Digest {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d digest is invalid", sequence), ExitCode: 40}
+		}
+		signature, err := base64.RawStdEncoding.DecodeString(event.Signature)
+		if err != nil {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d signature is malformed", sequence), ExitCode: 40}
+		}
+		requiredAction, knownEvent := eventRequiredAction(event.Type)
+		if !knownEvent {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has an unknown event type", sequence), ExitCode: 40}
+		}
+		if event.State.UpdatedBy != event.Actor {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d state actor is inconsistent", sequence), ExitCode: 40}
+		}
+		var public []byte
+		if event.Role == "master" {
+			public = rootPublic
+			if event.Type != "project.initialized" {
+				if _, ok := rootPrincipal(&RootKey{}, rootPublic, nil).Actions[requiredAction]; !ok {
+					return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d is not authorized for Master", sequence), ExitCode: 40}
+				}
+			}
+		} else {
+			grant, ok := grants[event.CredentialID]
+			if !ok || grant.Actor != event.Actor || grant.Role != event.Role {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d uses an unknown credential", sequence), ExitCode: 40}
+			}
+			if !containsString(grant.Actions, requiredAction) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d credential is not authorized for %s", sequence, event.Type), ExitCode: 40}
+			}
+			if event.OccurredAt.Before(grant.IssuedAt) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d predates its credential grant", sequence), ExitCode: 40}
+			}
+			if revoked, ok := revokedAt[event.CredentialID]; ok && !event.OccurredAt.Before(revoked) {
+				return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d was signed after credential revocation", sequence), ExitCode: 40}
+			}
+			public, _ = base64.RawStdEncoding.DecodeString(grant.PublicKey)
+		}
+		if len(public) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(public), []byte(event.Digest), signature) {
+			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d signature is invalid", sequence), ExitCode: 40}
+		}
+		if err := validateState(config, event.State); err != nil {
+			return State{}, fmt.Errorf("event sequence %d contains invalid state: %w", sequence, err)
+		}
+		previousDigest = event.Digest
+		previousOccurredAt = event.OccurredAt
+	}
+	return events[len(events)-1].State, nil
+}
+
+func eventRequiredAction(eventType string) (string, bool) {
+	actions := map[string]string{
+		"project.initialized":          "project.init",
+		"artifact.submitted":           "artifact.submit",
+		"artifact.accepted":            "artifact.accept",
+		"artifact.rejected":            "artifact.reject",
+		"mission.activated":            "mission.activate",
+		"mission.blocked":              "mission.block",
+		"mission.resumed":              "mission.resume",
+		"mission.acceptance_submitted": "mission.submit-acceptance",
+		"mission.completed":            "mission.accept",
+		"task.claimed":                 "task.claim",
+		"task.assigned":                "task.assign",
+		"task.blocked":                 "task.block",
+		"task.resumed":                 "task.resume",
+		"work.opened":                  "work.open",
+		"work.checked":                 "work.check",
+		"work.checkpointed":            "work.checkpoint",
+		"work.submitted":               "work.submit",
+		"work.blocked":                 "work.block",
+		"review.approved":              "review.approve",
+		"review.changes_requested":     "review.request-changes",
+		"integration.applied":          "integrate.apply",
+	}
+	action, ok := actions[eventType]
+	return action, ok
+}
+
+func verifyProject(root string) (State, error) {
+	config, trust, state, err := loadProject(root)
+	if err != nil {
+		return State{}, err
+	}
+	_, _, _, eventsPath := projectPaths(root)
+	events, err := readEvents(eventsPath)
+	if err != nil {
+		return State{}, err
+	}
+	rebuilt, err := verifyEventChain(config, trust, events)
+	if err != nil {
+		return State{}, err
+	}
+	if !reflect.DeepEqual(rebuilt, state) {
+		return State{}, &CLIError{Code: "CHS-INTEGRITY-PROJECTION", Message: "state.yaml differs from the signed event projection; run chassiss recover", ExitCode: 40}
+	}
+	return state, nil
+}
+
+func recoverProject(root string) (State, error) {
+	lock, err := acquireLock(root)
+	if err != nil {
+		return State{}, err
+	}
+	defer lock.release()
+	var config Config
+	var trust Trust
+	configPath, trustPath, statePath, eventsPath := projectPaths(root)
+	if err := loadYAML(configPath, &config); err != nil {
+		return State{}, err
+	}
+	if err := loadYAML(trustPath, &trust); err != nil {
+		return State{}, err
+	}
+	if err := verifyTrust(config, trust); err != nil {
+		return State{}, err
+	}
+	events, err := readEvents(eventsPath)
+	if err != nil {
+		return State{}, err
+	}
+	rebuilt, err := verifyEventChain(config, trust, events)
+	if err != nil {
+		return State{}, err
+	}
+	if err := writeYAMLAtomic(statePath, &rebuilt, 0o644); err != nil {
+		return State{}, err
+	}
+	return rebuilt, nil
+}
+
+func validateState(config Config, state State) error {
+	if state.Version != StateVersion || state.ProjectID != config.ProjectID || state.Revision < 1 {
+		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state version, project, or revision is invalid", ExitCode: 40}
+	}
+	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil {
+		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state collections must not be null", ExitCode: 40}
+	}
+	activeCount := 0
+	for id, mission := range state.Missions {
+		if mission.ID != id {
+			return &CLIError{Code: "CHS-STATE-MISSION", Message: "mission map key does not match mission ID", ExitCode: 40}
+		}
+		if mission.Status == "active" || mission.Status == "blocked" || mission.Status == "acceptance_pending" {
+			activeCount++
+			if state.ActiveMission != id {
+				return &CLIError{Code: "CHS-STATE-MISSION", Message: "active mission pointer is inconsistent", ExitCode: 40}
+			}
+		}
+	}
+	if activeCount > 1 {
+		return &CLIError{Code: "CHS-STATE-MISSION", Message: "only one mission may be active", ExitCode: 40}
+	}
+	for id, task := range state.Tasks {
+		if task.ID != id || state.Missions[task.MissionID].ID == "" {
+			return &CLIError{Code: "CHS-STATE-TASK", Message: "task identity or mission reference is invalid", ExitCode: 40}
+		}
+		for _, dependency := range task.DependsOn {
+			dep, ok := state.Tasks[dependency]
+			if !ok {
+				return &CLIError{Code: "CHS-STATE-TASK", Message: fmt.Sprintf("task %s has unknown dependency %s", id, dependency), ExitCode: 40}
+			}
+			if task.Status == "ready" && dep.Status != "integrated" {
+				return &CLIError{Code: "CHS-STATE-TASK", Message: fmt.Sprintf("ready task %s has unmet dependency %s", id, dependency), ExitCode: 40}
+			}
+		}
+		if containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved", "integrated", "blocked"}, task.Status) && task.Owner == "" {
+			return &CLIError{Code: "CHS-STATE-TASK", Message: "active task requires an owner: " + id, ExitCode: 40}
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedTaskIDs(tasks map[string]TaskState) []string {
+	ids := make([]string, 0, len(tasks))
+	for id := range tasks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func pathWithin(root, path string) (string, error) {
+	if filepath.IsAbs(path) {
+		clean := filepath.Clean(path)
+		relative, err := filepath.Rel(root, clean)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return "", &CLIError{Code: "CHS-PATH-OUTSIDE", Message: "path is outside project root", ExitCode: 20}
+		}
+		return clean, nil
+	}
+	clean := filepath.Join(root, filepath.Clean(path))
+	relative, err := filepath.Rel(root, clean)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", &CLIError{Code: "CHS-PATH-OUTSIDE", Message: "path is outside project root", ExitCode: 20}
+	}
+	return clean, nil
+}
