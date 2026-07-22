@@ -12,7 +12,7 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - Greenfield：从空目录初始化 Go greeting CLI，完整执行设计、Master 接受、Mission 激活、Task claim、Developer check/submit、独立 review、local integration 和 Mission 验收；最终 revision 19，签名事件和 Git worktree 验证通过。
 - Brownfield：接管已有 `trunk` 分支和历史的 Go calculator，在不修改模块身份和既有 `Add` API 的前提下增加 `Multiply`；完整闭环后 revision 18，原历史保留，签名事件和 Git worktree 验证通过。
 - 长期 credential：同一角色 credential 跨整个 Mission 和多个 CLI 调用持续有效；额外签发并回收一个测试 credential 后，后续写动作稳定返回 `CHS-AUTH-REVOKED`。
-- 四个角色 Skill 均通过 system `skill-creator` 的 `quick_validate.py`。
+- 四份静态 Role Skill 已收敛为一个标准 `skills/chassiss/SKILL.md`，通过 system `skill-creator` 的 `quick_validate.py`。
 - Go 验证：`go test ./...`、`go test -race ./...` 与 `go vet ./...` 通过。
 - Greenfield/Brownfield 的四角色流程现已转成直接调用真实 CLI 参数和 JSON envelope 的自动化端到端测试，不再只依赖本页手工推演。
 
@@ -31,6 +31,7 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 11. Trust 签名字节排序改为复制 slice 后排序，不会改变调用者状态；changed files 使用规范、排序、逐元素比较，拒绝空值、NUL、重复和非规范路径。
 12. Event V2/Trust V1 的现有 Go JSON 字节格式通过 golden vectors 冻结，并禁止核心签名结构加入浮点字段。JCS 只能作为未来新协议版本，避免无迁移地破坏历史签名。
 13. Designer `next` 会显示 rejected artifact 的路径和理由；Developer submission 支持审计友好的提交摘要，并记录、复核冻结 Task 预算的 Git 证据。
+14. 角色动作、命令 schema 和 option 校验原先分散在授权代码、CLI 和四份 Skill。现在 Role Policy V1 registry 是单一机器来源；`bootstrap` 从已验证 credential 推导身份，只返回实际 grant、资源 scope、当前候选动作和按需 context，不把旧角色文档改写成另一套声明式规章。
 
 ## 剩余风险与下一轮建议
 

@@ -339,10 +339,10 @@ func revokeCredentialExpected(rootDir, rootPath, credentialID, reason string, ex
 }
 
 func grantedActions(role string, requested []string) ([]string, error) {
-	allowed, ok := roleActions[role]
-	if !ok {
+	if _, ok := issuableRoles[role]; !ok {
 		return nil, &CLIError{Code: "CHS-AUTH-ROLE", Message: "unknown role: " + role, ExitCode: 20}
 	}
+	allowed := actionsForRole(role)
 	actions := append([]string{}, allowed...)
 	if len(requested) > 0 {
 		allowedSet := stringSet(allowed)

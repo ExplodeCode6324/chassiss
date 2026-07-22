@@ -12,7 +12,7 @@ chassiss [--root <project>] [--json] [--credential <source>]
 
 - Agent 使用 `--json`；
 - 读命令不修改项目；
-- 写命令要求 credential；
+- workflow 写命令和角色专属 context/list/check 读命令要求 credential；公共 `status/doctor/verify/explain` 仍可用于诊断，`recover` 只按已签名 journal 确定性收尾，不产生新授权；
 - 写命令支持 `--expect-revision`；`--dry-run` 已保留但 v0.1 会明确拒绝，不产生伪预览；
 - 成功返回结果、旧/新 revision 和允许的下一动作；
 - 失败返回稳定错误码、事实、是否可重试和建议命令；
@@ -23,6 +23,7 @@ chassiss [--root <project>] [--json] [--credential <source>]
 ```text
 chassiss --credential <master-root> project init <path> [--existing]
          [--max-changed-files <n>] [--max-diff-lines <n>] [--max-commits <n>]
+chassiss --root <project> --credential <credential> bootstrap
 chassiss status
 chassiss next --role <role> [--actor <actor>]
 chassiss doctor
@@ -33,7 +34,20 @@ chassiss explain <error-code>
 
 `status` 返回当前 Mission、ready/active/blocked Task、待复核 submission 和 revision。
 
-`next` 按 role、actor 和当前状态返回候选动作；真正执行时仍会重新验证 credential、revision 和全部前置条件。
+`bootstrap` 是 Agent 的标准入口。它先验证 credential、Root anchor、trust/revocation、事件链和 State，再由 credential 推导 actor/role；命令不接受 `--role`，因此 Agent 不能通过自报角色扩大权限。结果包括：
+
+- `principal`：credential ID、actor、role、grant actions、资源 scope 和有效期；
+- `policy`：Role Policy V1 的版本、全局 digest 和最小安全不变量；
+- `capabilities`：该 credential 实际拥有的命令 schema，已按 grant 过滤；
+- `available_actions`：当前 State 下的结构化候选 `argv`、理由和所需输入，已按资源 scope 过滤；
+- `context_requests`：执行前按需读取 Task、Mission、submission 或 artifact 的结构化 `argv`；
+- `state_revision/trust_revision` 和必须重新 bootstrap 的条件。
+
+Agent 应把 `state_revision` 作为全局 `--expect-revision` 传给 mutation，并在任何状态变化、冲突、拒绝或 trust 变化后重新 bootstrap。返回的候选动作不是授权票据，真正执行时仍会重新验证 credential、scope、revision 和领域前置条件。
+
+`next --role/--actor` 为兼容旧调用保留，只提供未绑定 credential 的诊断投影，不能作为实际身份或授权依据。
+
+Role Policy registry 也用于拦截角色专属读命令：例如 Developer credential 不能读取 Reviewer 的 `review list/context`。公开诊断命令不泄露角色规范，也不授予任何 mutation。
 
 新项目的默认 Task 预算为 100 个变更文件、20,000 行增删和 20 个提交。三个 `project init` 参数可分别改写；`0` 表示该维度无限制。Task 模板会带入项目默认值，Master 接受 Task 后预算随契约冻结，不能在执行中原位放宽。
 
@@ -171,6 +185,7 @@ credential 必须按 Agent 身份签发，不能由多个 Agent 共享一个 Rol
 
 ```text
 project init
+bootstrap
 status
 next
 doctor

@@ -13,22 +13,6 @@ import (
 	"time"
 )
 
-var roleActions = map[string][]string{
-	"designer": {
-		"artifact.submit",
-	},
-	"orchestrator": {
-		"mission.activate", "mission.block", "mission.resume", "mission.submit-acceptance",
-		"task.claim", "task.assign", "task.block", "task.resume", "task.release", "task.supersede", "publish.apply",
-	},
-	"developer": {
-		"work.open", "work.check", "work.checkpoint", "work.submit", "work.block",
-	},
-	"reviewer": {
-		"review.approve", "review.request-changes", "integrate.apply",
-	},
-}
-
 func createRoot(path string) (*RootKey, error) {
 	if _, err := os.Stat(path); err == nil {
 		return nil, &CLIError{Code: "CHS-AUTH-ROOT-EXISTS", Message: "refusing to overwrite existing Master Root", ExitCode: 10}
@@ -122,9 +106,7 @@ func verifyTrust(config Config, trust Trust) error {
 }
 
 func rootPrincipal(root *RootKey, public ed25519.PublicKey, private ed25519.PrivateKey) Principal {
-	actions := map[string]struct{}{
-		"auth.issue": {}, "auth.revoke": {}, "artifact.accept": {}, "artifact.reject": {}, "mission.accept": {}, "task.cancel": {}, "publish.apply": {},
-	}
+	actions := stringSet(actionsForRole("master"))
 	return Principal{ID: root.ID, Actor: "master", Role: "master", Actions: actions, PrivateKey: private, PublicKey: public}
 }
 

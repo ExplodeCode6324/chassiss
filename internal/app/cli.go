@@ -132,37 +132,11 @@ func parseCommandArgs(args []string) (commandArgs, error) {
 }
 
 func validateCommandOptions(command string, parsed commandArgs) error {
-	type allowedOptions struct {
-		values []string
-		flags  []string
+	policy, known := commandPolicyFor(command)
+	if !known {
+		return nil
 	}
-	allowed := map[string]allowedOptions{
-		"auth master-init":          {values: []string{"output"}},
-		"auth issue":                {values: []string{"master-root", "actor", "role", "output", "actions", "not-before", "expires-at", "ttl-seconds", "projects", "missions", "tasks", "submissions", "submission-digests", "heads", "baselines"}, flags: []string{"persistent"}},
-		"auth revoke":               {values: []string{"master-root", "id", "reason"}},
-		"project init":              {values: []string{"master-root", "max-changed-files", "max-diff-lines", "max-commits"}, flags: []string{"existing"}},
-		"next":                      {values: []string{"role", "actor"}},
-		"template get":              {values: []string{"id", "output"}},
-		"artifact list":             {flags: []string{"pending"}},
-		"artifact reject":           {values: []string{"reason"}},
-		"mission block":             {values: []string{"reason"}},
-		"mission submit-acceptance": {values: []string{"evidence"}},
-		"task list":                 {flags: []string{"ready", "active", "blocked", "review"}},
-		"task assign":               {values: []string{"owner"}},
-		"task block":                {values: []string{"reason"}},
-		"task cancel":               {values: []string{"reason"}},
-		"task supersede":            {values: []string{"replacement"}},
-		"work check":                {values: []string{"id"}, flags: []string{"all"}},
-		"work checkpoint":           {values: []string{"file"}},
-		"work submit":               {values: []string{"file", "message"}},
-		"work block":                {values: []string{"reason"}},
-		"review approve":            {values: []string{"report"}},
-		"review request-changes":    {values: []string{"report"}},
-		"publish check":             {values: []string{"target", "remote", "branch"}},
-		"publish apply":             {values: []string{"target", "remote", "branch"}},
-	}
-	rules := allowed[command]
-	valueSet, flagSet := stringSet(rules.values), stringSet(rules.flags)
+	valueSet, flagSet := stringSet(policy.Values), stringSet(policy.Flags)
 	for name := range parsed.values {
 		if _, ok := valueSet[name]; !ok {
 			return usageError("unknown option for " + command + ": --" + name)
@@ -267,14 +241,41 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	}
 	mutatingResponse := func(previous, next State, value any, principal Principal) Response {
 		item := response(command, config.ProjectID, previous.Revision, next.Revision, value)
-		item.Next = nextActions(next, principal.Role, principal.Actor)
+		item.Next = nextActionsForPrincipal(next, principal)
 		return item
 	}
 	principalFor := func(action string) (Principal, error) {
 		return loadPrincipal(root, options.credential, action)
 	}
+	var roleReadPrincipal *Principal
+	if policy, ok := commandPolicyFor(command); ok && commandRequiresRoleCredential(policy) {
+		principal, err := principalFor("")
+		if err != nil {
+			return Response{}, err
+		}
+		if !containsString(policy.Roles, principal.Role) {
+			return Response{}, &CLIError{Code: "CHS-AUTH-DENIED", Message: fmt.Sprintf("role %s cannot perform %s", principal.Role, command), ExitCode: 11}
+		}
+		if err := authorizeRoleReadScope(state, principal, command, parsed); err != nil {
+			return Response{}, err
+		}
+		roleReadPrincipal = &principal
+	}
 
 	switch command {
+	case "bootstrap":
+		if len(parsed.positionals) != 0 {
+			return Response{}, usageError("bootstrap does not accept positional arguments")
+		}
+		principal, err := principalFor("")
+		if err != nil {
+			return Response{}, err
+		}
+		result, err := buildBootstrapResult(root, trust, state, principal)
+		if err != nil {
+			return Response{}, err
+		}
+		return readResponse(result), nil
 	case "auth issue":
 		rootKey := firstNonEmpty(parsed.values["master-root"], options.credential)
 		actor, role, output := parsed.values["actor"], parsed.values["role"], parsed.values["output"]
@@ -464,7 +465,13 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		return readResponse(map[string]any{"artifact": artifact, "content": content}), nil
 
 	case "mission list":
-		return readResponse(map[string]any{"missions": sortedMissions(state)}), nil
+		missions := []MissionState{}
+		for _, mission := range sortedMissions(state) {
+			if roleReadPrincipal == nil || missionVisibleTo(*roleReadPrincipal, mission.ID) {
+				missions = append(missions, mission)
+			}
+		}
+		return readResponse(map[string]any{"missions": missions}), nil
 	case "mission context":
 		id, err := exactlyOne(parsed.positionals, "mission context requires a mission ID")
 		if err != nil {
@@ -474,7 +481,17 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if !ok {
 			return Response{}, notFound("mission")
 		}
-		return readResponse(map[string]any{"mission": mission, "tasks": tasksForMission(state, id)}), nil
+		tasks := tasksForMission(state, id)
+		if roleReadPrincipal != nil && len(roleReadPrincipal.Resources.Tasks) != 0 {
+			filtered := []TaskState{}
+			for _, task := range tasks {
+				if taskVisibleTo(*roleReadPrincipal, task.ID) {
+					filtered = append(filtered, task)
+				}
+			}
+			tasks = filtered
+		}
+		return readResponse(map[string]any{"mission": mission, "tasks": tasks}), nil
 	case "mission activate":
 		id, err := exactlyOne(parsed.positionals, "mission activate requires a mission ID")
 		if err != nil {
@@ -558,7 +575,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		tasks := []TaskState{}
 		for _, id := range sortedTaskIDs(state.Tasks) {
 			task := state.Tasks[id]
-			if statusFilter == "" || statusMatchesFilter(task.Status, statusFilter) {
+			if (roleReadPrincipal == nil || taskVisibleTo(*roleReadPrincipal, id)) && (statusFilter == "" || statusMatchesFilter(task.Status, statusFilter)) {
 				tasks = append(tasks, task)
 			}
 		}
@@ -769,7 +786,7 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	case "review list":
 		items := []Submission{}
 		for _, submission := range state.Submissions {
-			if submission.Status == "review_pending" {
+			if submission.Status == "review_pending" && (roleReadPrincipal == nil || submissionVisibleTo(state, *roleReadPrincipal, submission.ID)) {
 				items = append(items, submission)
 			}
 		}
@@ -873,7 +890,7 @@ func commandName(words []string) string {
 	if len(words) == 0 {
 		return ""
 	}
-	if containsString([]string{"status", "next", "doctor", "verify", "recover", "explain", "version"}, words[0]) || len(words) == 1 {
+	if containsString([]string{"bootstrap", "status", "next", "doctor", "verify", "recover", "explain", "version"}, words[0]) || len(words) == 1 {
 		return words[0]
 	}
 	return words[0] + " " + words[1]
@@ -887,12 +904,8 @@ func commandWordCount(words []string) int {
 }
 
 func isWriteCommand(command string) bool {
-	return containsString([]string{
-		"auth master-init", "auth issue", "auth revoke", "project init", "recover", "template get",
-		"artifact submit", "artifact accept", "artifact reject", "mission activate", "mission block", "mission resume", "mission submit-acceptance", "mission accept",
-		"task claim", "task assign", "task block", "task resume", "task release", "task cancel", "task supersede", "work open", "work check", "work checkpoint", "work submit", "work block",
-		"review approve", "review request-changes", "integrate apply", "publish apply",
-	}, command)
+	policy, ok := commandPolicyFor(command)
+	return ok && policy.Mutating
 }
 
 func response(command, projectID string, before, after int64, result any) Response {
@@ -1188,7 +1201,7 @@ Usage:
 Core commands:
   auth master-init|issue|inspect|revoke
   project init
-  status | next | doctor | verify | recover | explain
+  bootstrap | status | next | doctor | verify | recover | explain
   template list|get
   artifact check|submit|list|context|accept|reject
   mission list|context|activate|block|resume|submit-acceptance|accept

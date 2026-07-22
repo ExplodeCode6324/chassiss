@@ -55,6 +55,10 @@ func runCLIFourRoleLifecycle(t *testing.T, existing bool) {
 		)
 		credentials[role] = path
 	}
+	designerBootstrap := runBootstrapCLI(t, project, credentials["designer"])
+	if designerBootstrap.Principal.Role != "designer" || !hasBootstrapAction(designerBootstrap.AvailableActions, "template.get") {
+		t.Fatalf("initial Designer bootstrap = %#v", designerBootstrap)
+	}
 
 	requirements := `---
 kind: requirements
@@ -168,8 +172,16 @@ Create code.txt.
 	if state.Tasks["M001-T001"].Budget != wantBudget {
 		t.Fatalf("frozen task budget = %#v, want %#v", state.Tasks["M001-T001"].Budget, wantBudget)
 	}
+	orchestratorBootstrap := runBootstrapCLI(t, project, credentials["orchestrator"])
+	if orchestratorBootstrap.Principal.Role != "orchestrator" || !hasBootstrapAction(orchestratorBootstrap.AvailableActions, "mission.activate") {
+		t.Fatalf("planned Orchestrator bootstrap = %#v", orchestratorBootstrap)
+	}
 	runProjectCLI(t, project, credentials["orchestrator"], "mission", "activate", "M001")
 	runProjectCLI(t, project, credentials["orchestrator"], "task", "assign", "M001-T001", "--owner", "agent:developer")
+	developerBootstrap := runBootstrapCLI(t, project, credentials["developer"])
+	if developerBootstrap.Principal.Role != "developer" || !hasBootstrapAction(developerBootstrap.AvailableActions, "work.open") {
+		t.Fatalf("claimed Developer bootstrap = %#v", developerBootstrap)
+	}
 	runProjectCLI(t, project, credentials["developer"], "work", "open", "M001-T001")
 
 	state = mustProjectState(t, project)
@@ -188,9 +200,17 @@ Create code.txt.
 	if submission.CommitMessage != "M001-T001: CLI completion" || submission.Metrics == nil {
 		t.Fatalf("CLI submission evidence = %#v", submission)
 	}
+	reviewerBootstrap := runBootstrapCLI(t, project, credentials["reviewer"])
+	if reviewerBootstrap.Principal.Role != "reviewer" || !hasBootstrapAction(reviewerBootstrap.AvailableActions, "review.check") || !hasBootstrapAction(reviewerBootstrap.AvailableActions, "review.approve") {
+		t.Fatalf("pending Reviewer bootstrap = %#v", reviewerBootstrap)
+	}
 	runProjectCLI(t, project, credentials["reviewer"], "review", "approve", submission.ID, "--report", "approved")
 	runProjectCLI(t, project, credentials["reviewer"], "integrate", "apply", submission.ID)
 	runProjectCLI(t, project, credentials["orchestrator"], "mission", "submit-acceptance", "M001", "--evidence", "integration verified")
+	masterBootstrap := runBootstrapCLI(t, project, credentials["master"])
+	if masterBootstrap.Principal.Role != "master" || !hasBootstrapAction(masterBootstrap.AvailableActions, "mission.accept") {
+		t.Fatalf("acceptance-pending Master bootstrap = %#v", masterBootstrap)
+	}
 	runProjectCLI(t, project, credentials["master"], "mission", "accept", "M001")
 	runProjectCLI(t, project, credentials["master"], "verify")
 
@@ -221,6 +241,10 @@ func cliSubmitAndAcceptArtifact(t *testing.T, project, path string, credentials 
 	if submissionID == "" {
 		t.Fatalf("artifact %s was not submitted", path)
 	}
+	masterBootstrap := runBootstrapCLI(t, project, credentials["master"])
+	if !hasBootstrapAction(masterBootstrap.AvailableActions, "artifact.accept") || len(masterBootstrap.ContextRequests) == 0 {
+		t.Fatalf("pending artifact Master bootstrap = %#v", masterBootstrap)
+	}
 	runProjectCLI(t, project, credentials["master"], "artifact", "accept", submissionID)
 }
 
@@ -228,6 +252,29 @@ func runProjectCLI(t *testing.T, project, credential string, arguments ...string
 	t.Helper()
 	global := []string{"--json", "--root", project, "--credential", credential}
 	return runCLIJSON(t, append(global, arguments...)...)
+}
+
+func runBootstrapCLI(t *testing.T, project, credential string) BootstrapResult {
+	t.Helper()
+	response := runProjectCLI(t, project, credential, "bootstrap")
+	data, err := json.Marshal(response.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result BootstrapResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func hasBootstrapAction(actions []BootstrapAction, action string) bool {
+	for _, candidate := range actions {
+		if candidate.Action == action {
+			return true
+		}
+	}
+	return false
 }
 
 func runCLIJSON(t *testing.T, arguments ...string) Response {

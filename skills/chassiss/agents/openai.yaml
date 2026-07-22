@@ -1,0 +1,4 @@
+interface:
+  display_name: "CHASSISS"
+  short_description: "Bootstrap a credential-governed CHASSISS role"
+  default_prompt: "Use $chassiss to bootstrap my credential and follow the current allowed actions."
