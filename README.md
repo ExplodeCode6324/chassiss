@@ -25,12 +25,20 @@ chassiss/
     ├── SKILL.md
     ├── agents/openai.yaml
     └── bin/
+        ├── darwin-amd64/chassiss
+        ├── darwin-arm64/chassiss
         ├── linux-amd64/chassiss
         ├── linux-arm64/chassiss
         └── SHA256SUMS
 ```
 
-`src/` 是唯一源码根目录。`cli/` 保存当前安全支持平台的可执行文件；Skill 自带 Linux amd64/arm64 二进制，复制或安装 Skill 后不依赖系统 `PATH` 中的同名程序。Windows 版本暂不发布，因为当前 Windows 构建会明确拒绝项目 advisory lock，不能安全执行写操作。
+`src/` 是唯一源码根目录。`cli/` 保存当前安全支持平台的可执行文件；Skill 自带相同的平台版本，复制或安装 Skill 后不依赖系统 `PATH` 中的同名程序。
+
+当前支持：
+
+- macOS：Intel `amd64`、Apple Silicon `arm64`；
+- Linux：`amd64`、`arm64`；
+- Windows：暂不支持，因为当前 Windows 构建会明确拒绝项目 advisory lock，不能安全执行写操作。
 
 从源码验证或重建：
 

@@ -9,12 +9,7 @@ Treat the trusted CLI as the execution and policy authority. Let the credential 
 
 ## CLI
 
-Resolve executable paths relative to the directory containing this `SKILL.md`, never relative to the managed project or the current working directory.
-
-- Linux `x86_64`: `bin/linux-amd64/chassiss`
-- Linux `aarch64` or `arm64`: `bin/linux-arm64/chassiss`
-
-Use `uname -m` only to select the matching bundled executable. Do not substitute a `chassiss` found on `PATH` when a matching bundled binary exists.
+Select the bundled CLI that matches the current operating system and architecture from `bin/<os>-<arch>/chassiss`. Resolve this path relative to the directory containing `SKILL.md`, never relative to the managed project or current working directory. Stop and report an unsupported system if no matching binary exists; do not substitute a `chassiss` found on `PATH`.
 
 ## Bootstrap
 
@@ -22,7 +17,7 @@ Use `uname -m` only to select the matching bundled executable. Do not substitute
 2. Run:
 
    ```text
-   <skill-dir>/bin/linux-<arch>/chassiss --json --root <project> --credential <credential> bootstrap
+   <skill-dir>/bin/<os>-<arch>/chassiss --json --root <project> --credential <credential> bootstrap
    ```
 
 3. Read `principal`, `policy`, `capabilities`, `available_actions`, and `context_requests` from the JSON result.
