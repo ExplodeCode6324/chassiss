@@ -117,6 +117,16 @@ type integrationAppliedPayload struct {
 	Checks           map[string]CheckResult `json:"checks"`
 }
 
+type publicationAppliedPayload struct {
+	PublicationID      string `json:"publication_id"`
+	Target             string `json:"target"`
+	Remote             string `json:"remote"`
+	RemoteURLDigest    string `json:"remote_url_digest"`
+	Branch             string `json:"branch"`
+	PreviousRemoteHead string `json:"previous_remote_head,omitempty"`
+	Head               string `json:"head"`
+}
+
 func marshalPayload(value any) (json.RawMessage, error) {
 	data, err := canonicalJSON(value)
 	if err != nil {
@@ -174,7 +184,7 @@ func reduceEvent(config Config, previous State, event Event) (State, error) {
 		next = State{
 			Version: StateVersion, ProjectID: config.ProjectID, Phase: "design", Baseline: payload.Baseline,
 			Artifacts: map[string]ArtifactState{}, Missions: map[string]MissionState{}, Tasks: map[string]TaskState{},
-			Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{},
+			Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{}, Publications: map[string]Publication{},
 		}
 	} else {
 		if previous.Revision == 0 {
@@ -740,6 +750,21 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 				next.Tasks[otherID] = other
 			}
 		}
+	case "publication.applied":
+		var payload publicationAppliedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := payloadResource(event, payload.PublicationID); err != nil {
+			return err
+		}
+		if !containsString([]string{"master", "orchestrator"}, event.Role) || payload.PublicationID == "" || !containsString([]string{"github", "gitlab", "remote-git"}, payload.Target) || payload.Remote == "" || payload.RemoteURLDigest == "" || payload.Branch == "" || payload.Head == "" || payload.Head != previous.Baseline {
+			return transitionError(event, "publication evidence is invalid or does not match the formal baseline")
+		}
+		if _, exists := previous.Publications[payload.PublicationID]; exists {
+			return transitionError(event, "publication ID already exists")
+		}
+		next.Publications[payload.PublicationID] = Publication{ID: payload.PublicationID, Target: payload.Target, Remote: payload.Remote, RemoteURLDigest: payload.RemoteURLDigest, Branch: payload.Branch, PreviousRemoteHead: payload.PreviousRemoteHead, Head: payload.Head, PublishedBy: event.Actor, CreatedAt: event.OccurredAt}
 	default:
 		return &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "unknown event type: " + event.Type, ExitCode: 40}
 	}
@@ -840,6 +865,9 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 		submission := candidate.Submissions[resource]
 		integration := candidate.Integrations[submission.IntegrationID]
 		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, SubmissionDigest: submission.Digest, SubmissionHead: integration.SubmissionHead, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead, IntegratedTree: integration.IntegratedTree, Checks: integration.Checks}, nil
+	case "publication.applied":
+		publication := candidate.Publications[resource]
+		return publicationAppliedPayload{PublicationID: publication.ID, Target: publication.Target, Remote: publication.Remote, RemoteURLDigest: publication.RemoteURLDigest, Branch: publication.Branch, PreviousRemoteHead: publication.PreviousRemoteHead, Head: publication.Head}, nil
 	default:
 		return nil, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "unknown event type: " + eventType, ExitCode: 40}
 	}

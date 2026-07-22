@@ -34,7 +34,7 @@ chassiss explain <error-code>
 
 `next` 按 role、actor 和当前状态返回候选动作；真正执行时仍会重新验证 credential、revision 和全部前置条件。
 
-`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 先处理 authorization 与 Git/state operation journal：仅当外部结果精确匹配 journal 时补写或发布，随后从签名事件重建状态投影。不一致时进入 integrity blocked，不隐式 reset、force 或改写 trust。
+`doctor/verify` 在传入 `--credential` 时还会用该长期凭证锚定项目 Root；不传凭证只证明项目内部自洽。`recover` 依次处理 authorization、publish 与 Git/state operation journal：仅当外部结果精确匹配 journal 时补写或发布，随后从签名事件重建状态投影。不一致时进入 integrity blocked，不隐式 reset、force 或改写 trust。
 
 ## 模板和设计文档
 
@@ -120,14 +120,19 @@ chassiss review request-changes <submission-id> --report <file>
 chassiss integrate check <submission-id>
 chassiss integrate apply <submission-id>
 
-# publish 命令留待 adapter 阶段，不属于 v0.1
+chassiss publish check --target <github|gitlab|remote-git>
+                       [--remote origin] [--branch <default-branch>]
+chassiss publish apply --target <github|gitlab|remote-git>
+                       [--remote origin] [--branch <default-branch>]
 ```
 
 `review check` 做机器检查；Reviewer 仍须进行语义复核。批准绑定 submission 摘要，任何内容变化都会使批准失效。
 
 `integrate apply` 只接受仍有效的 approved submission，要求 Task branch tip 仍等于获批 `HeadCommit`，在临时候选 worktree 合并精确 SHA 并重跑 checks；全部通过后才推进本地正式 baseline 和记录 integration。
 
-`publish` 与集成分开。远端发布失败不会伪造成功，也不会损坏本地工作流状态。
+`publish check` 是只读预检；`publish apply` 需要 Master 或 Orchestrator credential。adapter 只把本地正式分支对应的精确 CLI baseline SHA fast-forward push 到指定远端分支，禁止隐式 merge、reset 和 force。目标名只选择适配器策略，不会把 GitHub/GitLab 的 Issue、PR 或 Review 当作状态源。
+
+`publication.applied` 与 `integration.applied` 分开记录，并绑定远端名称、URL 摘要、分支和 SHA；CLI 不回显可能含凭据的原始远端 URL，也拒绝 Git external-helper URL。远端发布失败不会伪造成功，也不会损坏或撤销本地 integration。push 已成功但本地事件提交失败时，后续写操作会要求先运行 `recover`；只有远端 endpoint 和 SHA 与预写 journal 精确一致时才补记 publication。
 
 ## 身份和权限
 
@@ -174,6 +179,7 @@ work open/check/checkpoint/submit
 work context/status/diff/block
 review list/context/check/approve/request-changes
 integrate check/apply
+publish check/apply
 ```
 
-`publish` adapter、credential rotate 命令和可证明无副作用的 transactional dry-run 留待后续版本。
+credential rotate 命令和可证明无副作用的 transactional dry-run 留待后续版本。

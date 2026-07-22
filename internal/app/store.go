@@ -90,7 +90,7 @@ func initializeProject(target, rootKeyPath string, existing bool) (Config, State
 		}
 	}
 	for _, path := range []string{
-		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"), filepath.Join(target, ".chassis", "events"), filepath.Join(target, ".chassis", "operations"), filepath.Join(target, ".chassis", "auth-operations"),
+		filepath.Join(target, ".chassis", "submissions"), filepath.Join(target, ".chassis", "cache"), filepath.Join(target, ".chassis", "events"), filepath.Join(target, ".chassis", "operations"), filepath.Join(target, ".chassis", "auth-operations"), filepath.Join(target, ".chassis", "publish-operations"),
 		filepath.Join(target, "docs", "missions"), filepath.Join(target, "docs", "tasks"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -417,6 +417,7 @@ func eventRequiredAction(eventType string) (string, bool) {
 		"review.approved":              "review.approve",
 		"review.changes_requested":     "review.request-changes",
 		"integration.applied":          "integrate.apply",
+		"publication.applied":          "publish.apply",
 	}
 	action, ok := actions[eventType]
 	return action, ok
@@ -454,6 +455,9 @@ func recoverProject(root string) (State, error) {
 	if err := loadYAML(configPath, &config); err != nil {
 		return State{}, err
 	}
+	if config.Version != ConfigVersion {
+		return State{}, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
+	}
 	if err := loadYAML(trustPath, &trust); err != nil {
 		return State{}, err
 	}
@@ -467,6 +471,9 @@ func recoverProject(root string) (State, error) {
 		return State{}, err
 	}
 	if err := verifyTrust(config, trust); err != nil {
+		return State{}, err
+	}
+	if err := recoverPublishOperationsLocked(root, config); err != nil {
 		return State{}, err
 	}
 	if err := recoverOperationsLocked(root, config); err != nil {

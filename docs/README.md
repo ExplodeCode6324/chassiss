@@ -1,10 +1,10 @@
 # CHASSISS v0.1
 
-> CLI、四个角色 Skill 和两轮本地推演已完成，等待 Master 复核后再扩展规范。
+> CLI、四个角色 Skill 和本地/远端边界已完成，等待 Master 复核后再扩展规范。
 
 CHASSISS 是一个以 CLI 为核心的软件开发工作流。Agent 负责需求、架构、实现和复核中的语义判断；CLI 负责模板、权限、状态、任务分派、范围检查、并发和恢复。
 
-GitHub 不是核心依赖。第一版使用本地 Git 保存 baseline、diff 和正式集成历史，但 Agent 不需要直接操作 Git；GitHub、GitLab 或其他正式仓库以后通过 `publish` adapter 接入。
+GitHub 不是核心依赖。第一版使用本地 Git 保存 baseline、diff 和正式集成历史，但 Agent 不需要直接操作 Git；GitHub、GitLab 或其他 Git 远端只通过 `publish` adapter 同步精确的正式 baseline。
 
 ## 核心规则
 
@@ -29,6 +29,7 @@ project-name/
 │   ├── events/           # 原子、签名、最小 payload 的工作流事实源
 │   ├── operations/       # 未完成跨介质操作的恢复 journal
 │   ├── auth-operations/  # 未完成授权签发/回收的恢复 journal
+│   ├── publish-operations/ # 未完成远端发布的恢复 journal
 │   ├── submissions/      # 不可变 submission manifest
 │   ├── worktrees/        # 每个 Active Task 的独立 Git worktree
 │   ├── cache/            # 可删除、可重建，不提交
@@ -88,6 +89,8 @@ Event V2 只携带当前动作的严格 payload。未知字段、未知事件和
 所有正式 Git 副作用都在同一项目写锁和 operation journal 内。恢复只在 Git 精确匹配 journal 的 before/after 时补写状态；不匹配则进入 `CHS-INTEGRITY-BLOCKED`，不会猜测 reset 或 force。每次状态变化增加 revision；状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
 
 Reviewer 批准和集成都绑定 `submission.HeadCommit`。集成在临时候选 worktree 合并精确 SHA、重跑 Task checks 并保存 merged-tree 证据，checks 通过后才推进正式分支并记录 `integration.applied`。
+
+`publish` 与 local integration 是两个独立事实。adapter 只把 CLI 当前 baseline 的精确 SHA fast-forward push 到指定远端分支，不创建或读取 GitHub/GitLab 的 Issue、PR、Review 或工作流状态，也不允许 force push。publication 绑定远端名称、远端 URL 摘要、分支和 SHA，但不回显可能含凭据的 URL。远端失败不会撤销本地 integration；远端已更新而本地事件未提交时，由独立 publish journal 在 `recover` 中验证精确 endpoint 和 SHA 后补记 `publication.applied`。远端出现 journal 之外的结果时进入 integrity blocked，由 Master 人工判断。
 
 每个 Active Task 固定使用 `.chassis/worktrees/<task-id>/` 下的独立 linked worktree。状态事件同时绑定路径、Git worktree 身份、Task branch 和绑定摘要；`status/diff/check/checkpoint/submit` 都重新验证该绑定。打开 Task 不切换项目根 worktree，两个无路径冲突的 Task 可在 WIP 限制内并行执行。Task 集成后，仅当 worktree 干净且仍位于获批提交时才受控清理，Task branch 保留。
 
@@ -171,7 +174,7 @@ CLI 是规则和状态的执行面。未来 Skill 只保留：
 
 ## v0.1 实现状态
 
-已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、默认长期且可选 TTL/resource scope 的 credential、授权与 Git operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环和四个角色 Skill。当前不实现 GitHub/GitLab publish adapter、credential rotate 命令和完整 Mission 级设计变更流程。
+已完成 Go CLI、严格目录、模板、artifact validator、Event V2 reducer、完整 state validator、revision CAS、默认长期且可选 TTL/resource scope 的 credential、授权/Git/publish operation journal、Developer owner grant 校验、Task resume 完整复验、release/cancel/supersede 替换链、精确提交集成、独立 Task worktree、Git tree/index 摘要、结构化 checks、本地 Git 闭环、可选远端 publish adapter 和四个角色 Skill。当前不实现 credential rotate 命令和完整 Mission 级设计变更流程。
 
 旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
 

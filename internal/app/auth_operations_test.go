@@ -319,6 +319,9 @@ func TestCredentialValidityAndResourceScopes(t *testing.T) {
 	if _, err := makeEvent(config.ProjectID, 1, "integration.applied", "SUB-1", reviewer, "", timeNow(), integrationAppliedPayload{IntegrationID: "INT-1", SubmissionID: "SUB-1", SubmissionDigest: "sha256:approved", SubmissionHead: "other-head", PreviousHead: "base", IntegratedHead: "merge", IntegratedTree: "tree", Checks: map[string]CheckResult{}}); err == nil {
 		t.Fatal("integration head scope was not enforced")
 	}
+	if _, err := makeEvent(config.ProjectID, 1, "publication.applied", "PUB-1", reviewer, "", timeNow(), publicationAppliedPayload{PublicationID: "PUB-1", Target: "remote-git", Remote: "origin", RemoteURLDigest: "sha256:remote", Branch: "main", Head: "other-baseline"}); err == nil {
+		t.Fatal("publication baseline scope was not enforced")
+	}
 	if credentialTimeValid(nil, &notBefore, notBefore) {
 		t.Fatal("credential validity accepted its expiration instant")
 	}

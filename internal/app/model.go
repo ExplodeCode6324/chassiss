@@ -198,6 +198,18 @@ type Integration struct {
 	CreatedAt      time.Time              `yaml:"created_at" json:"created_at"`
 }
 
+type Publication struct {
+	ID                 string    `yaml:"id" json:"id"`
+	Target             string    `yaml:"target" json:"target"`
+	Remote             string    `yaml:"remote" json:"remote"`
+	RemoteURLDigest    string    `yaml:"remote_url_digest" json:"remote_url_digest"`
+	Branch             string    `yaml:"branch" json:"branch"`
+	PreviousRemoteHead string    `yaml:"previous_remote_head,omitempty" json:"previous_remote_head,omitempty"`
+	Head               string    `yaml:"head" json:"head"`
+	PublishedBy        string    `yaml:"published_by" json:"published_by"`
+	CreatedAt          time.Time `yaml:"created_at" json:"created_at"`
+}
+
 type State struct {
 	Version       int                      `yaml:"version" json:"version"`
 	ProjectID     string                   `yaml:"project_id" json:"project_id"`
@@ -211,6 +223,7 @@ type State struct {
 	Submissions   map[string]Submission    `yaml:"submissions" json:"submissions"`
 	Reviews       map[string]Review        `yaml:"reviews" json:"reviews"`
 	Integrations  map[string]Integration   `yaml:"integrations" json:"integrations"`
+	Publications  map[string]Publication   `yaml:"publications" json:"publications"`
 	UpdatedAt     time.Time                `yaml:"updated_at" json:"updated_at"`
 	UpdatedBy     string                   `yaml:"updated_by" json:"updated_by"`
 }

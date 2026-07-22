@@ -46,8 +46,9 @@ SHA-256：`1ee519401b7cdf0b96e49b052081525c42a4bdb6c96f7f1ecff9ca4883943b60`
 - 默认长期 credential 泄漏后在回收前持续有效，同一系统用户下没有秘密隔离；这是 Master 已接受并在 README 明示的 v0.1 取舍。高风险动作现在可显式使用 TTL/resource scope，下一版仍可增加 rotate 和 broker。
 - Event V2 不再保存完整 State；`state.yaml` 是事件序列的可重建投影。长期项目如出现重放性能问题，再增加带链锚的周期 snapshot。
 - Mission block 保留 Task 原状态，但已关闭 Developer、Reviewer 和 integration 的推进许可；恢复 Mission 后合法 Task 才能继续。
-- Mission 级设计变更、transactional dry-run、credential rotate 命令和远端 publish adapter 尚未实现；CLI 文档已把它们标为后续范围。
+- Mission 级设计变更、transactional dry-run 和 credential rotate 命令尚未实现；CLI 文档已把它们标为后续范围。
+- 远端 publish adapter 已实现：仅 fast-forward push 当前本地正式 baseline 的精确 SHA，publication 与 integration 分开记录；远端失败不改变本地状态，push 后崩溃由 publish journal 幂等恢复。
 
 ## 建议的下一步
 
-下一步实现与 local integration 分离的远端 publish adapter，并保持远端只同步代码、不成为工作流事实源。
+先由 Master 复核现有安全边界和命令语义，再决定是否投入无人值守试运行。远端继续只同步正式代码，不成为工作流事实源。

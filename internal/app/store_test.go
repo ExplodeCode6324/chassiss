@@ -171,6 +171,38 @@ func TestRecoverProjectRebuildsSignedProjection(t *testing.T) {
 	}
 }
 
+func TestCLIRecoverBypassesInvalidStateProjection(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "master-root.yaml")
+	if _, err := createRoot(rootPath); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "project")
+	if _, _, err := initializeProject(target, rootPath, false); err != nil {
+		t.Fatal(err)
+	}
+	_, _, state, err := loadProject(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Publications = nil
+	_, _, statePath, _ := projectPaths(target)
+	if err := writeYAMLAtomic(statePath, &state, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := dispatch(globalOptions{root: target}, []string{"recover"})
+	if err != nil {
+		t.Fatalf("CLI recover was blocked by an invalid projection: %v", err)
+	}
+	if result.RevisionAfter != 1 {
+		t.Fatalf("recovered revision = %d, want 1", result.RevisionAfter)
+	}
+	recovered := mustProjectState(t, target)
+	if recovered.Publications == nil {
+		t.Fatal("CLI recover did not restore deterministic state collections")
+	}
+}
+
 func TestEventV2StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "master-root.yaml")

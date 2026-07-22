@@ -158,6 +158,8 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 		"work block":                {values: []string{"reason"}},
 		"review approve":            {values: []string{"report"}},
 		"review request-changes":    {values: []string{"report"}},
+		"publish check":             {values: []string{"target", "remote", "branch"}},
+		"publish apply":             {values: []string{"target", "remote", "branch"}},
 	}
 	rules := allowed[command]
 	valueSet, flagSet := stringSet(rules.values), stringSet(rules.flags)
@@ -234,15 +236,27 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	if command == "recover" {
+		configPath, _, statePath, _ := projectPaths(root)
+		var config Config
+		if err := loadYAML(configPath, &config); err != nil {
+			return Response{}, err
+		}
+		var projected State
+		_ = loadYAML(statePath, &projected)
+		recovered, err := recoverProject(root)
+		if err != nil {
+			return Response{}, err
+		}
+		return response(command, config.ProjectID, projected.Revision, recovered.Revision, map[string]any{"recovered": true, "revision": recovered.Revision}), nil
+	}
 	config, trust, state, err := loadProject(root)
 	if err != nil {
 		return Response{}, err
 	}
-	if command != "recover" {
-		state, err = verifyProject(root)
-		if err != nil {
-			return Response{}, err
-		}
+	state, err = verifyProject(root)
+	if err != nil {
+		return Response{}, err
 	}
 	readResponse := func(value any) Response {
 		return response(command, config.ProjectID, state.Revision, state.Revision, value)
@@ -328,12 +342,6 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			result["credential_anchor"] = map[string]any{"valid": true, "id": anchor.ID, "actor": anchor.Actor, "role": anchor.Role}
 		}
 		return readResponse(result), nil
-	case "recover":
-		recovered, err := recoverProject(root)
-		if err != nil {
-			return Response{}, err
-		}
-		return response(command, config.ProjectID, state.Revision, recovered.Revision, map[string]any{"recovered": true, "revision": recovered.Revision}), nil
 	case "explain":
 		if len(parsed.positionals) != 1 {
 			return Response{}, usageError("explain requires an error code")
@@ -824,6 +832,28 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			return Response{}, err
 		}
 		return mutatingResponse(previous, next, integration, principal), nil
+	case "publish check":
+		if len(parsed.positionals) != 0 || parsed.values["target"] == "" {
+			return Response{}, usageError("publish check requires --target and no positional arguments")
+		}
+		check, err := publishCheck(root, parsed.values["target"], parsed.values["remote"], parsed.values["branch"])
+		if err != nil {
+			return Response{}, err
+		}
+		return readResponse(check), nil
+	case "publish apply":
+		if len(parsed.positionals) != 0 || parsed.values["target"] == "" {
+			return Response{}, usageError("publish apply requires --target and no positional arguments")
+		}
+		principal, err := principalFor("publish.apply")
+		if err != nil {
+			return Response{}, err
+		}
+		previous, next, publication, err := publishApply(root, parsed.values["target"], parsed.values["remote"], parsed.values["branch"], principal, options.expected)
+		if err != nil {
+			return Response{}, err
+		}
+		return mutatingResponse(previous, next, publication, principal), nil
 	default:
 		return Response{}, &CLIError{Code: "CHS-COMMAND-UNKNOWN", Message: "unknown command: " + command, ExitCode: 20, Remedy: []string{"run chassiss help"}}
 	}
@@ -851,7 +881,7 @@ func isWriteCommand(command string) bool {
 		"auth master-init", "auth issue", "auth revoke", "project init", "recover", "template get",
 		"artifact submit", "artifact accept", "artifact reject", "mission activate", "mission block", "mission resume", "mission submit-acceptance", "mission accept",
 		"task claim", "task assign", "task block", "task resume", "task release", "task cancel", "task supersede", "work open", "work check", "work checkpoint", "work submit", "work block",
-		"review approve", "review request-changes", "integrate apply",
+		"review approve", "review request-changes", "integrate apply", "publish apply",
 	}, command)
 }
 
@@ -1127,6 +1157,7 @@ Core commands:
   work open|context|status|diff|check|checkpoint|submit|block
   review list|context|check|approve|request-changes
   integrate check|apply
+  publish check|apply
 
 Run commands with --json for stable agent-readable envelopes.
 `

@@ -463,6 +463,9 @@ func requireNoPendingOperations(root string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireNoPendingPublishOperations(root); err != nil {
+		return err
+	}
 	if len(workflow) != 0 || len(auth) != 0 {
 		return &CLIError{Code: "CHS-OPERATION-RECOVERY-REQUIRED", Message: "an unfinished workflow or authorization operation must be recovered before another write", ExitCode: 40, Remedy: []string{"run chassiss recover"}}
 	}

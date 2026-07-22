@@ -19,7 +19,7 @@ var roleActions = map[string][]string{
 	},
 	"orchestrator": {
 		"mission.activate", "mission.block", "mission.resume", "mission.submit-acceptance",
-		"task.claim", "task.assign", "task.block", "task.resume", "task.release", "task.supersede",
+		"task.claim", "task.assign", "task.block", "task.resume", "task.release", "task.supersede", "publish.apply",
 	},
 	"developer": {
 		"work.open", "work.check", "work.checkpoint", "work.submit", "work.block",
@@ -121,7 +121,7 @@ func verifyTrust(config Config, trust Trust) error {
 
 func rootPrincipal(root *RootKey, public ed25519.PublicKey, private ed25519.PrivateKey) Principal {
 	actions := map[string]struct{}{
-		"auth.issue": {}, "auth.revoke": {}, "artifact.accept": {}, "artifact.reject": {}, "mission.accept": {}, "task.cancel": {},
+		"auth.issue": {}, "auth.revoke": {}, "artifact.accept": {}, "artifact.reject": {}, "mission.accept": {}, "task.cancel": {}, "publish.apply": {},
 	}
 	return Principal{ID: root.ID, Actor: "master", Role: "master", Actions: actions, PrivateKey: private, PublicKey: public}
 }
@@ -291,6 +291,14 @@ func authorizeEventScope(scope ResourceScope, event Event) error {
 		}
 		if !scopeAllows(scope.SubmissionDigests, payload.SubmissionDigest) || !scopeAllows(scope.Heads, payload.SubmissionHead) || !scopeAllows(scope.Baselines, payload.PreviousHead) {
 			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential does not match integration digest, head, or baseline scope", ExitCode: 11}
+		}
+	case event.Type == "publication.applied":
+		var payload publicationAppliedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if !scopeAllows(scope.Baselines, payload.Head) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to the published baseline", ExitCode: 11}
 		}
 	}
 	return nil

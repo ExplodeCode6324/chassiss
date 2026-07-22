@@ -48,7 +48,7 @@ func validateState(config Config, state State) error {
 	if state.Baseline == "" || state.UpdatedAt.IsZero() || state.UpdatedBy == "" {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state baseline or update identity is missing", ExitCode: 40}
 	}
-	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil {
+	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil || state.Publications == nil {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state collections must not be null", ExitCode: 40}
 	}
 
@@ -280,6 +280,11 @@ func validateState(config Config, state State) error {
 			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != integration.IntegratedTree {
 				return stateError("CHS-STATE-INTEGRATION", "integration lacks merged-tree check evidence: "+id)
 			}
+		}
+	}
+	for id, publication := range state.Publications {
+		if publication.ID != id || !containsString([]string{"github", "gitlab", "remote-git"}, publication.Target) || publication.Remote == "" || publication.RemoteURLDigest == "" || publication.Branch == "" || publication.Head == "" || publication.PublishedBy == "" || publication.CreatedAt.IsZero() {
+			return stateError("CHS-STATE-PUBLICATION", "publication identity or evidence is incomplete: "+id)
 		}
 	}
 	return nil
