@@ -1,0 +1,234 @@
+# 五分钟 Quickstart
+
+本章给出一条完整的最小路径。示例使用一个 Designer Session、一个兼任 Orchestrator 与 Developer 的 Build Agent，以及一个独立 Review Agent。
+
+所有项目命令默认在项目根目录执行。全局参数必须放在命令组之前。
+
+## 准备 CLI 与 Skill
+
+把仓库中的 `skills/chassiss/` 安装到每个 Agent 的 Skill 目录。每个 Agent 使用 Skill 内匹配当前系统的 CLI。
+
+```text
+skills/chassiss/bin/darwin-arm64/chassiss
+skills/chassiss/bin/darwin-amd64/chassiss
+skills/chassiss/bin/linux-arm64/chassiss
+skills/chassiss/bin/linux-amd64/chassiss
+```
+
+下文使用 `chassiss` 代表所选二进制。
+
+## 创建 Root 并初始化项目
+
+```text
+chassiss auth master-init
+chassiss --credential ~/.chassiss/master-root.yaml \
+  project init /path/to/project
+```
+
+已有 Git 项目需要干净的 worktree 和至少一个提交。
+
+```text
+chassiss --credential ~/.chassiss/master-root.yaml \
+  project init /path/to/project --existing
+```
+
+新项目默认使用以下 Task 预算。
+
+- 最多变更 100 个文件
+- 最多产生 20000 行增删
+- 最多包含 20 个提交
+
+初始化时可以调整这些值。
+
+```text
+chassiss --credential ~/.chassiss/master-root.yaml \
+  project init /path/to/project \
+  --max-changed-files 50 \
+  --max-diff-lines 10000 \
+  --max-commits 10
+```
+
+## 签发角色 credential
+
+```text
+cd /path/to/project
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor designer-1 --role designer \
+  --output ~/.chassiss/cred-designer-1.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor build-1 --role orchestrator \
+  --output ~/.chassiss/cred-build-orchestrator.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor build-1 --role developer \
+  --output ~/.chassiss/cred-build-developer.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor reviewer-1 --role reviewer \
+  --output ~/.chassiss/cred-reviewer-1.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor human-owner --role owner \
+  --output ~/.chassiss/cred-human-owner.yaml
+```
+
+Build Agent 的两份 credential 使用相同 actor。这样 Orchestrator 可以将 Task 分派给 `build-1`，Developer credential 随后接手同一个 Task。
+
+## 分发 credential
+
+Master 为每个 Session 导出对应 armor。
+
+```text
+chassiss auth export ~/.chassiss/cred-designer-1.yaml
+chassiss auth export ~/.chassiss/cred-build-orchestrator.yaml
+chassiss auth export ~/.chassiss/cred-build-developer.yaml
+chassiss auth export ~/.chassiss/cred-reviewer-1.yaml
+```
+
+每次导出产生三行文本。通过安全通道把 Designer armor 发给 Designer Session，把两份 Build armor 发给 Build Agent，把 Reviewer armor 发给 Review Agent。
+
+Agent 导入收到的 armor。
+
+```text
+chassiss auth import --output ~/.chassiss/my-credential.yaml
+```
+
+命令从标准输入读取三行 armor。Build Agent 为两份 credential 使用不同输出路径。
+
+Master Root 保留在人类控制的环境中。`auth export` 会拒绝 Master Root。
+
+## 启动 Designer
+
+Designer 首先运行 `bootstrap`。
+
+```text
+chassiss --json --root /path/to/project \
+  --credential ~/.chassiss/cred-designer-1.yaml bootstrap
+```
+
+Designer 按顺序创建并提交 Artifact。
+
+```text
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  template get requirements --output docs/requirements.md
+
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  artifact check docs/requirements.md
+
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  artifact submit docs/requirements.md
+```
+
+Master 读取 `artifact submit` 返回的 submission ID，然后接受或拒绝。
+
+```text
+chassiss --credential ~/.chassiss/master-root.yaml \
+  artifact context <artifact-submission-id>
+
+chassiss --credential ~/.chassiss/master-root.yaml \
+  artifact accept <artifact-submission-id>
+```
+
+Requirements 接受后继续 Architecture。Architecture 接受后继续 Mission 和 Task。
+
+```text
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  template get architecture --output docs/architecture.md
+
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  template get mission --id M001 --output docs/missions/M001.md
+
+chassiss --credential ~/.chassiss/cred-designer-1.yaml \
+  template get task --id M001-T001 --output docs/tasks/M001-T001.md
+```
+
+每份文档都需要经过 `artifact check`、`artifact submit` 和 Master 接受。Requirements 与 Architecture 的 digest 必须写入后续 Artifact。Designer 应使用 `bootstrap` 返回的动作和 context 获取当前值。
+
+## 启动执行阶段
+
+Build Agent 使用 Orchestrator credential 激活 Mission 并分派 Task。
+
+```text
+chassiss --credential ~/.chassiss/cred-build-orchestrator.yaml \
+  mission activate M001
+
+chassiss --credential ~/.chassiss/cred-build-orchestrator.yaml \
+  task assign M001-T001 --owner build-1
+```
+
+Build Agent 切换到 Developer credential。
+
+```text
+chassiss --credential ~/.chassiss/cred-build-developer.yaml \
+  work open M001-T001
+
+chassiss --credential ~/.chassiss/cred-build-developer.yaml \
+  work context M001-T001
+```
+
+`work open` 返回 Task worktree。Developer 只在该目录中修改文件。实现完成后运行检查并提交。
+
+```text
+chassiss --credential ~/.chassiss/cred-build-developer.yaml \
+  work check M001-T001 --all
+
+chassiss --credential ~/.chassiss/cred-build-developer.yaml \
+  work submit M001-T001 \
+  --file handoff.md \
+  --message complete
+```
+
+`work submit` 返回不可变 submission ID。
+
+## 复核与集成
+
+Review Agent 使用独立 Reviewer credential。
+
+```text
+chassiss --credential ~/.chassiss/cred-reviewer-1.yaml \
+  review context <submission-id>
+
+chassiss --credential ~/.chassiss/cred-reviewer-1.yaml \
+  review check <submission-id>
+```
+
+`review check` 只执行机械验证。Reviewer 检查需求、实现、失败路径和风险后记录 verdict。
+
+```text
+chassiss --credential ~/.chassiss/cred-reviewer-1.yaml \
+  review approve <submission-id> --report review.md
+
+chassiss --credential ~/.chassiss/cred-reviewer-1.yaml \
+  integrate check <submission-id>
+
+chassiss --credential ~/.chassiss/cred-reviewer-1.yaml \
+  integrate apply <submission-id>
+```
+
+需要修改时使用 `review request-changes`。Developer 再次执行 `work open`，并从 `work context` 读取当前 change request 与历史记录。
+
+## 完成 Mission
+
+所有 Mission Task 已经 integrated、cancelled 或 superseded 后，Orchestrator 提交验收证据。
+
+```text
+chassiss --credential ~/.chassiss/cred-build-orchestrator.yaml \
+  mission submit-acceptance M001 --evidence mission-evidence.md
+
+chassiss --credential ~/.chassiss/master-root.yaml \
+  mission accept M001
+```
+
+项目随后回到 idle。
+
+## 每次动作前后的规则
+
+- Agent 启动时运行 `bootstrap`
+- mutation 使用 `bootstrap` 返回的 `state_revision`
+- trust 变更使用 `trust_revision`
+- 状态变化、冲突、拒绝、credential 轮换或资源变化后重新运行 `bootstrap`
+- CLI 返回错误时先读取 remediation，再决定下一步
+
+完整角色设计参见 [推荐的 Agent 协作拓扑](03-agent-topology.md)。完整命令参见 [CLI 命令参考](17-cli-reference.md)。

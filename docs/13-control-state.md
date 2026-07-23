@@ -1,0 +1,152 @@
+# `.chassis/`、事件与状态投影
+
+`.chassis/` 是项目的本地控制端。它保存信任、事件、状态投影、Submission、操作日志和临时工作区。代码仓库只保存项目内容，不能替代这套控制状态。
+
+## 目录结构
+
+初始化和后续生命周期使用的主要结构如下。`worktrees/` 等目录会在首次需要时创建。
+
+```text
+.chassis/
+├── config.yaml
+├── trust.yaml
+├── state.yaml
+├── lock
+├── events/
+├── operations/
+├── auth-operations/
+├── publish-operations/
+├── submissions/
+├── worktrees/
+└── cache/
+```
+
+项目文档 Artifact 位于受控项目目录中，由 config 和 State 记录其路径。它们与 `.chassis` 中的事件共同构成可审计契约。
+
+## `config.yaml`
+
+配置文件保存项目标识和稳定策略，包括以下内容。
+
+- schema version
+- Project ID
+- 内容 backend
+- 正式分支
+- Artifact 路径
+- 默认 Task 预算
+- Developer WIP 限制
+
+当前配置版本为 4，内容 backend 为 `local-git`。
+
+配置参与协议验证。手工修改字段会造成签名、State 或 Git 绑定不一致。
+
+## `trust.yaml`
+
+Trust store 保存 Root 公钥、Trust revision、角色 grants 和 revocations。每个 grant 包含 actor、role、公钥、有效期、resource scope 和 action scope。整份 Trust store 由 Root 签名。
+
+Trust store 本身由 Root 签名。CLI 在接受角色 credential 前验证完整链路。
+
+不要复制旧 `trust.yaml` 覆盖新版本。旧副本可能重新暴露已回收 grant，并造成 Trust revision 倒退。
+
+## `events/`
+
+事件是项目控制面的事实源。每个事件包含版本、序号、类型、actor、资源引用、前一事件 digest、payload、时间和签名。
+
+事件通过 `previous_digest` 形成有序链。CLI 验证以下性质。
+
+- 序号连续
+- digest 与规范字节一致
+- 前后链路一致
+- Master 事件由匹配的 Root 签名，其他事件由当时有效的角色 grant 签名
+- actor 和 action 满足角色策略
+- payload 只包含该事件允许的字段
+- reducer 能从前态确定地产生后态
+
+当前事件类型覆盖项目初始化、Artifact 决策、Mission 状态、Task 调度、work、review、integration、publication 和 Owner baseline。
+
+事件文件不能重排、删除、改名或编辑。单个字节变化都会破坏后续链路。
+
+## `state.yaml`
+
+State 是事件链的当前投影，供 CLI 快速读取。它保存当前 revision、正式 baseline、Artifact、Mission、Task、Submission、review、publication 和 Owner history 等聚合结果。
+
+State 可以从完整事件链重建。事件与 State 不一致时，`verify` 会报告错误，恢复流程只接受能够由事实源精确证明的结果。
+
+State 不能作为跳过事件的编辑入口。手工将 Task 改为 approved 或 integrated 不会生成合法签名，也无法通过 reducer 验证。
+
+## `submissions/`
+
+此目录保存不可变 Submission manifest。文件内容由 submission digest 绑定，并被 Reviewer approval 与 Integration 引用。
+
+删除或改写 manifest 会使 review 和 integration 证据失效。
+
+## `operations/`
+
+项目 operation journal 保存同时涉及 Git 和控制状态的写操作。每个 journal 记录操作类型、阶段、精确前态和预期后态。
+
+常见阶段为 `prepared`、`git_applied` 和 `state_committed`。恢复机制据此判断操作尚未开始、Git 已完成或 State 已提交。
+
+## `auth-operations/`
+
+授权 journal 覆盖 credential 文件和 Trust store 之间的写入过程。阶段包括 `prepared`、`credential_prepared`、`trust_committed` 和 `credential_published`。
+
+它防止签发过程中只产生 credential 或只产生 grant。恢复时仍要求文件、公钥、digest 和 Trust revision 精确匹配。
+
+## `publish-operations/`
+
+发布 journal 记录本地 baseline、远端 Head、endpoint digest 和发布阶段。常见阶段为 `prepared`、`remote_applied` 和 `state_committed`。
+
+远端 URL 可能含访问秘密，State 和 journal 只保存其 digest。
+
+## `worktrees/`
+
+每个 Active Task 的 linked worktree 位于此目录。CLI 保存路径、分支和 Git identity 绑定，防止目录被替换后继续使用旧授权。
+
+worktree 属于执行状态。不要移动、复制或手工清理。
+
+## `cache/`
+
+cache 用于集成候选工作区和可重建的临时内容。它仍位于控制边界内，活跃 operation 引用的内容不能删除。
+
+当 `doctor`、`verify` 和 `recover` 均确认没有在途操作后，未来版本可以提供安全清理命令。当前版本不建议人工清空整个目录。
+
+## `lock`
+
+`lock` 是 advisory lock 的固定入口。文件存在不表示命令仍持有锁，文件时间也不能用于判断锁失效。
+
+不要删除它。锁所有权由操作系统管理。
+
+## 文件权限
+
+角色 credential 不保存在项目 `.chassis` 中。默认 credential 目录权限为 `0700`，文件权限为 `0600`。
+
+`.chassis` 通常被 Git 忽略。Greenfield 初始化会加入 `.gitignore`。Brownfield 初始化通过 `.git/info/exclude` 忽略它，避免修改现有项目文件。
+
+## 多机器边界
+
+Git remote 同步正式代码 baseline，不同步 `.chassis`。把同一个代码仓库 clone 到另一台机器，不会产生等价的 CHASSISS 控制端。
+
+当前安全做法是保留一个权威控制端，由其他 Agent 连接到同一工作目录，或只在同步并校验完整控制目录后迁移控制端。不要让两个独立 `.chassis` 副本并行写入同一项目历史。
+
+## 维护规则
+
+以下内容不能手工修改或删除。
+
+- `config.yaml`
+- `trust.yaml`
+- `state.yaml`
+- `events/`
+- `operations/`
+- `auth-operations/`
+- `publish-operations/`
+- `submissions/`
+- 活跃 `worktrees/`
+- 活跃 operation 使用的 `cache/`
+- `lock`
+
+遇到异常时依次使用 `doctor`、`verify` 和 `recover`。若 CLI 返回完整性阻断，保留现场并通知 Master。
+
+## 下一步
+
+- [崩溃恢复与完整性阻断](14-recovery-and-integrity.md)
+- [Publish 与多机器协作](15-publish-and-multi-machine.md)
+- [协议、版本与兼容性](20-protocol-and-compatibility.md)

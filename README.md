@@ -115,7 +115,7 @@ Orchestrator 分派任务，Developer 实现并提交，Reviewer 复核并集成
 
 新一批规划被接受后，Build Agent 和 Review Agent 继续工作。全部 Task 完成后，Orchestrator 提交 Mission 验收，Master 接受 Mission。
 
-完整命令和角色配置将维护在 [`docs/`](docs/)。
+完整命令和角色配置维护在 [`docs/`](docs/)。
 
 > 如果你胆子大而且完全相信你的前沿 Agent 的能力（例如 GPT-5.6 Sol、Claude Fable、Kimi K3、Qwen 3.8 Max），可以试试让一个大 Agent 代行人类 Master，自动签发并调度子 Agent，完成整个项目。但此时 Master Root 和子 Agent credential 通常处于同一信任域，秘密隔离默认不生效；CHASSISS 只能帮助统一开发流程，不保证项目质量。这种用法不在设计目标内，但可以尝试。
 >
@@ -136,7 +136,7 @@ project-name/
 
 以下三条边界不可绕过。
 
-- 不要手工修改或删除 `.chassis/`；只有其中的 `cache/` 可以安全重建。
+- 不要手工修改或删除 `.chassis/`；其中的临时 cache 也应由 CLI 按当前 operation 状态处理。
 - 不要手工改动 CHASSISS 创建的 Git refs、branches、linked worktrees，以及已进入受控状态的 Requirements、Architecture、Mission 和 Task。
 - 普通项目文件只能在 CLI 创建的 Task worktree 中修改，或由人类通过 Owner 流程接管。
 
@@ -144,8 +144,8 @@ project-name/
 
 人类需要跳过 Agent 流程时，以 Owner 身份修改普通项目文件，不要自行 commit，然后运行 `owner apply --reason <reason>`。CLI 会检查项目状态、创建正式提交并留下签名审计记录。
 
-Owner 不能修改 `.chassis/`、Git 控制数据或已登记的项目文档。完整使用方法与限制将在详细文档中展开。
+Owner 不能修改 `.chassis/`、Git 控制数据或已登记的项目文档。完整使用方法与限制见 [人类 Owner 接管](docs/16-owner-takeover.md)。
 
 ## 详细文档
 
-后续文章的写作目录见 [`docs/menu.md`](docs/menu.md)。Agent 的实际身份、权限、上下文和下一动作始终以可信 CLI 的 `bootstrap` 输出为准。
+完整文档见 [`docs/README.md`](docs/README.md)，章节边界保留在 [`docs/menu.md`](docs/menu.md)。Agent 的实际身份、权限、上下文和下一动作始终以可信 CLI 的 `bootstrap` 输出为准。
