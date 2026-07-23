@@ -1,5 +1,7 @@
 # CHASSISS
 
+中文 | [English](README.en.md)
+
 CHASSISS 是一个以 CLI 为核心的多 Agent 软件开发工作流。
 
 Agent 负责需求、架构、实现和复核中的语义判断；CLI 负责模板、权限、状态、任务分派、范围检查、并发、审计和恢复。人类 Master 只需保管根密钥、接受关键设计，并在必要时以 Owner 身份接管项目；各 Agent 使用由根密钥签发的角色 credential 工作。
@@ -144,8 +146,8 @@ project-name/
 
 人类需要跳过 Agent 流程时，以 Owner 身份修改普通项目文件，不要自行 commit，然后运行 `owner apply --reason <reason>`。CLI 会检查项目状态、创建正式提交并留下签名审计记录。
 
-Owner 不能修改 `.chassis/`、Git 控制数据或已登记的项目文档。完整使用方法与限制见 [人类 Owner 接管](docs/16-owner-takeover.md)。
+Owner 不能修改 `.chassis/`、Git 控制数据或已登记的项目文档。完整使用方法与限制见 [人类 Owner 接管](docs/cn/16-人类所有者接管.md)。
 
 ## 详细文档
 
-完整文档见 [`docs/README.md`](docs/README.md)，章节边界保留在 [`docs/menu.md`](docs/menu.md)。Agent 的实际身份、权限、上下文和下一动作始终以可信 CLI 的 `bootstrap` 输出为准。
+从 [文档首页](docs/README.md) 选择语言，或直接进入 [中文文档](docs/cn/README.md) 和 [中文目录](docs/cn/文档目录.md)。Agent 的实际身份、权限、上下文和下一动作始终以可信 CLI 的 `bootstrap` 输出为准。
