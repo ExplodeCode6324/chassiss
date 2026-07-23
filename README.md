@@ -1,281 +1,241 @@
-# CHASSISS v0.3
+# CHASSISS
 
-> API V2、唯一 Owner credential、可审计基线接管、便捷 credential 传输、独立验收源、完整 review feedback/audit、提交前 preflight 与本地/远端完整性边界已实现。
+CHASSISS 是一个以 CLI 为核心的软件开发工作流。
 
-CHASSISS 是一个以 CLI 为核心的软件开发工作流。Agent 负责需求、架构、实现和复核中的语义判断；CLI 负责模板、权限、状态、任务分派、范围检查、并发和恢复。
+Agent 负责需求、架构、实现和复核中的语义判断；CLI 负责模板、权限、状态、任务分派、范围检查、并发、审计和恢复。人负责保管根密钥、接受关键设计，并在确有必要时以 Owner 身份接管项目。
 
-GitHub 不是核心依赖。v0.3 使用本地 Git 保存 baseline、diff 和正式集成历史，但 Agent 不需要直接操作 Git；GitHub、GitLab 或其他 Git 远端只通过 `publish` adapter 同步精确的正式 baseline。
+CHASSISS 不要求 Agent 直接操作 Git，也不绑定 GitHub、GitLab 或某一种托管平台；它要求有可靠的版本同步能力，使不同机器上的 Agent 始终基于同一个正式版本工作。版本同步可以由 Git、其他版本控制系统或受控的文件/制品同步工具提供。
 
-## 仓库结构
+当前 v0.3 实现使用本地 Git 作为 baseline、worktree、diff 和集成 backend，因此运行当前版本仍需安装 Git。非 Git backend 是架构允许的扩展方向，目前尚未提供。
 
-```text
-chassiss/
-├── README.md
-├── src/
-│   ├── go.mod
-│   ├── cmd/chassiss/       # CLI 入口
-│   └── internal/app/       # 全部实现、模板和测试
-├── cli/
-│   ├── darwin-amd64/chassiss
-│   ├── darwin-arm64/chassiss
-│   ├── linux-amd64/chassiss
-│   ├── linux-arm64/chassiss
-│   └── SHA256SUMS
-└── skills/chassiss/
-    ├── SKILL.md
-    ├── agents/openai.yaml
-    └── bin/
-        ├── darwin-amd64/chassiss
-        ├── darwin-arm64/chassiss
-        ├── linux-amd64/chassiss
-        ├── linux-arm64/chassiss
-        └── SHA256SUMS
-```
+CHASSISS 的目标是约束守规 Agent、减少误操作并保留证据。它不是恶意代码沙箱，也不能在多个 Agent 共享同一系统用户和文件权限时提供真正的秘密隔离。
 
-`src/` 是唯一源码根目录。`cli/` 保存当前安全支持平台的可执行文件；Skill 自带相同的平台版本，复制或安装 Skill 后不依赖系统 `PATH` 中的同名程序。
+当前 v0.3 的 `publish` adapter 只同步正式代码 baseline，不同步 `.chassis/` 控制状态；多个独立项目副本还不能作为可互换的控制端。跨机器协作可以同步代码版本，但工作流写操作应指向同一个受控项目实例，直到后续提供控制状态同步方案。
 
-当前支持：
+当前安全支持的平台：
 
 - macOS：Intel `amd64`、Apple Silicon `arm64`；
 - Linux：`amd64`、`arm64`；
-- Windows：暂不支持，因为当前 Windows 构建会明确拒绝项目 advisory lock，不能安全执行写操作。
+- Windows：暂不支持写操作；当前构建无法提供项目所需的 advisory lock。
 
-从源码验证或重建：
+## Quickstart
+
+### 推荐使用方式
+
+最小执行单元是两个常驻 Agent：
+
+- Build Agent：在同一 Session 中持有 Orchestrator 和 Developer 两份 credential；
+- Review Agent：作为独立 Agent，仅持有 Reviewer credential。
+
+Designer 必须在独立 Session 中完成需求、架构和任务规划，不能与实施上下文混用；设计需要变化时再召回 Designer。Designer 可以由单独 Agent 承担，也可以由 Build Agent 在实施前另开独立 Session 承担。
+
+也可以让一个能力足够强的 Agent 代行人类 Master，自动签发 credential、创建并调度子 Agent，管理整个项目。但此时 Master Root 和各角色 credential 通常处于同一信任域，秘密隔离默认不生效；CHASSISS 只负责统一开发流程，不保证项目质量。这种方式可以工作，但不是 CHASSISS 的设计目标。
+
+### 1. 安装、获取根密钥并初始化项目
+
+将 [`skills/chassiss/`](skills/chassiss/) 复制到每个 Agent 的 Skill 目录，并使用其中匹配系统的 `bin/<os>-<arch>/chassiss`。下文简称 `chassiss`。
+
+下文所有项目命令默认在项目根目录运行；从其他目录运行时加上 `--root /path/to/project`。
 
 ```text
-cd src
-go test ./...
-go test -race ./...
-go vet ./...
-go build ./...
+chassiss auth master-init
+chassiss --credential ~/.chassiss/master-root.yaml project init /path/to/project
 ```
 
-发布二进制使用 `CGO_ENABLED=0`、`-trimpath`、`-buildvcs=false` 和 `-ldflags "-s -w"`；产物不嵌入构建工作区的脏状态，并应与对应目录中的 `SHA256SUMS` 一致。
+已有项目在第二条命令末尾加 `--existing`。Master Root 只由人类保管，不发送给任何 Agent，也不能通过 `auth export` 导出。
 
-## 核心规则
+### 2. 用 Master Root 签发全部角色 credential
 
-1. Agent 不直接编辑 `.chassis/`。
-2. Agent 启动时用自己的 credential 调用 `bootstrap`，身份和角色不由 Agent 自报。
-3. Agent 不手工改变任务状态；写权限按动作和资源授予，不按 YAML 字段或声明式文档授予。
-4. Designer 提交设计，Master 接受设计；作者不能自批。
-5. Orchestrator 分派任务，但不能批准实现。
-6. Developer 只修改任务允许的路径。
-7. Reviewer 独立复核精确 submission，批准后才允许集成。
-8. GitHub 只用于可选发布，不决定核心工作流状态。
-9. CLI 拒绝时停止，根据错误返回的下一动作处理，不猜测修复。
-10. 每个 acceptance check 必须声明与 Developer `allowed_paths` 不重叠的 `verification_paths`。
-11. Master 的日常维护修改必须使用独立 Owner credential 通过 `owner apply` 接管，不能直接移动正式分支或编辑状态。
+Build Agent 的两份 credential 使用同一 actor、不同输出文件：
 
-## 被治理项目结构
+```text
+cd /path/to/project
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor designer-1 --role designer \
+  --output ~/.chassiss/cred-designer-1.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor build-1 --role orchestrator \
+  --output ~/.chassiss/cred-build-orchestrator.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor build-1 --role developer \
+  --output ~/.chassiss/cred-build-developer.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor reviewer-1 --role reviewer \
+  --output ~/.chassiss/cred-reviewer-1.yaml
+
+chassiss --credential ~/.chassiss/master-root.yaml auth issue \
+  --actor human-owner --role owner \
+  --output ~/.chassiss/cred-human-owner.yaml
+```
+
+### 3. 以 Base64 armor 分发 credential
+
+对每份角色 credential 分别导出：
+
+```text
+chassiss auth export ~/.chassiss/cred-designer-1.yaml
+chassiss auth export ~/.chassiss/cred-build-orchestrator.yaml
+chassiss auth export ~/.chassiss/cred-build-developer.yaml
+chassiss auth export ~/.chassiss/cred-reviewer-1.yaml
+chassiss auth export ~/.chassiss/cred-human-owner.yaml
+```
+
+每次导出都会在 stdout 生成三行 Base64 armor。通过秘密通道把 Designer 和 Reviewer credential 发给对应 Agent，把两份 Build credential 都发给 Build Agent；Owner credential 只发到人类控制的维护环境。Base64 不是加密，armor 仍然包含私钥。
+
+接收方为每份 armor 分别执行：
+
+```text
+chassiss auth import --output ~/.chassiss/my-credential.yaml
+# 粘贴三行 armor，然后按 Ctrl+D
+
+chassiss --json --root /path/to/project \
+  --credential ~/.chassiss/my-credential.yaml bootstrap
+```
+
+Build Agent 应使用不同输出文件导入自己的两份 credential。每个 Agent 启动、状态变化、冲突或 CLI 拒绝后都重新运行 `bootstrap`；实际能力和下一动作以它返回的 schema、context 和 `available_actions` 为准。
+
+### 4. 与 Designer 完成规划
+
+人类先与独立 Designer Session 讨论需求。Designer 从 CLI 获取模板，依次生成 Requirements、Architecture、Mission 和 Tasks：
+
+```text
+chassiss --credential <designer-credential> template get requirements \
+  --output docs/requirements.md
+chassiss --credential <designer-credential> artifact submit docs/requirements.md
+
+chassiss --credential <designer-credential> template get architecture \
+  --output docs/architecture.md
+chassiss --credential <designer-credential> artifact submit docs/architecture.md
+
+chassiss --credential <designer-credential> template get mission \
+  --id M001 --output docs/missions/M001.md
+chassiss --credential <designer-credential> \
+  artifact submit docs/missions/M001.md
+
+chassiss --credential <designer-credential> template get task \
+  --id M001-T001 --output docs/tasks/M001-T001.md
+chassiss --credential <designer-credential> \
+  artifact submit docs/tasks/M001-T001.md
+```
+
+Master 在每次提交后检查精确内容并接受对应 submission：
+
+```text
+chassiss --credential ~/.chassiss/master-root.yaml \
+  artifact accept <artifact-submission-id>
+```
+
+Requirements、Architecture、Mission 和各 Task 之间存在 digest 与状态依赖，应按 `bootstrap` 返回的动作逐项编写、提交和接受，不要一次性猜测全部字段。
+
+### 5. 启动 Build/Review Agent 并监听正式版本
+
+规划完成后启动 Build Agent 和 Review Agent。可以用 cron 或 Agent automation 每五分钟检查 Git 远端并唤醒 Agent：
+
+```text
+*/5 * * * * cd /path/to/project && git fetch --prune && /path/to/wake-build-agent
+*/5 * * * * cd /path/to/project && git fetch --prune && /path/to/wake-review-agent
+```
+
+定时器只负责发现版本变化和唤醒 Agent；Agent 被唤醒后仍必须先执行 `bootstrap`。`git fetch` 不同步 `.chassis/`，也不能把多个 clone 变成等价控制端。
+
+### 6. 循环开发直到项目完成
+
+Orchestrator 激活 Mission 并把 Task 分派给 Developer actor：
+
+```text
+chassiss --credential <orchestrator-credential> mission activate M001
+chassiss --credential <orchestrator-credential> \
+  task assign M001-T001 --owner build-1
+```
+
+Developer 打开 CLI 创建的 Task worktree，在返回的路径中实现，然后检查并提交：
+
+```text
+chassiss --credential <developer-credential> work open M001-T001
+chassiss --credential <developer-credential> work check M001-T001 --all
+chassiss --credential <developer-credential> \
+  work submit M001-T001 --file <handoff-file-or-text>
+```
+
+Designer 复核实现是否仍符合已接受的需求与架构；这项设计一致性复核不能代替 Reviewer 的正式 verdict。Reviewer 独立检查精确 submission，通过后集成：
+
+```text
+chassiss --credential <reviewer-credential> review context <submission-id>
+chassiss --credential <reviewer-credential> review check <submission-id>
+chassiss --credential <reviewer-credential> \
+  review approve <submission-id> --report <review-report>
+chassiss --credential <reviewer-credential> integrate apply <submission-id>
+```
+
+如果使用 Git 远端同步正式版本，Orchestrator 在集成后发布精确 baseline：
+
+```text
+chassiss --credential <orchestrator-credential> \
+  publish check --target remote-git --remote origin --branch main
+chassiss --credential <orchestrator-credential> \
+  publish apply --target remote-git --remote origin --branch main
+```
+
+当当前批次的步骤预算或 Task 预算耗尽、或者冻结契约需要变化时，停止原任务并召回 Designer 规划下一批。已冻结 Task 不能原地改写；如需替换，应先由 Designer 提交新 Task、Master 接受，再由 Orchestrator 按 `bootstrap` 返回的动作执行 `task supersede`。重复“分派、开发、设计复核、Reviewer 复核和集成”，直到所有 Task 完成。
+
+最后由 Orchestrator 提交 Mission 验收，Master 接受：
+
+```text
+chassiss --credential <orchestrator-credential> \
+  mission submit-acceptance M001 --evidence <file-or-text>
+chassiss --credential ~/.chassiss/master-root.yaml mission accept M001
+```
+
+## 受控项目结构
+
+初始化后的项目遵循以下结构：
 
 ```text
 project-name/
 ├── .chassis/
-│   ├── config.yaml       # 项目配置和策略
-│   ├── trust.yaml        # Master 签名的角色授权和回收记录
-│   ├── state.yaml        # 由事件重放生成的当前状态投影
-│   ├── events/           # 原子、签名、最小 payload 的工作流事实源
-│   ├── operations/       # 未完成跨介质操作的恢复 journal
-│   ├── auth-operations/  # 未完成授权签发/回收的恢复 journal
-│   ├── publish-operations/ # 未完成远端发布的恢复 journal
-│   ├── submissions/      # 不可变 submission manifest
-│   ├── worktrees/        # 每个 Active Task 的独立 Git worktree
-│   ├── cache/            # 可删除、可重建，不提交
-│   └── lock              # 本机写锁，不提交
+│   ├── config.yaml
+│   ├── trust.yaml
+│   ├── state.yaml
+│   └── <events、operations、submissions、worktrees 等 CLI 数据>
 ├── docs/
 │   ├── requirements.md
 │   ├── architecture.md
 │   ├── missions/
 │   │   └── M001.md
 │   └── tasks/
-│       ├── M001-T001.md
-│       └── M001-T002.md
+│       └── M001-T001.md
 └── <项目源码和普通文件>
 ```
 
-所有需求、架构、任务书和原子任务都在 `docs/` 下。状态和运行数据集中放在根目录 `.chassis/`，不污染项目文档。
+以下边界不可绕过，否则 CLI 将拒绝继续，或项目会失去可信状态：
 
-## 文档格式
+- 不要手工修改或删除 `.chassis/` 中的任何文件；只有 `.chassis/cache/` 可删除并由 CLI 重建。
+- 不要手工移动、删除或改写 CHASSISS 创建的 Git refs、branches 和 linked worktrees。
+- Requirements、Architecture、Mission 和 Task 一旦进入受控状态，只能在对应状态与 CLI 流程允许时更新；不能绕过 digest、acceptance 或冻结规则直接改写或删除。
+- 普通项目文件只能在 CLI 创建的 Task worktree 中修改，或由人类使用 Owner credential 接管；不要直接移动正式分支。
 
-CLI 内嵌 Requirements、Architecture、Mission、Task 四种模板。Agent 必须通过命令取得模板，不靠记忆重建格式：
+## 人类独立开发：Owner
 
-```text
-chassiss template get requirements
-chassiss template get architecture
-chassiss template get mission --id M001
-chassiss template get task --id M001-T001
-```
-
-文档是 Markdown，开头有很短的 YAML front matter，保存 CLI 必须读取的 ID、baseline、依赖、允许路径和验收命令。具体字段以 CLI 内嵌模板和 validator 为唯一机器契约，不再单独维护一套长篇 Schema 文档。
-
-模板职责：
-
-- `requirements.md`：问题、目标行为、成功标准、范围、约束、待 Master 决策；
-- `architecture.md`：边界、接口、数据、依赖、安全、验证和并行边界；
-- `missions/M###.md`：一个可独立验收的 Outcome 及其 Task 集；
-- `tasks/M###-T###.md`：一个 Agent 会话可以闭环的原子任务。
-
-Task 进入 ready 后，目标、依赖、允许路径和验收冻结。需要改变时停止并进入后续设计变更流程，不原位改写契约。
-
-新项目默认冻结每个 Task 的变更预算：最多 100 个文件、20,000 行增删和 20 个提交。Master 可在 `project init` 调整项目默认值，Designer 也可在 Task front matter 的 `budget` 中提出单 Task 值；该值随 Task artifact 被接受后冻结。某项为 `0` 表示该维度不设上限。二进制文件计入文件数，但因 Git 不提供文本行数而不计入增删行数。
-
-## 状态与权限
-
-`.chassis/events/` 是工作流唯一事实源；GitHub 只用于不同实例之间同步代码版本，不决定 Mission、Task、Review 或 Integration 状态。`.chassis/state.yaml` 是可重建投影，不是编辑接口。
-
-角色规范的机器事实源是可信 CLI 内的 Role Policy V3 registry，而不是 Skill Markdown。registry 同时驱动默认 credential actions、命令 option 校验、写命令识别和 `bootstrap` 输出，并以 policy digest 固定语义；reducer 和具体命令仍独立重验领域前置条件。这样角色边界主要由“credential 未授权、资源 scope 不匹配、当前 State 不允许时不返回或拒绝”表达，不维护另一套冗长规则。
-
-Agent 使用 `chassiss --json --credential <credential> bootstrap` 获取自身 actor/role、实际 grant、资源 scope、policy version/digest、可用命令 schema、当前候选动作和按需 context argv。role 完全从已验证 credential 推导，`available_actions` 绑定返回时的 state/trust revision，只是当前投影而不是可复用授权票据；每条命令执行时继续完整复验。
-
-Event V4 只携带当前动作的严格 payload。未知字段、未知事件和非法领域转换全部拒绝；CLI 通过确定性 reducer 重放事件，再用 State/transition validator 检查不变量。API V2 使用 Config/State/Event V4，旧项目明确拒绝，不提供迁移或兼容模式。
-
-Event V4、Trust V1、CheckSpec 和 submission digest 使用当前 Go JSON 编码的精确字节协议，并由 golden vectors 和“签名结构禁止浮点字段”测试冻结。它不是 RFC 8785/JCS；未来若采用 JCS，必须再次提升协议版本并明确拒绝旧项目。
-
-所有状态写命令执行同一事务：
+人类需要越过 Agent 流程独立维护项目时，先在项目默认分支中修改普通项目文件，但不要自行 commit，然后执行：
 
 ```text
-获取项目写锁并验证 revision/credential
-→ 写 prepared operation journal
-→ 准备确定 Git SHA 和签名事件
-→ 应用 Git 并标记 git_applied
-→ 原子写事件与状态投影
-→ 标记 state_committed 并清理 journal
+chassiss --root /path/to/project \
+  --credential ~/.chassiss/cred-human-owner.yaml \
+  owner apply --reason "说明本次独立维护的原因"
 ```
 
-所有正式 Git 副作用都在同一项目写锁和 operation journal 内。恢复只在 Git 精确匹配 journal 的 before/after 时补写状态；不匹配则进入 `CHS-INTEGRITY-BLOCKED`，不会猜测 reset 或 force。每次状态变化增加 revision；状态投影损坏后，CLI 使用 `.chassis/events/` 确定性重建。
-
-项目写锁使用操作系统 advisory lock。`.chassis/lock` 是持久锁文件，PID 和获取时间只用于诊断；锁的所有权由内核和打开的文件描述符决定，不按文件年龄删除，因此长测试不会在五分钟后被另一个 Agent 抢锁，进程退出后锁会由内核释放。
-
-Reviewer 批准和集成都绑定 `submission.HeadCommit`。`review check` 只报告 mechanical validation 与 declared checks，不代表语义合格；Reviewer 必须另行给出 approve/request-changes verdict。集成在临时候选 worktree 合并精确 SHA、重跑 Task checks 并保存 merged-tree 证据，checks 通过后才推进正式分支并记录 `integration.applied`。
-
-`publish` 与 local integration 是两个独立事实。adapter 只把 CLI 当前 baseline 的精确 SHA fast-forward push 到指定远端分支，不创建或读取 GitHub/GitLab 的 Issue、PR、Review 或工作流状态，也不允许 force push。publication 绑定远端名称、远端 URL 摘要、分支和 SHA，但不回显可能含凭据的 URL。远端失败不会撤销本地 integration；远端已更新而本地事件未提交时，由独立 publish journal 在 `recover` 中验证精确 endpoint 和 SHA 后补记 `publication.applied`。远端出现 journal 之外的结果时进入 integrity blocked，由 Master 人工判断。
-
-每个 Active Task 固定使用 `.chassis/worktrees/<task-id>/` 下的独立 linked worktree。状态事件同时绑定路径、Git worktree 身份、Task branch 和绑定摘要；`status/diff/check/checkpoint/submit` 都重新验证该绑定。打开 Task 不切换项目根 worktree，两个无路径冲突的 Task 可在 WIP 限制内并行执行。Task 集成后，仅当 worktree 干净且仍位于获批提交时才受控清理，Task branch 保留。
-
-Task check 使用结构化 `argv/cwd/env/timeout_seconds/verification_paths`。每个 check 的独立验证源必须位于 Developer `allowed_paths` 之外；Developer check、Reviewer check 和 Integration 都对照冻结 Task baseline 重算验证源摘要。`work check` 还会在记录结果前执行 scope、budget 与候选 submission preflight，越界快照不会得到 passed evidence 或推进 revision。默认不经过 shell，不继承任意宿主环境，`cwd` 必须经符号链接解析后仍位于 Task worktree；确需 shell 时必须在冻结 Task 契约中显式 `shell: true` 并由 Master 接受。检查结果绑定 CheckSpec、verification source 和由临时 Git index 生成的 tree/stage 摘要。
-
-Reviewer 的每次 verdict 都保留完整 report 并绑定 submission digest。Developer 的 `work context <task-id>` 返回当前 `change_request` 与按时间排序的 `change_request_history`；`review history [--task ID] [--submission ID]` 在 Mission 完成后仍可读取审计记录。`work checkpoint` 在 `in_progress` 时作为 `optional: true` action 投递。
-
-`trust.yaml` 不是秘密，只保存由 Master Root 签名的角色公钥、授权版本和回收记录。单独修改它会使签名失效。写命令以及带 `--credential` 的 `doctor/verify` 还会用 Master 分发的 Root/角色 credential 所携带的 Root fingerprint 锚定项目；不带 credential 的读检查只能证明项目内部自洽。私钥和角色 credential 不进入项目仓库。
-
-授权使用独立 monotonic `trust.revision` 和同一项目写锁。`auth issue` 先在最终输出目录准备隐藏 credential 临时文件，再原子提交签名 trust，最后发布 credential；`auth revoke` 也由授权 journal 保护。崩溃后 `recover` 只补全与 journal 精确匹配的结果。并发授权更新由 `--expect-trust-revision` 做 CAS；旧 revision 稳定返回 `CHS-CONFLICT-TRUST-REVISION`。
-
-Master Root 私钥不硬编码在二进制中：二进制需要分发给所有角色，内嵌秘密可以被提取，泄漏后还必须重新发布整个 CLI。Root 由 Master 独立保管，二进制只内置算法和规则；每个角色 credential 自带项目和 Root fingerprint，并拥有自己的私钥。
-
-## Credential 签发与文本传输
-
-默认本地目录是 `~/.chassiss/`。`auth master-init` 未传 `--output` 时生成 `~/.chassiss/master-root.yaml`；项目内执行 `auth issue` 时，CLI 会按项目 Root fingerprint 发现唯一匹配 Root，并默认生成 `~/.chassiss/cred-<actor>.yaml`。显式路径参数仍可覆盖默认值，已有文件永不覆盖。
-
-Master：
+CLI 会检查项目是否处于可接管的静止状态、创建正式提交并留下签名审计记录。Owner 不能修改 `.chassis/`、Git 控制数据或已登记的 Requirements、Architecture、Mission、Task artifact。
 
 ```text
-chassiss auth master-init
-chassiss auth issue --actor codex --role developer
-chassiss auth export ~/.chassiss/cred-codex.yaml
+chassiss --root /path/to/project \
+  --credential ~/.chassiss/cred-human-owner.yaml \
+  owner history
 ```
 
-`auth export` 只向 stdout 写三行 CHASSISS armor。body 是单行 Base64，解码后包含 envelope version、完整原字节 credential YAML 和 SHA-256。Master Root 明确禁止 export。
+## 详细文档
 
-Agent：
-
-```text
-chassiss auth import --output ~/.chassiss/my-cred.yaml
-# 粘贴 armor，Ctrl+D
-chassiss --credential ~/.chassiss/my-cred.yaml bootstrap
-```
-
-Import 严格校验 armor、Base64、envelope version、摘要、Credential schema、role actions 和私钥长度，以 `0600` 原子写入且拒绝覆盖。最终真实性仍由 bootstrap 对照 Root 签名 trust、项目 ID、grant metadata 和公私钥匹配验证。
-
-使用 `--json` 时，认证失败还会在 `error.diagnostic_category` 返回稳定子原因，例如 `grant_not_found`、`revoked`、`metadata_mismatch`、`policy_mismatch`、`key_invalid`、`key_mismatch` 或 `signature_invalid`；调用方不需要解析人类错误文本。
-
-credential 默认绑定项目、Agent 身份、角色和允许动作，但不绑定单个 Task。Task 权限由当前状态继续收窄：Developer 只能操作分配给自己身份的 Task；Reviewer 不能复核同一身份产生的 submission；Designer 不能接受自己的 artifact；Orchestrator 不能批准实现。
-
-Task assign/claim 只接受当前 trust 中未回收且拥有 Developer 权限的 actor，并在事件中记录当时的 `owner_grant_id`。该字段是分派来源证据，不锁死旧密钥；旧 grant 回收后，同 actor 的新 Developer credential 仍可继续原 Task。
-
-应当为不同 Agent 身份分别签发 credential，不要让全部 Developer 或 Reviewer 共用同一把角色密钥，否则无法独立回收、审计具体主体或证明 Reviewer 独立性。同一 Agent 可以持有多个角色 credential，但每次动作必须明确选择当前角色。
-
-Master Root 私钥和 Agent credential 保存在项目目录之外。Armor 仍然包含私钥，应按 secret 对待；聊天记录、剪贴板和终端滚屏都会扩大暴露面。项目内的 `trust.yaml` 只保存公钥、授权和回收事实。
-
-v0.3 没有独立 `rotate` 命令。普通角色需要轮换时先签发新 credential，确认可用后再回收旧 credential；Owner 是唯一例外，必须先显式回收当前 Owner，再签发替代者。
-
-## Owner 基线接管
-
-Owner 是 Master Root 签发的独立高权限角色，不是 Master Root 本身，也不是拥有额外 scope 的 Developer。Master Root 只能签发、回收 Owner 和读取 Owner 历史，不能直接执行 `owner apply`；这保证日常绕过流程的行为使用可单独回收的密钥签名。
-
-每个项目的 Root 签名 trust 同时最多存在一个未回收 Owner grant。过期不会自动释放这个唯一席位，轮换必须显式 `auth revoke`，随后才能签发替代 Owner；并发签发也只能有一个成功。Owner credential 仍然绑定项目和 Root fingerprint。
-
-签发与使用：
-
-```text
-chassiss auth issue --actor master-owner --role owner
-
-# Master 在默认分支的工作区中修改普通项目文件
-chassiss --credential ~/.chassiss/cred-master-owner.yaml owner apply \
-  --reason "更新项目维护配置"
-
-chassiss --credential ~/.chassiss/cred-master-owner.yaml owner history
-```
-
-`owner apply` 只在项目静止期可用：不能有 Active Mission、Active Task 或待审 artifact；当前分支必须是配置的默认分支，HEAD 必须仍等于签名 State 中的 formal baseline。命令只接收未提交的 working-tree 变更，由 CLI 内部制作为恰好一个提交并推进 baseline；它不会收编 Master 预先手工创建的提交。
-
-Owner 不能修改 `.chassis/`、`.git/` 或任何已登记的 Requirements、Architecture、Mission、Task artifact 文件。每次成功接管都会产生签名 `owner.baseline_applied` 事件，并在 State 的 `owner_changes`/`last_owner_change_id` 中保留 Owner actor、credential ID、原因、前后 SHA、tree digest、文件清单、commit message、变更统计和时间。`owner history` 对当前 Owner 与 Master Root 可读。跨 Git ref、index、事件和 State 的崩溃恢复继续由 operation journal 完成。
-
-### 已知安全风险
-
-长效 credential 是当前有意接受的取舍：
-
-- credential 一旦泄漏，在 Master 回收前可以持续使用；
-- credential 不绑定 Task，失陷后的影响范围大于短期、任务级授权；
-- 多个 Session 重复使用同一私钥会增加暴露时间；
-- 如果多个 Agent 运行在同一系统用户下并能读取彼此凭据，CLI 无法提供真正的秘密隔离；
-- 离线或回滚到旧 `trust.yaml` 的执行环境可能暂时看不到最新回收记录，因此正式集成必须验证最新授权版本；
-- Agent 若能替换 CLI 二进制，可以伪造本地显示结果；正式集成和发布必须由 Master 分发的可信 CLI 重新验证签名、回收状态和事件链。
-
-当前主要目标是防止守规 Agent 因遗忘规则而误操作，不声称可以抵御拥有同一用户全部文件权限的恶意 Agent。当前支持可选 `not_before/expires_at`、Task/Mission/submission 白名单、独立 verification source，以及 Reviewer/Integration 的 digest/head/baseline 绑定；默认仍按 Master 的选择保持长效且不绑定 Task。后续安全版本还可增加每 Session 临时密钥、操作系统钥匙串、独立 credential broker 和 proof-of-possession。
-
-## 最小生命周期
-
-```text
-project init
-→ 每个 Agent 用自己的 credential bootstrap
-→ Designer 获取模板、编写并提交 Requirements
-→ Master 接受 Requirements
-→ Designer 编写并提交 Architecture
-→ Master 接受 Architecture
-→ Designer 编写 Mission 和 Tasks
-→ Master 接受计划
-→ Orchestrator 激活 Mission、领取或分派 Task
-→ Developer 实现、检查、checkpoint、submit
-→ Reviewer 独立复核
-→ Reviewer approve 或 request-changes
-→ 已批准 submission 集成到本地正式 baseline
-→ 可选 publish 到 GitHub/GitLab/其他仓库
-→ Orchestrator 提交 Mission 验收
-→ Master 关闭 Mission
-```
-
-## CLI 与 Skill 的关系
-
-CLI 是权限、规则和状态的执行面。仓库只保留一个标准 Skill：[skills/chassiss/SKILL.md](skills/chassiss/SKILL.md)，内容限于：
-
-- 如何用 credential 执行 `bootstrap`；
-- 如何读取 `capabilities`、`available_actions` 和 `context_requests`；
-- mutation 使用返回的 revision 做 CAS，变化后重新 bootstrap；
-- 不绕过 CLI、不编辑 `.chassis/`、不泄露 credential。
-
-四份静态 Role Skill 已删除。Agent 不加载其他角色说明，也不靠一大串声明式规则约束自己；它只看到 credential 实际授予的能力和当前 State 允许的候选动作。命令 schema 由 `bootstrap` 返回，人类 README 不参与授权判断。
-
-## v0.3 实现状态
-
-已完成 API V2、Event V4 reducer、Role Policy V3、唯一 Owner grant、可审计 Owner baseline 接管、credential armor、稳定 credential diagnostics、review feedback/history、Developer scope/budget preflight、独立 verification sources、可选 checkpoint action、完整 state validator、revision CAS、advisory 项目锁、授权/Git/publish operation journal、精确提交集成、独立 Task worktree、本地 Git 闭环、可选远端 publish adapter 和单一通用 Skill。Greenfield、Brownfield、Owner 接管/恢复、退回重提、越界 check、独立验证源与完整角色 CLI 生命周期均有自动化覆盖。当前不实现 credential rotate 命令和完整 Mission 级设计变更流程。
-
-旧 CHASSIS 没有迁移，只用于提取状态机规则和失败案例，不作为事实源。
-
-## Master 复核重点
-
-1. 是否接受 `.chassis/` 保存状态，所有项目文档统一在 `docs/`；
-2. 是否接受 v0.3 本地 Git 必需、GitHub 完全可选；
-3. 是否接受“Master 接受设计、Reviewer 接受实现”的独立性；
-4. 是否接受 v0.3 使用按 Agent 身份签发、持续到主动回收的长效角色 credential；
-5. 是否接受 Role Policy registry + credential-derived bootstrap 取代静态角色文档；
-6. 是否接受源码、分发二进制和 Agent Skill 完全分层的仓库结构。
+完整架构、命令、权限、协议和恢复机制将统一维护在 [`docs/`](docs/)；文章分类和具体内容将在后续确定。Agent 的机器契约仍以可信 CLI 的 `bootstrap`、内嵌模板和 validator 为准。
