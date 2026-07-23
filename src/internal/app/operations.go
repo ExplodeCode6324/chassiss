@@ -333,7 +333,7 @@ func recoverOperationsLocked(root string, config Config) error {
 			if err := finalizeRecoveredOperation(root, journal); err != nil {
 				return err
 			}
-		case journal.Event != nil && containsString([]string{"artifact.accept", "work.submit", "integrate.apply"}, journal.Action) && operationRefsAtAfter(journal, current):
+		case journal.Event != nil && containsString([]string{"artifact.accept", "work.submit", "integrate.apply", "owner.apply"}, journal.Action) && operationRefsAtAfter(journal, current):
 			if err := syncOperationIndex(root, journal); err != nil {
 				return err
 			}

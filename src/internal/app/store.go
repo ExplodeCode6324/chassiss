@@ -424,6 +424,7 @@ func eventRequiredAction(eventType string) (string, bool) {
 		"review.approved":              "review.approve",
 		"review.changes_requested":     "review.request-changes",
 		"integration.applied":          "integrate.apply",
+		"owner.baseline_applied":       "owner.apply",
 		"publication.applied":          "publish.apply",
 	}
 	action, ok := actions[eventType]

@@ -17,6 +17,7 @@ func TestCommandPolicyRegistryIsTheRoleActionAuthority(t *testing.T) {
 		"developer":    {"work.block", "work.check", "work.checkpoint", "work.open", "work.submit"},
 		"reviewer":     {"integrate.apply", "review.approve", "review.request-changes"},
 		"master":       {"artifact.accept", "artifact.reject", "auth.issue", "auth.revoke", "mission.accept", "publish.apply", "task.cancel"},
+		"owner":        {"owner.apply"},
 	}
 	seenCommands := map[string]bool{}
 	for _, policy := range commandPolicies {
@@ -52,7 +53,7 @@ func TestRolePolicyDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:6e70be08f2dd3ea5b2346d95c6a748c2ba825ef0a94bca356c6118dc2c9d5bd9"
+	const want = "sha256:da566b45374d5e50e6d3cfcd9b13ea7f0f744e428a7c2db4d41832976bc8923b"
 	if digest != want {
 		t.Fatalf("Role Policy V%d changed: got %s, want %s; bump RolePolicyVersion for intentional semantic changes", RolePolicyVersion, digest, want)
 	}

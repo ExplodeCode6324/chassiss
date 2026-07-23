@@ -7,11 +7,11 @@ import (
 
 const (
 	APIVersion        = "chassiss.dev/v2"
-	ConfigVersion     = 3
-	StateVersion      = 3
+	ConfigVersion     = 4
+	StateVersion      = 4
 	TrustVersion      = 1
 	CredentialVersion = 1
-	EventVersion      = 3
+	EventVersion      = 4
 )
 
 type Config struct {
@@ -250,22 +250,38 @@ type Publication struct {
 	CreatedAt          time.Time `yaml:"created_at" json:"created_at"`
 }
 
+type OwnerChange struct {
+	ID            string        `yaml:"id" json:"id"`
+	Actor         string        `yaml:"actor" json:"actor"`
+	CredentialID  string        `yaml:"credential_id" json:"credential_id"`
+	Reason        string        `yaml:"reason" json:"reason"`
+	PreviousHead  string        `yaml:"previous_head" json:"previous_head"`
+	NewHead       string        `yaml:"new_head" json:"new_head"`
+	TreeDigest    string        `yaml:"tree_digest" json:"tree_digest"`
+	ChangedFiles  []string      `yaml:"changed_files" json:"changed_files"`
+	CommitMessage string        `yaml:"commit_message" json:"commit_message"`
+	Metrics       ChangeMetrics `yaml:"metrics" json:"metrics"`
+	CreatedAt     time.Time     `yaml:"created_at" json:"created_at"`
+}
+
 type State struct {
-	Version       int                      `yaml:"version" json:"version"`
-	ProjectID     string                   `yaml:"project_id" json:"project_id"`
-	Revision      int64                    `yaml:"revision" json:"revision"`
-	Phase         string                   `yaml:"phase" json:"phase"`
-	Baseline      string                   `yaml:"baseline,omitempty" json:"baseline,omitempty"`
-	ActiveMission string                   `yaml:"active_mission,omitempty" json:"active_mission,omitempty"`
-	Artifacts     map[string]ArtifactState `yaml:"artifacts" json:"artifacts"`
-	Missions      map[string]MissionState  `yaml:"missions" json:"missions"`
-	Tasks         map[string]TaskState     `yaml:"tasks" json:"tasks"`
-	Submissions   map[string]Submission    `yaml:"submissions" json:"submissions"`
-	Reviews       map[string]Review        `yaml:"reviews" json:"reviews"`
-	Integrations  map[string]Integration   `yaml:"integrations" json:"integrations"`
-	Publications  map[string]Publication   `yaml:"publications" json:"publications"`
-	UpdatedAt     time.Time                `yaml:"updated_at" json:"updated_at"`
-	UpdatedBy     string                   `yaml:"updated_by" json:"updated_by"`
+	Version           int                      `yaml:"version" json:"version"`
+	ProjectID         string                   `yaml:"project_id" json:"project_id"`
+	Revision          int64                    `yaml:"revision" json:"revision"`
+	Phase             string                   `yaml:"phase" json:"phase"`
+	Baseline          string                   `yaml:"baseline,omitempty" json:"baseline,omitempty"`
+	ActiveMission     string                   `yaml:"active_mission,omitempty" json:"active_mission,omitempty"`
+	Artifacts         map[string]ArtifactState `yaml:"artifacts" json:"artifacts"`
+	Missions          map[string]MissionState  `yaml:"missions" json:"missions"`
+	Tasks             map[string]TaskState     `yaml:"tasks" json:"tasks"`
+	Submissions       map[string]Submission    `yaml:"submissions" json:"submissions"`
+	Reviews           map[string]Review        `yaml:"reviews" json:"reviews"`
+	Integrations      map[string]Integration   `yaml:"integrations" json:"integrations"`
+	Publications      map[string]Publication   `yaml:"publications" json:"publications"`
+	OwnerChanges      map[string]OwnerChange   `yaml:"owner_changes" json:"owner_changes"`
+	LastOwnerChangeID string                   `yaml:"last_owner_change_id,omitempty" json:"last_owner_change_id,omitempty"`
+	UpdatedAt         time.Time                `yaml:"updated_at" json:"updated_at"`
+	UpdatedBy         string                   `yaml:"updated_by" json:"updated_by"`
 }
 
 type Event struct {

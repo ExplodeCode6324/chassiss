@@ -106,7 +106,36 @@ func verifyTrust(config Config, trust Trust) error {
 	if !ed25519.Verify(ed25519.PublicKey(public), data, signature) {
 		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata signature is invalid", Diagnostic: "signature_invalid", ExitCode: 40}
 	}
-	return nil
+	return validateOwnerGrantUniqueness(trust)
+}
+
+func validateOwnerGrantUniqueness(trust Trust) error {
+	_, _, err := unrevokedOwnerGrant(trust)
+	return err
+}
+
+func unrevokedOwnerGrant(trust Trust) (Grant, bool, error) {
+	revoked := map[string]struct{}{}
+	for _, revocation := range trust.Revocations {
+		revoked[revocation.CredentialID] = struct{}{}
+	}
+	var owner Grant
+	for _, grant := range trust.Grants {
+		if grant.Role != "owner" {
+			continue
+		}
+		if _, ok := revoked[grant.ID]; ok {
+			continue
+		}
+		if owner.ID != "" {
+			return Grant{}, false, &CLIError{
+				Code: "CHS-INTEGRITY-TRUST", Message: "trust contains more than one unrevoked Owner grant",
+				Diagnostic: "owner_grant_conflict", ExitCode: 40,
+			}
+		}
+		owner = grant
+	}
+	return owner, owner.ID != "", nil
 }
 
 func rootPrincipal(root *RootKey, public ed25519.PublicKey, private ed25519.PrivateKey) Principal {
@@ -290,6 +319,14 @@ func authorizeEventScope(scope ResourceScope, event Event) error {
 		}
 		if !scopeAllows(scope.Baselines, payload.Head) {
 			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to the published baseline", ExitCode: 11}
+		}
+	case event.Type == "owner.baseline_applied":
+		var payload ownerBaselineAppliedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if !scopeAllows(scope.Baselines, payload.PreviousHead) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "Owner credential is not scoped to the previous formal baseline", ExitCode: 11}
 		}
 	}
 	return nil

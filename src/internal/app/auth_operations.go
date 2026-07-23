@@ -90,6 +90,19 @@ func issueCredentialWithPolicy(rootDir, rootPath, actor, role, output string, re
 	if err != nil {
 		return nil, err
 	}
+	if role == "owner" {
+		current, exists, err := unrevokedOwnerGrant(trust)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, &CLIError{
+				Code: "CHS-AUTH-OWNER-EXISTS", Message: "this project trust already has an unrevoked Owner credential",
+				Diagnostic: "owner_already_exists", ExitCode: 10,
+				Remedy: []string{"revoke Owner credential " + current.ID + " before issuing its replacement"},
+			}
+		}
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -143,6 +156,9 @@ func issueCredentialWithPolicy(rootDir, rootPath, actor, role, output string, re
 	after.Grants = append(after.Grants, grant)
 	after.Revision++
 	after.UpdatedAt = now
+	if err := validateOwnerGrantUniqueness(after); err != nil {
+		return nil, err
+	}
 	if err := signTrust(&after, privateRoot); err != nil {
 		return nil, err
 	}

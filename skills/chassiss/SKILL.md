@@ -33,6 +33,13 @@ Select the bundled CLI that matches the current operating system and architectur
 - Treat `review check` as mechanical validation only. It never establishes semantic correctness; Reviewer must inspect the implementation and record an explicit verdict with a substantive report.
 - Use the optional `work checkpoint` action only at a meaningful progress boundary.
 
+## Owner
+
+- Treat `owner.apply` as the only authorized way for an Owner to adopt Master-authored working-tree maintenance changes into the formal baseline.
+- Supply a substantive `--reason`, keep the configured default branch at the signed baseline, and do not create a Git commit before invoking the command.
+- Do not use Owner to modify `.chassis`, Git control data, or managed Requirements, Architecture, Mission, or Task artifact files.
+- Bootstrap again after Owner apply and use `owner history` when the retained signed evidence must be inspected.
+
 ## Boundaries
 
 - Never edit `.chassis/`, forge state or events, expose credential material, or replace CLI lifecycle operations with direct Git workflow changes.

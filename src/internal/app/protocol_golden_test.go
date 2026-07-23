@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestEventV3AndTrustV1ProtocolGoldenValues(t *testing.T) {
+func TestEventV4AndTrustV1ProtocolGoldenValues(t *testing.T) {
 	when := time.Date(2025, 2, 3, 4, 5, 6, 123456789, time.UTC)
 	canonical, err := canonicalJSON(struct {
 		Name   string            `json:"name"`
@@ -54,10 +54,10 @@ func TestEventV3AndTrustV1ProtocolGoldenValues(t *testing.T) {
 	}
 	wantCanonical := `{"name":"\u003c\u0026\u2028é","count":42,"at":"2025-02-03T04:05:06.123456789Z","labels":{"a":"first","z":"last"}}`
 	if string(canonical) != wantCanonical {
-		t.Fatalf("Event V3 canonical JSON changed\ngot:  %s\nwant: %s", canonical, wantCanonical)
+		t.Fatalf("Event V4 canonical JSON changed\ngot:  %s\nwant: %s", canonical, wantCanonical)
 	}
 	goldenDigests := map[string][2]string{
-		"event":      {digestBytes(eventBytes), "sha256:e144761bd27c3a4fede3af72a25483a516ac1985ba4783d980de272833a40ebf"},
+		"event":      {digestBytes(eventBytes), "sha256:d19efcd69657874d7decb18d906d5f1da19f3af7344e90dc69773b4c4d92c542"},
 		"trust":      {digestBytes(trustBytes), "sha256:37aaceff822dbe620a2a45921c9f4960427aa8d8390e0ef27a82320e25570783"},
 		"check":      {checkSpecDigest(check), "sha256:63833fe8313130c55f81fa1432d7aecd0fcf70e1f326298bf575b80bd5faa513"},
 		"submission": {submissionDigest, "sha256:da9b2479c61f604acde7def8467db05c8fc00dd31ef6a4e78c2db483824b117a"},
@@ -76,7 +76,7 @@ func TestSignedProtocolTypesContainNoFloatingPointFields(t *testing.T) {
 		missionPayload{}, missionBlockedPayload{}, missionAcceptancePayload{},
 		taskClaimedPayload{}, taskBlockedPayload{}, taskPayload{}, taskCancelledPayload{}, taskSupersededPayload{},
 		workOpenedPayload{}, workCheckedPayload{}, workCheckpointedPayload{}, workSubmittedPayload{},
-		reviewRecordedPayload{}, integrationAppliedPayload{}, publicationAppliedPayload{},
+		reviewRecordedPayload{}, integrationAppliedPayload{}, ownerBaselineAppliedPayload{}, publicationAppliedPayload{},
 	} {
 		assertNoFloatType(t, reflect.TypeOf(value), map[reflect.Type]bool{})
 	}

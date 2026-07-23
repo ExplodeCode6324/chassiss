@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestEventV3CompleteFourRoleLifecycle(t *testing.T) {
+func TestEventV4CompleteFourRoleLifecycle(t *testing.T) {
 	testRoot := t.TempDir()
 	rootPath := filepath.Join(testRoot, "master-root.yaml")
 	if _, err := createRoot(rootPath); err != nil {
@@ -246,7 +246,7 @@ Create code.txt.
 		t.Fatalf("final state = %#v", state)
 	}
 	if _, err := verifyProject(project); err != nil {
-		t.Fatalf("completed V3-state project did not verify: %v", err)
+		t.Fatalf("completed V4-state project did not verify: %v", err)
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	RolePolicyVersion      = 2
-	BootstrapSchemaVersion = "chassiss.bootstrap/v2"
+	RolePolicyVersion      = 3
+	BootstrapSchemaVersion = "chassiss.bootstrap/v3"
 )
 
 type commandPolicy struct {
@@ -87,8 +87,8 @@ type BootstrapResult struct {
 	RefreshOn        []string                  `json:"refresh_on"`
 }
 
-var supportedRoles = []string{"designer", "developer", "master", "orchestrator", "reviewer"}
-var issuableRoles = stringSet([]string{"designer", "developer", "orchestrator", "reviewer"})
+var supportedRoles = []string{"designer", "developer", "master", "orchestrator", "owner", "reviewer"}
+var issuableRoles = stringSet([]string{"designer", "developer", "orchestrator", "owner", "reviewer"})
 
 var commonPolicyInvariants = []string{
 	"Treat the trusted CLI, signed event chain, current trust revision, and projected State as the authority.",
@@ -112,6 +112,9 @@ var commandPolicies = []commandPolicy{
 	{Command: "verify", Usage: "verify", Summary: "Verify project integrity and optional credential anchoring.", Roles: supportedRoles, Expose: true},
 	{Command: "recover", Usage: "recover", Summary: "Deterministically finish valid journals or stop on an integrity mismatch.", Roles: supportedRoles, Mutating: true, Expose: true},
 	{Command: "explain", Usage: "explain <error-code>", Summary: "Explain a stable CLI error and remediation.", Roles: supportedRoles, Expose: true},
+
+	{Command: "owner apply", Action: "owner.apply", Usage: "owner apply --reason <text>", Summary: "Commit an Owner-authored maintenance change directly to the formal baseline with signed audit evidence.", Roles: []string{"owner"}, Values: []string{"reason"}, Mutating: true, Expose: true},
+	{Command: "owner history", Usage: "owner history", Summary: "Read retained Owner baseline-change evidence.", Roles: []string{"owner", "master"}, Expose: true},
 
 	{Command: "template list", Usage: "template list", Summary: "List embedded artifact template kinds.", Roles: []string{"designer"}, Expose: true},
 	{Command: "template get", Usage: "template get <kind> [--id <id>] [--output <project-path>]", Summary: "Render the current machine-valid artifact template.", Roles: []string{"designer"}, Values: []string{"id", "output"}, Mutating: true, Expose: true},
@@ -406,7 +409,7 @@ func bootstrapActions(state State, trust Trust, principal Principal) []Bootstrap
 			if resource == "" {
 				item.RequiredInputs = []BootstrapInput{{Kind: "positional", Name: "artifact_path", ValueHint: "project-relative path"}}
 			}
-		case "artifact.reject", "mission.block", "task.block", "task.cancel", "work.block":
+		case "artifact.reject", "mission.block", "task.block", "task.cancel", "work.block", "owner.apply":
 			item.RequiredInputs = []BootstrapInput{{Kind: "option", Name: "reason", ValueHint: "non-empty text"}}
 		case "mission.submit-acceptance":
 			item.RequiredInputs = []BootstrapInput{{Kind: "option", Name: "evidence", ValueHint: "project file or inline text"}}
@@ -466,6 +469,8 @@ func bootstrapCandidateAllowed(state State, principal Principal, action, resourc
 		}
 	}
 	switch {
+	case action == "owner.apply":
+		return scopeAllows(principal.Resources.Baselines, state.Baseline)
 	case strings.HasPrefix(action, "mission."):
 		return resource == "" || scopeAllows(principal.Resources.Missions, resource)
 	case strings.HasPrefix(action, "task."), strings.HasPrefix(action, "work."):
@@ -506,6 +511,7 @@ func bootstrapActionReason(action string) string {
 		"review.approve":            "An independently authored immutable submission is awaiting a semantic verdict.",
 		"review.request-changes":    "An independently authored immutable submission is awaiting a semantic verdict.",
 		"integrate.apply":           "The exact approved submission remains pending local integration.",
+		"owner.apply":               "The project is quiescent and an Owner may explicitly adopt local maintenance changes into the formal baseline.",
 	}
 	if reason := reasons[action]; reason != "" {
 		return reason

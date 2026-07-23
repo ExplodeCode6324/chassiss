@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.0-dev"
+const Version = "0.3.0-dev"
 
 type globalOptions struct {
 	root          string
@@ -366,6 +366,34 @@ func dispatchWithInput(options globalOptions, words []string, stdin io.Reader) (
 		result["mode"] = config.Mode
 		result["trust_revision"] = trust.Revision
 		return readResponse(result), nil
+	case "owner apply":
+		if len(parsed.positionals) != 0 || strings.TrimSpace(parsed.values["reason"]) == "" {
+			return Response{}, usageError("owner apply requires --reason and no positional arguments")
+		}
+		principal, err := principalFor("owner.apply")
+		if err != nil {
+			return Response{}, err
+		}
+		previous, next, change, err := ownerApply(root, parsed.values["reason"], principal, options.expected)
+		if err != nil {
+			return Response{}, err
+		}
+		return mutatingResponse(previous, next, change, principal), nil
+	case "owner history":
+		if len(parsed.positionals) != 0 {
+			return Response{}, usageError("owner history does not accept positional arguments")
+		}
+		items := make([]OwnerChange, 0, len(state.OwnerChanges))
+		for _, change := range state.OwnerChanges {
+			items = append(items, change)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].CreatedAt.Before(items[j].CreatedAt)
+			}
+			return items[i].ID < items[j].ID
+		})
+		return readResponse(map[string]any{"owner_changes": items, "last_owner_change_id": state.LastOwnerChangeID}), nil
 	case "next":
 		role := parsed.values["role"]
 		if role == "" {
@@ -1274,6 +1302,11 @@ func explainCode(code string) map[string]any {
 		"CHS-CONFLICT-TRUST-REVISION": "Trust grants or revocations changed since they were read. Reload trust metadata and reconsider the authorization action.",
 		"CHS-CONFLICT-LOCKED":         "Another process holds the kernel-backed project write lock. Retry after that command exits; lock-file age is not evidence that the lock is stale.",
 		"CHS-AUTH-REVOKED":            "The selected long-lived credential was explicitly revoked by Master.",
+		"CHS-AUTH-OWNER-EXISTS":       "This project trust already has its single unrevoked Owner grant. Explicitly revoke it before issuing a replacement.",
+		"CHS-OWNER-PROJECT-ACTIVE":    "Owner baseline takeover is allowed only while the project has no active Mission, active Task, or pending artifact.",
+		"CHS-OWNER-BASELINE-MOVED":    "The default branch no longer equals the signed formal baseline. Owner apply never adopts pre-existing commits.",
+		"CHS-OWNER-PROTECTED":         "Owner changes cannot modify CHASSISS control data or managed lifecycle artifact files.",
+		"CHS-OWNER-NO-CHANGES":        "Owner apply requires at least one uncommitted ordinary project-file change.",
 		"CHS-WORK-SCOPE":              "At least one changed file is outside the Task allowed_paths contract.",
 		"CHS-WORK-BUDGET-FILES":       "The exact submission range changes more files than the frozen Task budget permits. Split or supersede the Task instead of widening it during execution.",
 		"CHS-WORK-BUDGET-LINES":       "The exact submission range has more added and deleted text lines than the frozen Task budget permits.",
@@ -1299,6 +1332,7 @@ Core commands:
   auth master-init|issue|inspect|export|import|revoke
   project init
   bootstrap | status | next | doctor | verify | recover | explain
+  owner apply|history
   template list|get
   artifact check|submit|list|context|accept|reject
   mission list|context|activate|block|resume|submit-acceptance|accept

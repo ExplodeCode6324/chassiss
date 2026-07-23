@@ -1351,6 +1351,7 @@ func stateSummary(state State) map[string]any {
 	return map[string]any{
 		"phase": state.Phase, "revision": state.Revision, "baseline": state.Baseline, "active_mission": state.ActiveMission,
 		"ready_tasks": ready, "active_tasks": active, "blocked_tasks": blocked, "review_tasks": review,
+		"last_owner_change_id": state.LastOwnerChangeID, "owner_change_count": len(state.OwnerChanges),
 	}
 }
 
@@ -1411,6 +1412,10 @@ func nextActions(state State, role, actor string) []string {
 		return actions
 	}
 	switch role {
+	case "owner":
+		if ownerApplyStateAllowed(state) == nil {
+			actions = append(actions, "owner.apply")
+		}
 	case "designer":
 		rejections := designerRejections(state)
 		if len(rejections) != 0 {

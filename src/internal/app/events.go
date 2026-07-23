@@ -127,6 +127,17 @@ type publicationAppliedPayload struct {
 	Head               string `json:"head"`
 }
 
+type ownerBaselineAppliedPayload struct {
+	OwnerChangeID string        `json:"owner_change_id"`
+	Reason        string        `json:"reason"`
+	PreviousHead  string        `json:"previous_head"`
+	NewHead       string        `json:"new_head"`
+	TreeDigest    string        `json:"tree_digest"`
+	ChangedFiles  []string      `json:"changed_files"`
+	CommitMessage string        `json:"commit_message"`
+	Metrics       ChangeMetrics `json:"metrics"`
+}
+
 func marshalPayload(value any) (json.RawMessage, error) {
 	data, err := canonicalJSON(value)
 	if err != nil {
@@ -185,6 +196,7 @@ func reduceEvent(config Config, previous State, event Event) (State, error) {
 			Version: StateVersion, ProjectID: config.ProjectID, Phase: "design", Baseline: payload.Baseline,
 			Artifacts: map[string]ArtifactState{}, Missions: map[string]MissionState{}, Tasks: map[string]TaskState{},
 			Submissions: map[string]Submission{}, Reviews: map[string]Review{}, Integrations: map[string]Integration{}, Publications: map[string]Publication{},
+			OwnerChanges: map[string]OwnerChange{},
 		}
 	} else {
 		if previous.Revision == 0 {
@@ -761,6 +773,47 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 				next.Tasks[otherID] = other
 			}
 		}
+	case "owner.baseline_applied":
+		var payload ownerBaselineAppliedPayload
+		if err := decodePayload(event.Payload, &payload); err != nil {
+			return err
+		}
+		if err := payloadResource(event, payload.OwnerChangeID); err != nil {
+			return err
+		}
+		if event.Role != "owner" {
+			return transitionError(event, "baseline change must be signed by an Owner credential")
+		}
+		if err := ownerApplyStateAllowed(previous); err != nil {
+			return transitionError(event, err.Error())
+		}
+		if err := validateOwnerReason(payload.Reason); err != nil {
+			return transitionError(event, err.Error())
+		}
+		if payload.OwnerChangeID == "" || payload.PreviousHead != previous.Baseline || payload.NewHead == "" || payload.NewHead == payload.PreviousHead ||
+			!strings.HasPrefix(payload.TreeDigest, "sha256:") || len(payload.TreeDigest) != len("sha256:")+64 ||
+			payload.CommitMessage != ownerCommitMessage(payload.Reason) || payload.Metrics.Commits != 1 ||
+			payload.Metrics.ChangedFiles != len(payload.ChangedFiles) {
+			return transitionError(event, "Owner baseline evidence is incomplete or inconsistent")
+		}
+		if err := validateOwnerChangedFiles(previous, payload.ChangedFiles); err != nil {
+			return transitionError(event, err.Error())
+		}
+		if err := validateTaskBudget(TaskBudget{}, payload.Metrics); err != nil {
+			return transitionError(event, "Owner change metrics are incomplete or inconsistent")
+		}
+		if _, exists := previous.OwnerChanges[payload.OwnerChangeID]; exists {
+			return transitionError(event, "Owner change ID already exists")
+		}
+		change := OwnerChange{
+			ID: payload.OwnerChangeID, Actor: event.Actor, CredentialID: event.CredentialID, Reason: payload.Reason,
+			PreviousHead: payload.PreviousHead, NewHead: payload.NewHead, TreeDigest: payload.TreeDigest,
+			ChangedFiles: append([]string(nil), payload.ChangedFiles...), CommitMessage: payload.CommitMessage,
+			Metrics: payload.Metrics, CreatedAt: event.OccurredAt,
+		}
+		next.OwnerChanges[change.ID] = change
+		next.LastOwnerChangeID = change.ID
+		next.Baseline = change.NewHead
 	case "publication.applied":
 		var payload publicationAppliedPayload
 		if err := decodePayload(event.Payload, &payload); err != nil {
@@ -876,6 +929,12 @@ func eventPayloadFromCandidate(previous, candidate State, eventType, resource st
 		submission := candidate.Submissions[resource]
 		integration := candidate.Integrations[submission.IntegrationID]
 		return integrationAppliedPayload{IntegrationID: integration.ID, SubmissionID: resource, SubmissionDigest: submission.Digest, SubmissionHead: integration.SubmissionHead, PreviousHead: integration.PreviousHead, IntegratedHead: integration.IntegratedHead, IntegratedTree: integration.IntegratedTree, Checks: integration.Checks}, nil
+	case "owner.baseline_applied":
+		change := candidate.OwnerChanges[resource]
+		return ownerBaselineAppliedPayload{
+			OwnerChangeID: change.ID, Reason: change.Reason, PreviousHead: change.PreviousHead, NewHead: change.NewHead,
+			TreeDigest: change.TreeDigest, ChangedFiles: change.ChangedFiles, CommitMessage: change.CommitMessage, Metrics: change.Metrics,
+		}, nil
 	case "publication.applied":
 		publication := candidate.Publications[resource]
 		return publicationAppliedPayload{PublicationID: publication.ID, Target: publication.Target, Remote: publication.Remote, RemoteURLDigest: publication.RemoteURLDigest, Branch: publication.Branch, PreviousRemoteHead: publication.PreviousRemoteHead, Head: publication.Head}, nil

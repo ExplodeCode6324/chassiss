@@ -107,7 +107,7 @@ func validateState(config Config, state State) error {
 	if state.Baseline == "" || state.UpdatedAt.IsZero() || state.UpdatedBy == "" {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state baseline or update identity is missing", ExitCode: 40}
 	}
-	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil || state.Publications == nil {
+	if state.Artifacts == nil || state.Missions == nil || state.Tasks == nil || state.Submissions == nil || state.Reviews == nil || state.Integrations == nil || state.Publications == nil || state.OwnerChanges == nil {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state collections must not be null", ExitCode: 40}
 	}
 	if err := validateTaskBudgetDefinition(config.DefaultTaskBudget); err != nil {
@@ -388,6 +388,39 @@ func validateState(config Config, state State) error {
 	for id, publication := range state.Publications {
 		if publication.ID != id || !containsString([]string{"github", "gitlab", "remote-git"}, publication.Target) || publication.Remote == "" || publication.RemoteURLDigest == "" || publication.Branch == "" || publication.Head == "" || publication.PublishedBy == "" || publication.CreatedAt.IsZero() {
 			return stateError("CHS-STATE-PUBLICATION", "publication identity or evidence is incomplete: "+id)
+		}
+	}
+	if len(state.OwnerChanges) == 0 {
+		if state.LastOwnerChangeID != "" {
+			return stateError("CHS-STATE-OWNER", "last Owner change points into an empty history")
+		}
+	} else {
+		last, ok := state.OwnerChanges[state.LastOwnerChangeID]
+		if !ok {
+			return stateError("CHS-STATE-OWNER", "last Owner change does not exist")
+		}
+		for id, change := range state.OwnerChanges {
+			if change.ID != id || !validActor(change.Actor) || change.CredentialID == "" || change.PreviousHead == "" || change.NewHead == "" ||
+				change.PreviousHead == change.NewHead || change.TreeDigest == "" || change.CommitMessage == "" || change.CreatedAt.IsZero() {
+				return stateError("CHS-STATE-OWNER", "Owner change identity or evidence is incomplete: "+id)
+			}
+			if err := validateOwnerReason(change.Reason); err != nil {
+				return stateError("CHS-STATE-OWNER", "Owner change reason is invalid: "+id)
+			}
+			if !strings.HasPrefix(change.TreeDigest, "sha256:") || len(change.TreeDigest) != len("sha256:")+64 ||
+				change.CommitMessage != ownerCommitMessage(change.Reason) || !validChangedFiles(change.ChangedFiles) ||
+				change.Metrics.Commits != 1 || change.Metrics.ChangedFiles != len(change.ChangedFiles) ||
+				validateTaskBudget(TaskBudget{}, change.Metrics) != nil {
+				return stateError("CHS-STATE-OWNER", "Owner change evidence is inconsistent: "+id)
+			}
+			for _, file := range change.ChangedFiles {
+				if ownerControlPath(file) {
+					return stateError("CHS-STATE-OWNER", "Owner change modified control data: "+id)
+				}
+			}
+			if change.CreatedAt.After(last.CreatedAt) {
+				return stateError("CHS-STATE-OWNER", "last Owner change is not the newest history entry")
+			}
 		}
 	}
 	return nil

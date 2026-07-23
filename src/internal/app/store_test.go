@@ -204,7 +204,7 @@ func TestCLIRecoverBypassesInvalidStateProjection(t *testing.T) {
 	}
 }
 
-func TestEventV3StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
+func TestEventV4StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "master-root.yaml")
 	if _, err := createRoot(rootPath); err != nil {
@@ -228,7 +228,7 @@ func TestEventV3StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bytes.Contains(raw, []byte(`"state"`)) || !bytes.Contains(raw, []byte(`"payload"`)) {
-		t.Fatalf("event is not a minimal-payload V3 event: %s", raw)
+		t.Fatalf("event is not a minimal-payload V4 event: %s", raw)
 	}
 	events, err := readEvents(eventsPath)
 	if err != nil {
@@ -308,6 +308,7 @@ func TestLoadProjectExplicitlyRejectsLegacyConfigVersions(t *testing.T) {
 	}{
 		{version: 1, wantCode: "CHS-SCHEMA-UNSUPPORTED"},
 		{version: 2, wantCode: "CHS-SCHEMA-UNSUPPORTED"},
+		{version: 3, wantCode: "CHS-SCHEMA-UNSUPPORTED"},
 	} {
 		t.Run(fmt.Sprintf("v%d", test.version), func(t *testing.T) {
 			root := t.TempDir()
