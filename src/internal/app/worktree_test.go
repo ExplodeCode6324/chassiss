@@ -122,6 +122,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 10
+    verification_paths:
+      - docs/tasks/%s.md
 ---
 # Task %s
 ## Objective
@@ -136,7 +138,7 @@ Create %s.
 - Scope change.
 ## Reviewer Attention
 - Worktree isolation.
-`, taskID, requirementsState.Digest, architectureState.Digest, file, taskID, file, file)
+`, taskID, requirementsState.Digest, architectureState.Digest, file, taskID, taskID, file, file)
 		path := "docs/tasks/" + taskID + ".md"
 		writeTestArtifact(t, project, path, taskDocument)
 		submitAndAcceptTestArtifact(t, project, path, designer, master)
@@ -308,6 +310,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 10
+    verification_paths:
+      - docs/tasks/M001-T003.md
 ---
 # Task M001-T003
 ## Objective

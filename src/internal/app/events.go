@@ -159,7 +159,7 @@ func payloadResource(event Event, value string) error {
 
 func reduceEvent(config Config, previous State, event Event) (State, error) {
 	if event.Version != EventVersion {
-		return State{}, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Event V1 is not supported; initialize a V2 project", ExitCode: 40}
+		return State{}, &CLIError{Code: "CHS-SCHEMA-UNSUPPORTED", Message: "event schema is not supported; initialize a new API V2 project", ExitCode: 40}
 	}
 	if event.ProjectID != config.ProjectID || event.Sequence != previous.Revision+1 {
 		return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: "event project or sequence is invalid", ExitCode: 40}
@@ -602,7 +602,7 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		seen := map[string]bool{}
 		for _, result := range payload.Results {
 			check, exists := known[result.ID]
-			if !exists || seen[result.ID] || result.SnapshotDigest == "" || result.SpecDigest != checkSpecDigest(check) {
+			if !exists || seen[result.ID] || result.SnapshotDigest == "" || result.VerificationDigest == "" || result.SpecDigest != checkSpecDigest(check) {
 				return transitionError(event, "check result does not match task contract")
 			}
 			seen[result.ID] = true
@@ -682,6 +682,9 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		if err := decodePayload(event.Payload, &payload); err != nil {
 			return err
 		}
+		if err := validateReviewReport(payload.Report); err != nil {
+			return transitionError(event, "review report is invalid")
+		}
 		if err := payloadResource(event, payload.SubmissionID); err != nil {
 			return err
 		}
@@ -729,7 +732,8 @@ func applyEventPayload(config Config, previous State, next *State, event Event) 
 		checks := map[string]CheckResult{}
 		for _, spec := range previous.Tasks[submission.TaskID].Checks {
 			result, ok := payload.Checks[spec.ID]
-			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != payload.IntegratedTree {
+			submissionResult := submission.Checks[spec.ID]
+			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != payload.IntegratedTree || result.VerificationDigest == "" || result.VerificationDigest != submissionResult.VerificationDigest {
 				return transitionError(event, "integration result lacks a passed merged-tree check")
 			}
 			result.CheckedAt = event.OccurredAt

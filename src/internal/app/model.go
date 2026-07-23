@@ -6,12 +6,12 @@ import (
 )
 
 const (
-	APIVersion        = "chassiss.dev/v1"
-	ConfigVersion     = 2
-	StateVersion      = 2
+	APIVersion        = "chassiss.dev/v2"
+	ConfigVersion     = 3
+	StateVersion      = 3
 	TrustVersion      = 1
 	CredentialVersion = 1
-	EventVersion      = 2
+	EventVersion      = 3
 )
 
 type Config struct {
@@ -106,22 +106,24 @@ type ArtifactState struct {
 }
 
 type CheckSpec struct {
-	ID             string            `yaml:"id" json:"id"`
-	Argv           []string          `yaml:"argv" json:"argv"`
-	Cwd            string            `yaml:"cwd" json:"cwd"`
-	Env            map[string]string `yaml:"env" json:"env"`
-	TimeoutSeconds int               `yaml:"timeout_seconds" json:"timeout_seconds"`
-	Shell          bool              `yaml:"shell,omitempty" json:"shell,omitempty"`
+	ID                string            `yaml:"id" json:"id"`
+	Argv              []string          `yaml:"argv" json:"argv"`
+	Cwd               string            `yaml:"cwd" json:"cwd"`
+	Env               map[string]string `yaml:"env" json:"env"`
+	TimeoutSeconds    int               `yaml:"timeout_seconds" json:"timeout_seconds"`
+	Shell             bool              `yaml:"shell,omitempty" json:"shell,omitempty"`
+	VerificationPaths []string          `yaml:"verification_paths" json:"verification_paths"`
 }
 
 type CheckResult struct {
-	ID             string    `yaml:"id" json:"id"`
-	SpecDigest     string    `yaml:"spec_digest" json:"spec_digest"`
-	ExitCode       int       `yaml:"exit_code" json:"exit_code"`
-	Passed         bool      `yaml:"passed" json:"passed"`
-	Output         string    `yaml:"output" json:"output"`
-	SnapshotDigest string    `yaml:"snapshot_digest,omitempty" json:"snapshot_digest,omitempty"`
-	CheckedAt      time.Time `yaml:"checked_at" json:"checked_at"`
+	ID                 string    `yaml:"id" json:"id"`
+	SpecDigest         string    `yaml:"spec_digest" json:"spec_digest"`
+	ExitCode           int       `yaml:"exit_code" json:"exit_code"`
+	Passed             bool      `yaml:"passed" json:"passed"`
+	Output             string    `yaml:"output" json:"output"`
+	SnapshotDigest     string    `yaml:"snapshot_digest,omitempty" json:"snapshot_digest,omitempty"`
+	VerificationDigest string    `yaml:"verification_digest" json:"verification_digest"`
+	CheckedAt          time.Time `yaml:"checked_at" json:"checked_at"`
 }
 
 type TaskBudget struct {
@@ -137,6 +139,16 @@ type ChangeMetrics struct {
 	DiffLines    int `yaml:"diff_lines" json:"diff_lines"`
 	Commits      int `yaml:"commits" json:"commits"`
 	BinaryFiles  int `yaml:"binary_files" json:"binary_files"`
+}
+
+type WorkPreflight struct {
+	SnapshotDigest  string        `json:"snapshot_digest"`
+	ChangedFiles    []string      `json:"changed_files"`
+	Metrics         ChangeMetrics `json:"metrics"`
+	ScopeValid      bool          `json:"scope_valid"`
+	BudgetValid     bool          `json:"budget_valid"`
+	ChecksPassed    bool          `json:"checks_passed"`
+	SubmissionReady bool          `json:"submission_ready"`
 }
 
 type MissionState struct {
@@ -203,6 +215,15 @@ type Review struct {
 	Verdict          string    `yaml:"verdict" json:"verdict"`
 	Report           string    `yaml:"report" json:"report"`
 	CreatedAt        time.Time `yaml:"created_at" json:"created_at"`
+}
+
+type ChangeRequest struct {
+	ReviewID         string    `json:"review_id"`
+	SubmissionID     string    `json:"submission_id"`
+	SubmissionDigest string    `json:"submission_digest"`
+	Reviewer         string    `json:"reviewer"`
+	Report           string    `json:"report"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type Integration struct {
@@ -308,18 +329,20 @@ type Response struct {
 }
 
 type ResponseError struct {
-	Code        string   `json:"code"`
-	Message     string   `json:"message"`
-	Retryable   bool     `json:"retryable"`
-	Remediation []string `json:"remediation,omitempty"`
+	Code               string   `json:"code"`
+	Message            string   `json:"message"`
+	DiagnosticCategory string   `json:"diagnostic_category,omitempty"`
+	Retryable          bool     `json:"retryable"`
+	Remediation        []string `json:"remediation,omitempty"`
 }
 
 type CLIError struct {
-	Code      string
-	Message   string
-	ExitCode  int
-	Retryable bool
-	Remedy    []string
+	Code       string
+	Message    string
+	Diagnostic string
+	ExitCode   int
+	Retryable  bool
+	Remedy     []string
 }
 
 func (e *CLIError) Error() string { return e.Message }

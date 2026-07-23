@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	RolePolicyVersion      = 1
-	BootstrapSchemaVersion = "chassiss.bootstrap/v1"
+	RolePolicyVersion      = 2
+	BootstrapSchemaVersion = "chassiss.bootstrap/v2"
 )
 
 type commandPolicy struct {
@@ -56,6 +56,7 @@ type BootstrapAction struct {
 	Argv           []string         `json:"argv"`
 	Resource       string           `json:"resource,omitempty"`
 	Reason         string           `json:"reason"`
+	Optional       bool             `json:"optional,omitempty"`
 	RequiredInputs []BootstrapInput `json:"required_inputs,omitempty"`
 	OptionalInputs []BootstrapInput `json:"optional_inputs,omitempty"`
 }
@@ -97,10 +98,12 @@ var commonPolicyInvariants = []string{
 }
 
 var commandPolicies = []commandPolicy{
-	{Command: "auth master-init", Usage: "auth master-init --output <root-file-or-directory>", Summary: "Create a long-lived Master Root outside any project.", Values: []string{"output"}, Mutating: true},
+	{Command: "auth master-init", Usage: "auth master-init [--output <root-file-or-directory>]", Summary: "Create a long-lived Master Root outside any project, defaulting to ~/.chassiss/master-root.yaml.", Values: []string{"output"}, Mutating: true},
 	{Command: "project init", Usage: "project init <path> [--existing] [budget options]", Summary: "Initialize a greenfield or brownfield CHASSISS project.", Values: []string{"master-root", "max-changed-files", "max-diff-lines", "max-commits"}, Flags: []string{"existing"}, Mutating: true},
 	{Command: "auth inspect", Usage: "auth inspect [credential-path]", Summary: "Inspect non-secret credential metadata.", Roles: supportedRoles},
-	{Command: "auth issue", Action: "auth.issue", Usage: "auth issue --actor <actor> --role <role> --output <path> [scope options]", Summary: "Issue a role credential and atomically update trust.", Roles: []string{"master"}, Values: []string{"master-root", "actor", "role", "output", "actions", "not-before", "expires-at", "ttl-seconds", "projects", "missions", "tasks", "submissions", "submission-digests", "heads", "baselines"}, Flags: []string{"persistent"}, Mutating: true, Expose: true},
+	{Command: "auth issue", Action: "auth.issue", Usage: "auth issue --actor <actor> --role <role> [--output <path>] [scope options]", Summary: "Issue a role credential and atomically update trust, using the matching local Master Root and a safe default output when omitted.", Roles: []string{"master"}, Values: []string{"master-root", "actor", "role", "output", "actions", "not-before", "expires-at", "ttl-seconds", "projects", "missions", "tasks", "submissions", "submission-digests", "heads", "baselines"}, Flags: []string{"persistent"}, Mutating: true, Expose: true},
+	{Command: "auth export", Usage: "auth export <credential-path>", Summary: "Export a role credential as a versioned, checksummed CHASSISS armor block."},
+	{Command: "auth import", Usage: "auth import --output <credential-path>", Summary: "Import one CHASSISS credential armor block from standard input.", Values: []string{"output"}, Mutating: true},
 	{Command: "auth revoke", Action: "auth.revoke", Usage: "auth revoke <credential-id> [--reason <text>]", Summary: "Revoke a role credential and atomically update trust.", Roles: []string{"master"}, Values: []string{"master-root", "id", "reason"}, Mutating: true, Expose: true},
 	{Command: "bootstrap", Usage: "bootstrap", Summary: "Verify the credential and return its current role policy, capabilities, contexts, and revision-bound actions.", Roles: supportedRoles, Expose: true},
 	{Command: "status", Usage: "status", Summary: "Read the current project state summary.", Roles: supportedRoles, Expose: true},
@@ -141,14 +144,15 @@ var commandPolicies = []commandPolicy{
 	{Command: "work context", Usage: "work context <task-id>", Summary: "Read the complete Developer Task package.", Roles: []string{"developer"}, Expose: true},
 	{Command: "work status", Usage: "work status <task-id>", Summary: "Read Task and worktree state.", Roles: []string{"developer"}, Expose: true},
 	{Command: "work diff", Usage: "work diff <task-id>", Summary: "Read the current tracked and untracked Task diff.", Roles: []string{"developer"}, Expose: true},
-	{Command: "work check", Action: "work.check", Usage: "work check <task-id> (--all|--id <check-id>)", Summary: "Run frozen structured checks and bind results to the current snapshot.", Roles: []string{"developer"}, Values: []string{"id"}, Flags: []string{"all"}, Mutating: true, Expose: true},
+	{Command: "work check", Action: "work.check", Usage: "work check <task-id> (--all|--id <check-id>)", Summary: "Run frozen structured checks plus scope/budget preflight and bind independent evidence to the current snapshot.", Roles: []string{"developer"}, Values: []string{"id"}, Flags: []string{"all"}, Mutating: true, Expose: true},
 	{Command: "work checkpoint", Action: "work.checkpoint", Usage: "work checkpoint <task-id> --file <checkpoint-file-or-text>", Summary: "Record a signed progress checkpoint.", Roles: []string{"developer"}, Values: []string{"file"}, Mutating: true, Expose: true},
 	{Command: "work submit", Action: "work.submit", Usage: "work submit <task-id> --file <handoff-file-or-text> [--message <summary>]", Summary: "Create an immutable submission after scope, check, snapshot, and budget validation.", Roles: []string{"developer"}, Values: []string{"file", "message"}, Mutating: true, Expose: true},
 	{Command: "work block", Action: "work.block", Usage: "work block <task-id> --reason <text>", Summary: "Block owned work when the frozen Task cannot be completed safely.", Roles: []string{"developer"}, Values: []string{"reason"}, Mutating: true, Expose: true},
 
 	{Command: "review list", Usage: "review list", Summary: "List immutable submissions awaiting review.", Roles: []string{"reviewer"}, Expose: true},
+	{Command: "review history", Usage: "review history [--task <task-id>] [--submission <submission-id>]", Summary: "Read retained review decisions with role and resource-scope filtering.", Roles: []string{"developer", "orchestrator", "reviewer", "master"}, Values: []string{"task", "submission"}, Expose: true},
 	{Command: "review context", Usage: "review context <submission-id>", Summary: "Read the exact submission, Task contract, files, and diff.", Roles: []string{"reviewer"}, Expose: true},
-	{Command: "review check", Usage: "review check <submission-id>", Summary: "Revalidate submission identity, digest, Git range, budget, checks, and scope.", Roles: []string{"reviewer"}, Expose: true},
+	{Command: "review check", Usage: "review check <submission-id>", Summary: "Mechanically revalidate submission identity, digest, Git range, budget, checks, and scope; this is not a semantic verdict.", Roles: []string{"reviewer"}, Expose: true},
 	{Command: "review approve", Action: "review.approve", Usage: "review approve <submission-id> --report <file-or-text>", Summary: "Approve an independently authored exact submission digest.", Roles: []string{"reviewer"}, Values: []string{"report"}, Mutating: true, Expose: true},
 	{Command: "review request-changes", Action: "review.request-changes", Usage: "review request-changes <submission-id> --report <file-or-text>", Summary: "Request changes against an exact submission digest.", Roles: []string{"reviewer"}, Values: []string{"report"}, Mutating: true, Expose: true},
 	{Command: "integrate check", Usage: "integrate check <submission-id>", Summary: "Verify that an approved submission remains integrable.", Roles: []string{"reviewer"}, Expose: true},
@@ -196,9 +200,16 @@ func authorizeRoleReadScope(state State, principal Principal, command string, pa
 		if resource != "" && !scopeAllows(principal.Resources.Missions, resource) {
 			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to mission " + resource, ExitCode: 11}
 		}
-	case "task context", "work context", "work status", "work diff":
+	case "task context":
 		if resource != "" && !scopeAllows(principal.Resources.Tasks, resource) {
 			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to task " + resource, ExitCode: 11}
+		}
+	case "work context", "work status", "work diff":
+		if resource != "" && !scopeAllows(principal.Resources.Tasks, resource) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to task " + resource, ExitCode: 11}
+		}
+		if task, ok := state.Tasks[resource]; ok && task.Owner != principal.Actor {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "task is not owned by this Developer", ExitCode: 11}
 		}
 	case "review context", "review check", "integrate check":
 		if resource == "" {
@@ -206,6 +217,13 @@ func authorizeRoleReadScope(state State, principal Principal, command string, pa
 		}
 		if !bootstrapCandidateAllowed(state, principal, strings.Replace(command, " ", ".", 1), resource) {
 			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to submission " + resource + " and its immutable evidence", ExitCode: 11}
+		}
+	case "review history":
+		if taskID := parsed.values["task"]; taskID != "" && !scopeAllows(principal.Resources.Tasks, taskID) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to task " + taskID, ExitCode: 11}
+		}
+		if submissionID := parsed.values["submission"]; submissionID != "" && !scopeAllows(principal.Resources.Submissions, submissionID) {
+			return &CLIError{Code: "CHS-AUTH-RESOURCE", Message: "credential is not scoped to submission " + submissionID, ExitCode: 11}
 		}
 	case "publish check":
 		if !scopeAllows(principal.Resources.Baselines, state.Baseline) {
@@ -229,6 +247,29 @@ func submissionVisibleTo(state State, principal Principal, submissionID string) 
 	}
 	submission, ok := state.Submissions[submissionID]
 	return ok && scopeAllows(principal.Resources.SubmissionDigests, submission.Digest)
+}
+
+func reviewVisibleTo(state State, principal Principal, review Review) bool {
+	submission, ok := state.Submissions[review.SubmissionID]
+	if !ok {
+		return false
+	}
+	task, ok := state.Tasks[submission.TaskID]
+	if !ok || !taskVisibleTo(principal, task.ID) || !submissionVisibleTo(state, principal, submission.ID) {
+		return false
+	}
+	switch principal.Role {
+	case "developer":
+		return task.Owner == principal.Actor
+	case "reviewer":
+		return true
+	case "orchestrator":
+		return missionVisibleTo(principal, task.MissionID)
+	case "master":
+		return true
+	default:
+		return false
+	}
 }
 
 func actionsForRole(role string) []string {
@@ -373,6 +414,9 @@ func bootstrapActions(state State, trust Trust, principal Principal) []Bootstrap
 			item.RequiredInputs = []BootstrapInput{{Kind: "option", Name: "owner", ValueHint: "authorized Developer actor ID"}}
 		case "work.check":
 			item.Argv = append(item.Argv, "--all")
+		case "work.checkpoint":
+			item.Optional = true
+			item.RequiredInputs = []BootstrapInput{{Kind: "option", Name: "file", ValueHint: "checkpoint project file or inline text"}}
 		case "work.submit":
 			item.RequiredInputs = []BootstrapInput{{Kind: "option", Name: "file", ValueHint: "handoff project file or inline text"}}
 			item.OptionalInputs = []BootstrapInput{{Kind: "option", Name: "message", ValueHint: "single-line summary"}}
@@ -456,6 +500,7 @@ func bootstrapActionReason(action string) string {
 		"task.release":              "An unsubmitted active Task can be safely returned to ready if its worktree is clean.",
 		"work.open":                 "The owned Task is claimed or has requested changes and needs its bound worktree.",
 		"work.check":                "The owned Task is in progress and its frozen checks should be run on current content.",
+		"work.checkpoint":           "An optional signed progress checkpoint may be recorded at a meaningful milestone.",
 		"work.submit":               "All frozen checks currently pass and the owned Task may be submitted.",
 		"review.check":              "An independently authored immutable submission is awaiting machine revalidation.",
 		"review.approve":            "An independently authored immutable submission is awaiting a semantic verdict.",

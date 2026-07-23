@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,7 +204,7 @@ func TestCLIRecoverBypassesInvalidStateProjection(t *testing.T) {
 	}
 }
 
-func TestEventV2StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
+func TestEventV3StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "master-root.yaml")
 	if _, err := createRoot(rootPath); err != nil {
@@ -227,7 +228,7 @@ func TestEventV2StoresMinimalPayloadAndReplaysDeterministically(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bytes.Contains(raw, []byte(`"state"`)) || !bytes.Contains(raw, []byte(`"payload"`)) {
-		t.Fatalf("event is not a minimal-payload V2 event: %s", raw)
+		t.Fatalf("event is not a minimal-payload V3 event: %s", raw)
 	}
 	events, err := readEvents(eventsPath)
 	if err != nil {
@@ -300,28 +301,38 @@ func TestEventPayloadMutationInvalidatesSignature(t *testing.T) {
 	}
 }
 
-func TestLoadProjectExplicitlyRejectsV1Config(t *testing.T) {
-	root := t.TempDir()
-	rootPath := filepath.Join(root, "master-root.yaml")
-	if _, err := createRoot(rootPath); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(root, "project")
-	if _, _, err := initializeProject(target, rootPath, false); err != nil {
-		t.Fatal(err)
-	}
-	configPath, _, _, _ := projectPaths(target)
-	var config Config
-	if err := loadYAML(configPath, &config); err != nil {
-		t.Fatal(err)
-	}
-	config.Version = 1
-	if err := writeYAMLAtomic(configPath, config, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := loadProject(target); err == nil {
-		t.Fatal("V1 config was silently accepted")
-	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-SCHEMA-V1-UNSUPPORTED" {
-		t.Fatalf("error = %#v, want CHS-SCHEMA-V1-UNSUPPORTED", err)
+func TestLoadProjectExplicitlyRejectsLegacyConfigVersions(t *testing.T) {
+	for _, test := range []struct {
+		version  int
+		wantCode string
+	}{
+		{version: 1, wantCode: "CHS-SCHEMA-UNSUPPORTED"},
+		{version: 2, wantCode: "CHS-SCHEMA-UNSUPPORTED"},
+	} {
+		t.Run(fmt.Sprintf("v%d", test.version), func(t *testing.T) {
+			root := t.TempDir()
+			rootPath := filepath.Join(root, "master-root.yaml")
+			if _, err := createRoot(rootPath); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "project")
+			if _, _, err := initializeProject(target, rootPath, false); err != nil {
+				t.Fatal(err)
+			}
+			configPath, _, _, _ := projectPaths(target)
+			var config Config
+			if err := loadYAML(configPath, &config); err != nil {
+				t.Fatal(err)
+			}
+			config.Version = test.version
+			if err := writeYAMLAtomic(configPath, config, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := loadProject(target); err == nil {
+				t.Fatalf("legacy config v%d was silently accepted", test.version)
+			} else if typed, ok := err.(*CLIError); !ok || typed.Code != test.wantCode {
+				t.Fatalf("error = %#v, want %s", err, test.wantCode)
+			}
+		})
 	}
 }

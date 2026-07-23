@@ -267,40 +267,7 @@ func gitCommitSnapshotDigest(root, commit string) (string, error) {
 }
 
 func gitSnapshotDigest(root, treeish string, includeWorktree bool) (string, error) {
-	cacheDir := filepath.Join(root, ".git")
-	commonDir, err := git(root, "rev-parse", "--git-common-dir")
-	if err == nil {
-		if !filepath.IsAbs(commonDir) {
-			commonDir = filepath.Join(root, commonDir)
-		}
-		cacheDir = commonDir
-	}
-	temporary, err := os.CreateTemp(cacheDir, "chassiss-digest-index-*")
-	if err != nil {
-		return "", err
-	}
-	indexPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Remove(indexPath); err != nil {
-		return "", err
-	}
-	defer os.Remove(indexPath)
-	environment := []string{"GIT_INDEX_FILE=" + indexPath}
-	if _, err := gitEnvironment(root, environment, "read-tree", treeish); err != nil {
-		return "", err
-	}
-	if includeWorktree {
-		if _, err := gitEnvironment(root, environment, "add", "-A", "--", "."); err != nil {
-			return "", err
-		}
-	}
-	tree, err := gitEnvironment(root, environment, "write-tree")
-	if err != nil {
-		return "", err
-	}
-	stages, err := gitEnvironmentRaw(root, environment, "ls-files", "--stage", "-z")
+	tree, stages, err := gitSnapshotTree(root, treeish, includeWorktree)
 	if err != nil {
 		return "", err
 	}
@@ -313,6 +280,79 @@ func gitSnapshotDigest(root, treeish string, includeWorktree bool) (string, erro
 		return "", err
 	}
 	return digestBytes(data), nil
+}
+
+func gitSnapshotTree(root, treeish string, includeWorktree bool) (string, []byte, error) {
+	cacheDir := filepath.Join(root, ".git")
+	commonDir, err := git(root, "rev-parse", "--git-common-dir")
+	if err == nil {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(root, commonDir)
+		}
+		cacheDir = commonDir
+	}
+	temporary, err := os.CreateTemp(cacheDir, "chassiss-digest-index-*")
+	if err != nil {
+		return "", nil, err
+	}
+	indexPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		return "", nil, err
+	}
+	if err := os.Remove(indexPath); err != nil {
+		return "", nil, err
+	}
+	defer os.Remove(indexPath)
+	environment := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := gitEnvironment(root, environment, "read-tree", treeish); err != nil {
+		return "", nil, err
+	}
+	if includeWorktree {
+		if _, err := gitEnvironment(root, environment, "add", "-A", "--", "."); err != nil {
+			return "", nil, err
+		}
+	}
+	tree, err := gitEnvironment(root, environment, "write-tree")
+	if err != nil {
+		return "", nil, err
+	}
+	stages, err := gitEnvironmentRaw(root, environment, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", nil, err
+	}
+	return tree, stages, nil
+}
+
+func gitVerificationDigest(root, treeish string, includeWorktree bool, patterns []string) (string, error) {
+	if len(patterns) == 0 {
+		return "", &CLIError{Code: "CHS-WORK-VERIFICATION", Message: "acceptance check has no independent verification paths", ExitCode: 40}
+	}
+	tree, _, err := gitSnapshotTree(root, treeish, includeWorktree)
+	if err != nil {
+		return "", err
+	}
+	treeManifest, err := gitEnvironmentRaw(root, nil, "ls-tree", "-r", "-z", tree)
+	if err != nil {
+		return "", err
+	}
+	var manifest []byte
+	for _, record := range bytes.Split(treeManifest, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		separator := bytes.IndexByte(record, '\t')
+		if separator < 0 {
+			return "", &CLIError{Code: "CHS-WORK-VERIFICATION", Message: "independent verification tree manifest is invalid", ExitCode: 40}
+		}
+		if allowedFile(patterns, string(record[separator+1:])) {
+			manifest = append(manifest, record...)
+			manifest = append(manifest, 0)
+		}
+	}
+	if len(manifest) == 0 {
+		return "", &CLIError{Code: "CHS-WORK-VERIFICATION", Message: "independent verification paths match no baseline files", ExitCode: 10}
+	}
+	return digestBytes(manifest), nil
 }
 
 func splitGitPaths(output []byte) []string {

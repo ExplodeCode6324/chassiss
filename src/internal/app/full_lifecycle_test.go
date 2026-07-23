@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestEventV2CompleteFourRoleLifecycle(t *testing.T) {
+func TestEventV3CompleteFourRoleLifecycle(t *testing.T) {
 	testRoot := t.TempDir()
 	rootPath := filepath.Join(testRoot, "master-root.yaml")
 	if _, err := createRoot(rootPath); err != nil {
@@ -114,6 +115,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 10
+    verification_paths:
+      - docs/tasks/M001-T001.md
 ---
 # Task M001-T001
 ## Objective
@@ -152,6 +155,21 @@ Create code.txt.
 	if err := os.WriteFile(filepath.Join(worktreeRoot, "code.txt"), []byte("complete\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeRejectedCheck := state.Revision
+	if _, _, _, err := runTaskCheck(project, "M001-T001", "", true, developer, state.Revision); err == nil {
+		t.Fatal("work check accepted an out-of-scope snapshot")
+	} else if typed, ok := err.(*CLIError); !ok || typed.Code != "CHS-WORK-SCOPE" {
+		t.Fatalf("out-of-scope check error = %#v, want CHS-WORK-SCOPE", err)
+	}
+	if after := mustProjectState(t, project).Revision; after != beforeRejectedCheck {
+		t.Fatalf("out-of-scope check advanced revision from %d to %d", beforeRejectedCheck, after)
+	}
+	if err := os.Remove(filepath.Join(worktreeRoot, "package.json")); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, _, err := runTaskCheck(project, "M001-T001", "", true, developer, state.Revision); err != nil {
 		t.Fatal(err)
 	}
@@ -165,11 +183,54 @@ Create code.txt.
 	if submitted.CommitMessage != "M001-T001: ready" || submitted.Metrics == nil || submitted.Metrics.ChangedFiles != 1 || submitted.Metrics.DiffLines != 1 || submitted.Metrics.Commits != 1 {
 		t.Fatalf("submission budget/message evidence = %#v", submitted)
 	}
-	if _, _, _, err := recordReview(project, submitted.ID, "approve", "approved", reviewer, state.Revision); err != nil {
+	if _, _, _, err := recordReview(project, submitted.ID, "request_changes", "add the final detail", reviewer, state.Revision); err != nil {
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
-	if _, _, _, err := integrateSubmission(project, submitted.ID, reviewer, state.Revision); err != nil {
+	current, history := taskChangeRequests(state, "M001-T001")
+	if current == nil || current.SubmissionID != submitted.ID || current.Report != "add the final detail" || len(history) != 1 {
+		t.Fatalf("change request projection = current %#v history %#v", current, history)
+	}
+	contextCredential := filepath.Join(testRoot, "developer-context.yaml")
+	if _, err := issueCredential(project, rootPath, developer.Actor, "developer", contextCredential, nil); err != nil {
+		t.Fatal(err)
+	}
+	contextResponse, err := dispatch(globalOptions{root: project, credential: contextCredential}, []string{"work", "context", "M001-T001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextJSON, _ := json.Marshal(contextResponse.Result)
+	if !strings.Contains(string(contextJSON), `"change_request"`) || !strings.Contains(string(contextJSON), `"change_request_history"`) || !strings.Contains(string(contextJSON), "add the final detail") {
+		t.Fatalf("Developer work context omitted review feedback: %s", contextJSON)
+	}
+	if _, _, _, err := workOpen(project, "M001-T001", developer, state.Revision); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	if current, history := taskChangeRequests(state, "M001-T001"); current == nil || current.Report != "add the final detail" || len(history) != 1 {
+		t.Fatalf("opening returned work lost its current change request: current %#v history %#v", current, history)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "code.txt"), []byte("complete\nfinal detail\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := runTaskCheck(project, "M001-T001", "", true, developer, state.Revision); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	_, _, revised, err := workSubmit(project, "M001-T001", "revised", "", developer, state.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	current, history = taskChangeRequests(state, "M001-T001")
+	if current != nil || len(history) != 1 || history[0].SubmissionID != submitted.ID {
+		t.Fatalf("revised change request projection = current %#v history %#v", current, history)
+	}
+	if _, _, _, err := recordReview(project, revised.ID, "approve", "approved", reviewer, state.Revision); err != nil {
+		t.Fatal(err)
+	}
+	state = mustProjectState(t, project)
+	if _, _, _, err := integrateSubmission(project, revised.ID, reviewer, state.Revision); err != nil {
 		t.Fatal(err)
 	}
 	state = mustProjectState(t, project)
@@ -185,7 +246,7 @@ Create code.txt.
 		t.Fatalf("final state = %#v", state)
 	}
 	if _, err := verifyProject(project); err != nil {
-		t.Fatalf("completed V2 project did not verify: %v", err)
+		t.Fatalf("completed V3-state project did not verify: %v", err)
 	}
 }
 

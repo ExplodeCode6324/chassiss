@@ -22,9 +22,16 @@ Select the bundled CLI that matches the current operating system and architectur
 
 3. Read `principal`, `policy`, `capabilities`, `available_actions`, and `context_requests` from the JSON result.
 4. Run the returned context `argv` before acting on a resource.
-5. Use only command schemas present in `capabilities`. Prefer `available_actions`; append their declared required inputs without invoking a shell.
+5. Use only command schemas present in `capabilities`. Prefer `available_actions`; append their declared required inputs without invoking a shell. An action marked `optional: true` is available but not required for progress.
 6. For a mutation, pass the returned `state_revision` as global `--expect-revision`.
 7. Bootstrap again after a mutation, conflict, rejection, trust change, credential rotation, or selected-resource change.
+
+## Review and checks
+
+- For Developer work, read `change_request` and `change_request_history` from `work context` before revising a returned Task.
+- Treat `work check` as both declared-check execution and submission scope/budget preflight. A failure does not create passed evidence or advance the state revision.
+- Treat `review check` as mechanical validation only. It never establishes semantic correctness; Reviewer must inspect the implementation and record an explicit verdict with a substantive report.
+- Use the optional `work checkpoint` action only at a meaningful progress boundary.
 
 ## Boundaries
 

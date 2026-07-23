@@ -27,7 +27,7 @@ func loadProject(root string) (Config, Trust, State, error) {
 		return config, trust, state, err
 	}
 	if config.Version != ConfigVersion {
-		return config, trust, state, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
+		return config, trust, state, &CLIError{Code: "CHS-SCHEMA-UNSUPPORTED", Message: "project schema is not supported; initialize a new API V2 project", ExitCode: 40}
 	}
 	if err := loadYAML(trustPath, &trust); err != nil {
 		return config, trust, state, err
@@ -316,7 +316,7 @@ func verifyEventChain(config Config, trust Trust, events []Event) (State, error)
 	for index, event := range events {
 		sequence := int64(index + 1)
 		if event.Version != EventVersion {
-			return State{}, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Event V1 is not supported; initialize a V2 project", ExitCode: 40}
+			return State{}, &CLIError{Code: "CHS-SCHEMA-UNSUPPORTED", Message: "event schema is not supported; initialize a new API V2 project", ExitCode: 40}
 		}
 		if event.ProjectID != config.ProjectID || event.Sequence != sequence {
 			return State{}, &CLIError{Code: "CHS-INTEGRITY-EVENTS", Message: fmt.Sprintf("event sequence %d has invalid envelope", sequence), ExitCode: 40}
@@ -463,7 +463,7 @@ func recoverProject(root string) (State, error) {
 		return State{}, err
 	}
 	if config.Version != ConfigVersion {
-		return State{}, &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
+		return State{}, &CLIError{Code: "CHS-SCHEMA-UNSUPPORTED", Message: "project schema is not supported by this CHASSISS version; initialize a new V2 project", ExitCode: 40}
 	}
 	if err := loadYAML(trustPath, &trust); err != nil {
 		return State{}, err

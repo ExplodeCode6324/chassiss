@@ -279,6 +279,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 10
+    verification_paths:
+      - docs/tasks/M001-T001.md
 ---
 # Task M001-T001
 ## Objective

@@ -19,3 +19,24 @@ func TestAllowedFilePatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestIndependentVerificationCannotOverlapDeveloperScope(t *testing.T) {
+	check := CheckSpec{
+		ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 10,
+		VerificationPaths: []string{"tests/acceptance/**"},
+	}
+	if err := validateIndependentVerification([]string{"src/**"}, check); err != nil {
+		t.Fatalf("independent verification was rejected: %v", err)
+	}
+	if err := validateIndependentVerification([]string{"src/**", "tests/**"}, check); err == nil {
+		t.Fatal("verification paths overlapping Developer scope were accepted")
+	}
+	check.VerificationPaths = nil
+	if err := validateIndependentVerification([]string{"src/**"}, check); err == nil {
+		t.Fatal("acceptance check without independent verification paths was accepted")
+	}
+	check.VerificationPaths = []string{"tests/../src/**"}
+	if err := validateIndependentVerification([]string{"lib/**"}, check); err == nil {
+		t.Fatal("non-canonical verification path was accepted")
+	}
+}

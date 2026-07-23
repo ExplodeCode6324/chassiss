@@ -180,10 +180,31 @@ func validateArtifactDocument(document *ArtifactDocument) error {
 		if err := validateCheckSpec(check); err != nil {
 			return err
 		}
+		if err := validateIndependentVerification(metadata.AllowedPaths, check); err != nil {
+			return err
+		}
 		if _, ok := seen[check.ID]; ok {
 			return &CLIError{Code: "CHS-ARTIFACT-CHECK", Message: "duplicate acceptance check: " + check.ID, ExitCode: 10}
 		}
 		seen[check.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateIndependentVerification(allowedPaths []string, check CheckSpec) error {
+	if len(check.VerificationPaths) == 0 {
+		return &CLIError{Code: "CHS-ARTIFACT-VERIFICATION", Message: "each acceptance check requires independently owned verification_paths", ExitCode: 10}
+	}
+	seen := map[string]bool{}
+	for _, pattern := range check.VerificationPaths {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(pattern)))
+		if pattern == "" || filepath.IsAbs(pattern) || strings.ContainsRune(pattern, '\x00') || clean == "." || clean != filepath.ToSlash(pattern) || strings.HasPrefix(clean, "../") || seen[clean] {
+			return &CLIError{Code: "CHS-ARTIFACT-VERIFICATION", Message: "verification_paths must be unique project-relative path patterns", ExitCode: 10}
+		}
+		seen[clean] = true
+	}
+	if pathsOverlap(allowedPaths, check.VerificationPaths) {
+		return &CLIError{Code: "CHS-ARTIFACT-VERIFICATION", Message: "verification_paths must not overlap Developer allowed_paths", ExitCode: 10}
 	}
 	return nil
 }

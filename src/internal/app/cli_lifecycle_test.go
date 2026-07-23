@@ -149,6 +149,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 10
+    verification_paths:
+      - docs/tasks/M001-T001.md
 ---
 # Task M001-T001
 ## Objective
@@ -204,6 +206,11 @@ Create code.txt.
 	if reviewerBootstrap.Principal.Role != "reviewer" || !hasBootstrapAction(reviewerBootstrap.AvailableActions, "review.check") || !hasBootstrapAction(reviewerBootstrap.AvailableActions, "review.approve") {
 		t.Fatalf("pending Reviewer bootstrap = %#v", reviewerBootstrap)
 	}
+	checkResponse := runProjectCLI(t, project, credentials["reviewer"], "review", "check", submission.ID)
+	checkJSON, _ := json.Marshal(checkResponse.Result)
+	if !bytes.Contains(checkJSON, []byte(`"mechanical_validation":"passed"`)) || !bytes.Contains(checkJSON, []byte(`"semantic_review_required":true`)) || bytes.Contains(checkJSON, []byte(`"valid":true`)) {
+		t.Fatalf("review check semantics = %s", checkJSON)
+	}
 	runProjectCLI(t, project, credentials["reviewer"], "review", "approve", submission.ID, "--report", "approved")
 	runProjectCLI(t, project, credentials["reviewer"], "integrate", "apply", submission.ID)
 	runProjectCLI(t, project, credentials["orchestrator"], "mission", "submit-acceptance", "M001", "--evidence", "integration verified")
@@ -213,6 +220,11 @@ Create code.txt.
 	}
 	runProjectCLI(t, project, credentials["master"], "mission", "accept", "M001")
 	runProjectCLI(t, project, credentials["master"], "verify")
+	historyResponse := runProjectCLI(t, project, credentials["reviewer"], "review", "history", "--task", "M001-T001")
+	historyJSON, _ := json.Marshal(historyResponse.Result)
+	if !bytes.Contains(historyJSON, []byte(`"report":"approved"`)) {
+		t.Fatalf("completed review history = %s", historyJSON)
+	}
 
 	config, _, state, err := loadProject(project)
 	if err != nil {

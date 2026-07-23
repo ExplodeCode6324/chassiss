@@ -625,24 +625,29 @@ func workOpen(root, taskID string, principal Principal, expected int64) (State, 
 }
 
 func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, expected int64) (State, State, []CheckResult, error) {
+	previous, next, results, _, err := runTaskCheckWithPreflight(root, taskID, checkID, all, principal, expected)
+	return previous, next, results, err
+}
+
+func runTaskCheckWithPreflight(root, taskID, checkID string, all bool, principal Principal, expected int64) (State, State, []CheckResult, WorkPreflight, error) {
 	_, _, state, err := loadProject(root)
 	if err != nil {
-		return State{}, State{}, nil, err
+		return State{}, State{}, nil, WorkPreflight{}, err
 	}
 	expected, err = effectiveExpected(state, expected)
 	if err != nil {
-		return State{}, State{}, nil, err
+		return State{}, State{}, nil, WorkPreflight{}, err
 	}
 	task, ok := state.Tasks[taskID]
 	if !ok || task.Owner != principal.Actor || task.Status != "in_progress" {
-		return State{}, State{}, nil, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
+		return State{}, State{}, nil, WorkPreflight{}, &CLIError{Code: "CHS-WORK-NOT-ACTIVE", Message: "task is not active for this developer", ExitCode: 11}
 	}
 	if err := requireMissionExecutable(state, task.MissionID); err != nil {
-		return State{}, State{}, nil, err
+		return State{}, State{}, nil, WorkPreflight{}, err
 	}
 	worktreeRoot, err := taskWorktreeRoot(root, task)
 	if err != nil {
-		return State{}, State{}, nil, err
+		return State{}, State{}, nil, WorkPreflight{}, err
 	}
 	var selected []CheckSpec
 	for _, check := range task.Checks {
@@ -651,18 +656,31 @@ func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, e
 		}
 	}
 	if len(selected) == 0 {
-		return State{}, State{}, nil, &CLIError{Code: "CHS-WORK-CHECK-NOT-FOUND", Message: "requested acceptance check does not exist", ExitCode: 20}
+		return State{}, State{}, nil, WorkPreflight{}, &CLIError{Code: "CHS-WORK-CHECK-NOT-FOUND", Message: "requested acceptance check does not exist", ExitCode: 20}
 	}
 	results := make([]CheckResult, 0, len(selected))
 	for _, check := range selected {
 		results = append(results, runCheckSpec(worktreeRoot, check))
 	}
-	snapshotDigest, err := gitWorktreeDigest(worktreeRoot)
+	preflight, err := preflightWorktree(worktreeRoot, task)
 	if err != nil {
-		return State{}, State{}, nil, err
+		return State{}, State{}, nil, WorkPreflight{}, err
 	}
 	for index := range results {
-		results[index].SnapshotDigest = snapshotDigest
+		check := selected[index]
+		baselineVerification, err := gitVerificationDigest(worktreeRoot, task.Baseline, false, check.VerificationPaths)
+		if err != nil {
+			return State{}, State{}, nil, WorkPreflight{}, err
+		}
+		currentVerification, err := gitVerificationDigest(worktreeRoot, "HEAD", true, check.VerificationPaths)
+		if err != nil {
+			return State{}, State{}, nil, WorkPreflight{}, err
+		}
+		if currentVerification != baselineVerification {
+			return State{}, State{}, nil, WorkPreflight{}, &CLIError{Code: "CHS-WORK-VERIFICATION-MODIFIED", Message: "independent verification sources differ from the frozen Task baseline for " + check.ID, ExitCode: 10}
+		}
+		results[index].SnapshotDigest = preflight.SnapshotDigest
+		results[index].VerificationDigest = baselineVerification
 	}
 	previous, next, _, err := updateState(root, principal, "work.checked", taskID, expected, func(next *State) error {
 		task := next.Tasks[taskID]
@@ -676,7 +694,54 @@ func runTaskCheck(root, taskID, checkID string, all bool, principal Principal, e
 		next.Tasks[taskID] = task
 		return nil
 	})
-	return previous, next, results, err
+	if err == nil {
+		preflight.ChecksPassed = validateTaskChecks(next.Tasks[taskID], preflight.SnapshotDigest) == nil
+		preflight.SubmissionReady = preflight.ScopeValid && preflight.BudgetValid && preflight.ChecksPassed
+	}
+	return previous, next, results, preflight, err
+}
+
+func preflightWorktree(worktreeRoot string, task TaskState) (WorkPreflight, error) {
+	files, err := gitWorkingFiles(worktreeRoot)
+	if err != nil {
+		return WorkPreflight{}, err
+	}
+	if len(files) == 0 {
+		return WorkPreflight{}, &CLIError{Code: "CHS-WORK-NO-CHANGES", Message: "task has no content changes to check or submit", ExitCode: 10}
+	}
+	for _, file := range files {
+		if !allowedFile(task.AllowedPaths, file) {
+			return WorkPreflight{}, &CLIError{Code: "CHS-WORK-SCOPE", Message: "changed file is outside allowed_paths: " + file, ExitCode: 10}
+		}
+	}
+	_, candidate, err := gitPrepareCommit(worktreeRoot, "CHASSISS preflight "+task.ID, files...)
+	if err != nil {
+		return WorkPreflight{}, err
+	}
+	changed, err := gitChangedFiles(worktreeRoot, task.Baseline, candidate)
+	if err != nil {
+		return WorkPreflight{}, err
+	}
+	for _, file := range changed {
+		if !allowedFile(task.AllowedPaths, file) {
+			return WorkPreflight{}, &CLIError{Code: "CHS-WORK-SCOPE", Message: "submission candidate contains an out-of-scope file: " + file, ExitCode: 10}
+		}
+	}
+	metrics, err := gitChangeMetrics(worktreeRoot, task.Baseline, candidate)
+	if err != nil {
+		return WorkPreflight{}, err
+	}
+	if err := validateTaskBudget(task.Budget, metrics); err != nil {
+		return WorkPreflight{}, err
+	}
+	snapshot, err := gitWorktreeDigest(worktreeRoot)
+	if err != nil {
+		return WorkPreflight{}, err
+	}
+	return WorkPreflight{
+		SnapshotDigest: snapshot, ChangedFiles: changed, Metrics: metrics,
+		ScopeValid: true, BudgetValid: true,
+	}, nil
 }
 
 func workCheckpoint(root, taskID, checkpoint string, principal Principal, expected int64) (State, State, TaskState, error) {
@@ -864,6 +929,9 @@ func validateTaskChecks(task TaskState, snapshotDigest string) error {
 		if result.SpecDigest != checkSpecDigest(check) {
 			return &CLIError{Code: "CHS-WORK-CHECKS-STALE", Message: "required check no longer matches the Task contract: " + check.ID, ExitCode: 10, Remedy: []string{"rerun chassiss work check using the current Task contract"}}
 		}
+		if result.VerificationDigest == "" {
+			return &CLIError{Code: "CHS-WORK-VERIFICATION", Message: "required check lacks independent verification evidence: " + check.ID, ExitCode: 10}
+		}
 		if result.SnapshotDigest == "" || result.SnapshotDigest != snapshotDigest {
 			return &CLIError{Code: "CHS-WORK-CHECKS-STALE", Message: "files changed after required check: " + check.ID, ExitCode: 10, Remedy: []string{"rerun chassiss work check after the final content change"}}
 		}
@@ -929,6 +997,17 @@ func reviewCheckState(root string, state State, submissionID string) (Submission
 		if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(check) {
 			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-CHECKS", Message: "submission lacks passed check: " + check.ID, ExitCode: 10}
 		}
+		baselineVerification, err := gitVerificationDigest(root, task.Baseline, false, check.VerificationPaths)
+		if err != nil {
+			return Submission{}, TaskState{}, nil, err
+		}
+		submissionVerification, err := gitVerificationDigest(root, submission.HeadCommit, false, check.VerificationPaths)
+		if err != nil {
+			return Submission{}, TaskState{}, nil, err
+		}
+		if submissionVerification != baselineVerification || result.VerificationDigest != baselineVerification {
+			return Submission{}, TaskState{}, nil, &CLIError{Code: "CHS-REVIEW-VERIFICATION-MODIFIED", Message: "independent verification sources differ from the frozen Task baseline for " + check.ID, ExitCode: 10}
+		}
 	}
 	snapshotDigest, err := gitCommitSnapshotDigest(root, submission.HeadCommit)
 	if err != nil {
@@ -969,6 +1048,9 @@ func calculateSubmissionDigest(submission Submission) (string, error) {
 }
 
 func recordReview(root, submissionID, verdict, report string, principal Principal, expected int64) (State, State, Review, error) {
+	if err := validateReviewReport(report); err != nil {
+		return State{}, State{}, Review{}, err
+	}
 	submission, _, _, err := reviewCheck(root, submissionID)
 	if err != nil {
 		return State{}, State{}, Review{}, err
@@ -1165,8 +1247,20 @@ func integrateSubmission(root, submissionID string, principal Principal, expecte
 func runIntegrationChecks(root string, task TaskState, tree string) (map[string]CheckResult, error) {
 	results := make(map[string]CheckResult, len(task.Checks))
 	for _, check := range task.Checks {
+		baselineVerification, err := gitVerificationDigest(root, task.Baseline, false, check.VerificationPaths)
+		if err != nil {
+			return nil, err
+		}
+		mergedVerification, err := gitVerificationDigest(root, tree, false, check.VerificationPaths)
+		if err != nil {
+			return nil, err
+		}
+		if mergedVerification != baselineVerification {
+			return nil, &CLIError{Code: "CHS-INTEGRATION-VERIFICATION-MODIFIED", Message: "merged independent verification sources differ from the frozen Task baseline for " + check.ID, ExitCode: 10}
+		}
 		result := runCheckSpec(root, check)
 		result.SnapshotDigest = tree
+		result.VerificationDigest = baselineVerification
 		if !result.Passed {
 			return nil, &CLIError{Code: "CHS-INTEGRATION-CHECKS", Message: "merged result failed acceptance check " + check.ID + ": " + result.Output, ExitCode: 10}
 		}
@@ -1260,6 +1354,40 @@ func stateSummary(state State) map[string]any {
 	}
 }
 
+func taskChangeRequests(state State, taskID string) (*ChangeRequest, []ChangeRequest) {
+	history := []ChangeRequest{}
+	var current *ChangeRequest
+	task, ok := state.Tasks[taskID]
+	if !ok {
+		return nil, history
+	}
+	for _, review := range state.Reviews {
+		if review.Verdict != "request_changes" {
+			continue
+		}
+		submission, exists := state.Submissions[review.SubmissionID]
+		if !exists || submission.TaskID != taskID {
+			continue
+		}
+		item := ChangeRequest{
+			ReviewID: review.ID, SubmissionID: review.SubmissionID, SubmissionDigest: review.SubmissionDigest,
+			Reviewer: review.Reviewer, Report: review.Report, CreatedAt: review.CreatedAt,
+		}
+		history = append(history, item)
+		if task.SubmissionID == submission.ID && submission.ReviewID == review.ID {
+			copy := item
+			current = &copy
+		}
+	}
+	sort.Slice(history, func(i, j int) bool {
+		if !history[i].CreatedAt.Equal(history[j].CreatedAt) {
+			return history[i].CreatedAt.Before(history[j].CreatedAt)
+		}
+		return history[i].ReviewID < history[j].ReviewID
+	})
+	return current, history
+}
+
 type artifactRejectionContext struct {
 	ID     string `json:"id"`
 	Path   string `json:"path"`
@@ -1336,13 +1464,16 @@ func nextActions(state State, role, actor string) []string {
 			case "claimed", "changes_requested":
 				actions = append(actions, "work.open "+id)
 			case "in_progress":
-				actions = append(actions, "work.check "+id)
+				actions = append(actions, "work.check "+id, "work.checkpoint "+id)
 				checksPassed := true
+				snapshot := ""
 				for _, check := range task.Checks {
-					if result, ok := task.CheckResults[check.ID]; !ok || !result.Passed || result.SnapshotDigest == "" {
+					result, ok := task.CheckResults[check.ID]
+					if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(check) || result.SnapshotDigest == "" || result.VerificationDigest == "" || (snapshot != "" && result.SnapshotDigest != snapshot) {
 						checksPassed = false
 						break
 					}
+					snapshot = result.SnapshotDigest
 				}
 				if checksPassed {
 					actions = append(actions, "work.submit "+id)

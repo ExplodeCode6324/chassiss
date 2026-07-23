@@ -103,7 +103,7 @@ func TestValidateTaskChecksBindsSnapshot(t *testing.T) {
 	task := TaskState{
 		Checks: []CheckSpec{{ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 120}},
 	}
-	task.CheckResults = map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", SpecDigest: checkSpecDigest(task.Checks[0]), Passed: true, SnapshotDigest: "snapshot-a"}}
+	task.CheckResults = map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", SpecDigest: checkSpecDigest(task.Checks[0]), Passed: true, SnapshotDigest: "snapshot-a", VerificationDigest: "verification-a"}}
 	if err := validateTaskChecks(task, "snapshot-a"); err != nil {
 		t.Fatalf("current check was rejected: %v", err)
 	}
@@ -135,9 +135,56 @@ func TestNextActionsRequireChecksAndOfferMissionAcceptance(t *testing.T) {
 		ID: "M001-T001", MissionID: "M001", Status: "in_progress", Owner: "agent:developer",
 		Checks: []CheckSpec{{ID: "CHECK-001", Argv: []string{"true"}, Cwd: ".", Env: map[string]string{}, TimeoutSeconds: 10}}, CheckResults: map[string]CheckResult{},
 	}
-	want = []string{"work.check M001-T001"}
+	want = []string{"work.check M001-T001", "work.checkpoint M001-T001"}
 	if got := nextActions(state, "developer", "agent:developer"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("developer actions = %#v, want %#v", got, want)
+	}
+	task := state.Tasks["M001-T001"]
+	task.CheckResults = map[string]CheckResult{"CHECK-001": {
+		ID: "CHECK-001", SpecDigest: checkSpecDigest(task.Checks[0]), Passed: true,
+		SnapshotDigest: "snapshot", VerificationDigest: "verification",
+	}}
+	state.Tasks[task.ID] = task
+	want = []string{"work.check M001-T001", "work.checkpoint M001-T001", "work.submit M001-T001"}
+	if got := nextActions(state, "developer", "agent:developer"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("checked Developer actions = %#v, want %#v", got, want)
+	}
+	result := task.CheckResults["CHECK-001"]
+	result.SpecDigest = "sha256:stale"
+	task.CheckResults["CHECK-001"] = result
+	state.Tasks[task.ID] = task
+	want = []string{"work.check M001-T001", "work.checkpoint M001-T001"}
+	if got := nextActions(state, "developer", "agent:developer"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stale-check Developer actions = %#v, want %#v", got, want)
+	}
+}
+
+func TestTaskChangeRequestsKeepCurrentAndChronologicalHistory(t *testing.T) {
+	early := time.Unix(100, 0).UTC()
+	late := early.Add(time.Minute)
+	state := State{
+		Tasks: map[string]TaskState{"M001-T001": {
+			ID: "M001-T001", SubmissionID: "SUB-2",
+		}},
+		Submissions: map[string]Submission{
+			"SUB-1": {ID: "SUB-1", TaskID: "M001-T001", ReviewID: "REV-1"},
+			"SUB-2": {ID: "SUB-2", TaskID: "M001-T001", ReviewID: "REV-2"},
+		},
+		Reviews: map[string]Review{
+			"REV-2": {ID: "REV-2", SubmissionID: "SUB-2", SubmissionDigest: "sha256:two", Reviewer: "agent:reviewer", Verdict: "request_changes", Report: "second report", CreatedAt: late},
+			"REV-1": {ID: "REV-1", SubmissionID: "SUB-1", SubmissionDigest: "sha256:one", Reviewer: "agent:reviewer", Verdict: "request_changes", Report: "first report", CreatedAt: early},
+		},
+	}
+	current, history := taskChangeRequests(state, "M001-T001")
+	if current == nil || current.ReviewID != "REV-2" || len(history) != 2 || history[0].ReviewID != "REV-1" || history[1].ReviewID != "REV-2" {
+		t.Fatalf("change request projection = current %#v history %#v", current, history)
+	}
+	task := state.Tasks["M001-T001"]
+	task.SubmissionID = "SUB-3"
+	state.Tasks[task.ID] = task
+	current, history = taskChangeRequests(state, task.ID)
+	if current != nil || len(history) != 2 {
+		t.Fatalf("new submission did not clear only the current request: current %#v history %#v", current, history)
 	}
 }
 

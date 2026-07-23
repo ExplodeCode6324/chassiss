@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "0.1.0-dev"
+const Version = "0.2.0-dev"
 
 type globalOptions struct {
 	root          string
@@ -38,6 +38,12 @@ var booleanCommandFlags = map[string]bool{
 
 // Run executes the CHASSISS command line and returns a process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
+	return RunWithInput(args, os.Stdin, stdout, stderr)
+}
+
+// RunWithInput executes the CHASSISS command line with an explicit standard
+// input stream. It is used by credential import and deterministic CLI tests.
+func RunWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	options, rest, err := parseGlobals(args)
 	if err != nil {
 		return emitFailure(stderr, options.json, "parse", err)
@@ -55,7 +61,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	command := commandName(rest)
-	result, err := dispatch(options, rest)
+	result, err := dispatchWithInput(options, rest, stdin)
 	if err != nil {
 		return emitFailure(stderr, options.json, command, err)
 	}
@@ -151,6 +157,10 @@ func validateCommandOptions(command string, parsed commandArgs) error {
 }
 
 func dispatch(options globalOptions, words []string) (Response, error) {
+	return dispatchWithInput(options, words, strings.NewReader(""))
+}
+
+func dispatchWithInput(options globalOptions, words []string, stdin io.Reader) (Response, error) {
 	command := commandName(words)
 	if options.dryRun && isWriteCommand(command) {
 		return Response{}, &CLIError{Code: "CHS-DRY-RUN-UNSUPPORTED", Message: "this preview does not yet implement transactional dry-run", ExitCode: 20}
@@ -166,7 +176,10 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	if command == "auth master-init" {
 		output := parsed.values["output"]
 		if output == "" {
-			return Response{}, usageError("auth master-init requires --output")
+			output, err = defaultMasterRootPath()
+			if err != nil {
+				return Response{}, err
+			}
 		}
 		if info, statErr := os.Stat(output); statErr == nil && info.IsDir() {
 			output = filepath.Join(output, "master-root.yaml")
@@ -208,6 +221,27 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			return Response{}, err
 		}
 		return response(command, "", 0, 0, value), nil
+	}
+	if command == "auth export" {
+		path, err := exactlyOne(parsed.positionals, "auth export requires a credential path")
+		if err != nil {
+			return Response{}, err
+		}
+		result, err := exportCredentialArmor(path)
+		if err != nil {
+			return Response{}, err
+		}
+		return response(command, "", 0, 0, result), nil
+	}
+	if command == "auth import" {
+		if len(parsed.positionals) != 0 {
+			return Response{}, usageError("auth import does not accept positional arguments")
+		}
+		result, err := importCredentialArmor(stdin, parsed.values["output"])
+		if err != nil {
+			return Response{}, err
+		}
+		return response(command, "", 0, 0, result), nil
 	}
 
 	root, err := resolveRoot(options.root)
@@ -279,8 +313,20 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 	case "auth issue":
 		rootKey := firstNonEmpty(parsed.values["master-root"], options.credential)
 		actor, role, output := parsed.values["actor"], parsed.values["role"], parsed.values["output"]
-		if rootKey == "" || actor == "" || role == "" || output == "" {
-			return Response{}, usageError("auth issue requires --actor, --role, --output, and a Master Root credential")
+		if actor == "" || role == "" {
+			return Response{}, usageError("auth issue requires --actor and --role")
+		}
+		if rootKey == "" {
+			rootKey, err = discoverMasterRoot(config.RootFingerprint)
+			if err != nil {
+				return Response{}, err
+			}
+		}
+		if output == "" {
+			output, err = defaultCredentialPath(actor)
+			if err != nil {
+				return Response{}, err
+			}
 		}
 		policy, err := credentialPolicyFromArgs(parsed)
 		if err != nil {
@@ -594,6 +640,13 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 			content, _ := readTextFile(root, artifact.Path)
 			result["contract"] = content
 		}
+		if command == "work context" {
+			current, history := taskChangeRequests(state, id)
+			if current != nil {
+				result["change_request"] = current
+			}
+			result["change_request_history"] = history
+		}
 		return readResponse(result), nil
 	case "task claim", "task assign":
 		id, err := exactlyOne(parsed.positionals, command+" requires a task ID")
@@ -748,11 +801,11 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if !all && checkID == "" {
 			return Response{}, usageError("work check requires --all or --id")
 		}
-		previous, next, checks, err := runTaskCheck(root, id, checkID, all, principal, options.expected)
+		previous, next, checks, preflight, err := runTaskCheckWithPreflight(root, id, checkID, all, principal, options.expected)
 		if err != nil {
 			return Response{}, err
 		}
-		return mutatingResponse(previous, next, map[string]any{"task_id": id, "checks": checks}, principal), nil
+		return mutatingResponse(previous, next, map[string]any{"task_id": id, "checks": checks, "preflight": preflight}, principal), nil
 	case "work checkpoint", "work submit":
 		id, err := exactlyOne(parsed.positionals, command+" requires a task ID")
 		if err != nil {
@@ -792,6 +845,32 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 		return readResponse(map[string]any{"submissions": items}), nil
+	case "review history":
+		if len(parsed.positionals) != 0 {
+			return Response{}, usageError("review history does not accept positional arguments")
+		}
+		taskFilter, submissionFilter := parsed.values["task"], parsed.values["submission"]
+		items := []Review{}
+		for _, review := range state.Reviews {
+			submission := state.Submissions[review.SubmissionID]
+			if taskFilter != "" && submission.TaskID != taskFilter {
+				continue
+			}
+			if submissionFilter != "" && submission.ID != submissionFilter {
+				continue
+			}
+			if roleReadPrincipal != nil && !reviewVisibleTo(state, *roleReadPrincipal, review) {
+				continue
+			}
+			items = append(items, review)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].CreatedAt.Before(items[j].CreatedAt)
+			}
+			return items[i].ID < items[j].ID
+		})
+		return readResponse(map[string]any{"reviews": items}), nil
 	case "review context":
 		id, err := exactlyOne(parsed.positionals, "review context requires a submission ID")
 		if err != nil {
@@ -818,7 +897,19 @@ func dispatch(options globalOptions, words []string) (Response, error) {
 		if command == "integrate check" && submission.Status != "approved" {
 			return Response{}, &CLIError{Code: "CHS-INTEGRATION-NOT-APPROVED", Message: "submission is not approved", ExitCode: 10}
 		}
-		return readResponse(map[string]any{"valid": true, "submission": submission, "task": task, "files": files}), nil
+		result := map[string]any{
+			"mechanical_validation": "passed",
+			"declared_checks":       "passed",
+			"submission":            submission,
+			"task":                  task,
+			"files":                 files,
+		}
+		if command == "review check" {
+			result["semantic_review_required"] = true
+		} else {
+			result["integration_preflight"] = "passed"
+		}
+		return readResponse(result), nil
 	case "review approve", "review request-changes":
 		id, err := exactlyOne(parsed.positionals, command+" requires a submission ID")
 		if err != nil {
@@ -921,6 +1012,12 @@ func emitSuccess(writer io.Writer, asJSON bool, value Response) int {
 		}
 		return 0
 	}
+	if value.Command == "auth export" {
+		if result, ok := value.Result.(credentialTransferResult); ok {
+			_, _ = fmt.Fprint(writer, result.Armor)
+			return 0
+		}
+	}
 	fmt.Fprintln(writer, "OK", value.Command)
 	if value.ProjectID != "" {
 		fmt.Fprintln(writer, "project:", value.ProjectID)
@@ -942,7 +1039,7 @@ func emitFailure(writer io.Writer, asJSON bool, command string, err error) int {
 		cliError = typed
 	}
 	if asJSON {
-		_ = json.NewEncoder(writer).Encode(Response{APIVersion: APIVersion, OK: false, Command: command, Error: &ResponseError{Code: cliError.Code, Message: cliError.Message, Retryable: cliError.Retryable, Remediation: cliError.Remedy}})
+		_ = json.NewEncoder(writer).Encode(Response{APIVersion: APIVersion, OK: false, Command: command, Error: &ResponseError{Code: cliError.Code, Message: cliError.Message, DiagnosticCategory: cliError.Diagnostic, Retryable: cliError.Retryable, Remediation: cliError.Remedy}})
 	} else {
 		fmt.Fprintf(writer, "ERROR %s: %s\n", cliError.Code, cliError.Message)
 		for _, remedy := range cliError.Remedy {
@@ -1199,7 +1296,7 @@ Usage:
            <group> <action> [arguments]
 
 Core commands:
-  auth master-init|issue|inspect|revoke
+  auth master-init|issue|inspect|export|import|revoke
   project init
   bootstrap | status | next | doctor | verify | recover | explain
   template list|get
@@ -1207,7 +1304,7 @@ Core commands:
   mission list|context|activate|block|resume|submit-acceptance|accept
   task list|context|claim|assign|block|resume|release|cancel|supersede
   work open|context|status|diff|check|checkpoint|submit|block
-  review list|context|check|approve|request-changes
+  review list|history|context|check|approve|request-changes
   integrate check|apply
   publish check|apply
 

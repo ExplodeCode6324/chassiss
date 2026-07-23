@@ -17,6 +17,8 @@ acceptance_checks:
     cwd: "."
     env: {}
     timeout_seconds: 120
+    verification_paths:
+      - REPLACE_VERIFICATION_PATH/**
 ---
 # Task M000-T000
 

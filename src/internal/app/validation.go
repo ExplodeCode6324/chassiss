@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 var validPhases = stringSet([]string{"design", "execution", "idle"})
@@ -15,6 +16,18 @@ var validSubmissionStatuses = stringSet([]string{"review_pending", "changes_requ
 var validReviewVerdicts = stringSet([]string{"approve", "request_changes"})
 
 var newProjectDefaultTaskBudget = TaskBudget{MaxChangedFiles: 100, MaxDiffLines: 20000, MaxCommits: 20}
+
+const maxReviewReportBytes = 64 * 1024
+
+func validateReviewReport(report string) error {
+	if strings.TrimSpace(report) == "" {
+		return &CLIError{Code: "CHS-REVIEW-REPORT", Message: "review report must not be empty", ExitCode: 20}
+	}
+	if !utf8.ValidString(report) || len(report) > maxReviewReportBytes {
+		return &CLIError{Code: "CHS-REVIEW-REPORT", Message: "review report must be valid UTF-8 and no larger than 64 KiB", ExitCode: 20}
+	}
+	return nil
+}
 
 func isActiveTaskStatus(status string) bool {
 	return containsString([]string{"claimed", "in_progress", "review_pending", "changes_requested", "approved"}, status)
@@ -83,7 +96,7 @@ func validateTaskBudget(budget TaskBudget, metrics ChangeMetrics) error {
 
 func validateState(config Config, state State) error {
 	if config.Version != ConfigVersion {
-		return &CLIError{Code: "CHS-SCHEMA-V1-UNSUPPORTED", Message: "Config V1 is not supported; initialize a V2 project", ExitCode: 40}
+		return &CLIError{Code: "CHS-SCHEMA-UNSUPPORTED", Message: "project schema is not supported by this CHASSISS version; initialize a new V2 project", ExitCode: 40}
 	}
 	if state.Version != StateVersion || state.ProjectID != config.ProjectID || state.Revision < 1 {
 		return &CLIError{Code: "CHS-STATE-INVALID", Message: "state version, project, or revision is invalid", ExitCode: 40}
@@ -174,6 +187,14 @@ func validateState(config Config, state State) error {
 		if err := validateTaskBudgetDefinition(task.Budget); err != nil {
 			return stateError("CHS-STATE-TASK", "Task budget is invalid: "+id)
 		}
+		for _, check := range task.Checks {
+			if err := validateCheckSpec(check); err != nil {
+				return stateError("CHS-STATE-TASK", "Task acceptance check is invalid: "+id)
+			}
+			if err := validateIndependentVerification(task.AllowedPaths, check); err != nil {
+				return stateError("CHS-STATE-TASK", "Task independent verification is invalid: "+id)
+			}
+		}
 		mission, missionExists := state.Missions[task.MissionID]
 		listed := missionExists && containsString(mission.TaskIDs, id)
 		if task.ID != id || !missionExists || task.ArtifactID != id || (!listed && task.Status != "planned") {
@@ -184,6 +205,16 @@ func validateState(config Config, state State) error {
 		}
 		if task.UpdatedAt.IsZero() || task.CheckResults == nil {
 			return stateError("CHS-STATE-TASK", "task update data is incomplete: "+id)
+		}
+		checkSpecs := map[string]CheckSpec{}
+		for _, check := range task.Checks {
+			checkSpecs[check.ID] = check
+		}
+		for checkID, result := range task.CheckResults {
+			spec, exists := checkSpecs[checkID]
+			if !exists || result.ID != checkID || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest == "" || result.VerificationDigest == "" {
+				return stateError("CHS-STATE-TASK", "Task check evidence is invalid: "+id)
+			}
 		}
 		for _, dependency := range task.DependsOn {
 			dep, ok := state.Tasks[dependency]
@@ -304,6 +335,12 @@ func validateState(config Config, state State) error {
 				return stateError("CHS-STATE-REVIEW", "submission review reference is inconsistent: "+id)
 			}
 		}
+		for _, spec := range task.Checks {
+			result, ok := submission.Checks[spec.ID]
+			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest == "" || result.VerificationDigest == "" {
+				return stateError("CHS-STATE-SUBMISSION", "submission lacks independent check evidence: "+id)
+			}
+		}
 		if submission.Status == "integrated" {
 			integration, ok := state.Integrations[submission.IntegrationID]
 			if !ok || integration.SubmissionID != id {
@@ -318,6 +355,9 @@ func validateState(config Config, state State) error {
 		}
 		if _, ok := validReviewVerdicts[review.Verdict]; !ok {
 			return stateError("CHS-STATE-REVIEW", "unknown review verdict: "+review.Verdict)
+		}
+		if err := validateReviewReport(review.Report); err != nil {
+			return stateError("CHS-STATE-REVIEW", "review report is invalid: "+id)
 		}
 		submission, ok := state.Submissions[review.SubmissionID]
 		if !ok || submission.Digest != review.SubmissionDigest || submission.Actor == review.Reviewer {
@@ -339,7 +379,8 @@ func validateState(config Config, state State) error {
 		}
 		for _, spec := range state.Tasks[submission.TaskID].Checks {
 			result, ok := integration.Checks[spec.ID]
-			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != integration.IntegratedTree {
+			submissionResult := submission.Checks[spec.ID]
+			if !ok || !result.Passed || result.SpecDigest != checkSpecDigest(spec) || result.SnapshotDigest != integration.IntegratedTree || result.VerificationDigest == "" || result.VerificationDigest != submissionResult.VerificationDigest {
 				return stateError("CHS-STATE-INTEGRATION", "integration lacks merged-tree check evidence: "+id)
 			}
 		}

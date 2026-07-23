@@ -52,7 +52,7 @@ func TestRolePolicyDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:4ed4b6c24933193f9fe2c91db9f6cdd54053f011562c243bbbee7c4e911af28b"
+	const want = "sha256:6e70be08f2dd3ea5b2346d95c6a748c2ba825ef0a94bca356c6118dc2c9d5bd9"
 	if digest != want {
 		t.Fatalf("Role Policy V%d changed: got %s, want %s; bump RolePolicyVersion for intentional semantic changes", RolePolicyVersion, digest, want)
 	}
@@ -150,16 +150,23 @@ func TestBootstrapOffersTaskClaimOnlyWithDeveloperGrant(t *testing.T) {
 func TestRoleReadCommandsEnforceResourceScopes(t *testing.T) {
 	state := State{
 		Baseline: "formal-head",
+		Tasks: map[string]TaskState{
+			"M001-T001": {ID: "M001-T001", Owner: "agent:developer"},
+			"M001-T002": {ID: "M001-T002", Owner: "agent:other"},
+		},
 		Submissions: map[string]Submission{
 			"SUB-1": {ID: "SUB-1", Digest: "sha256:one", HeadCommit: "head-1"},
 			"SUB-2": {ID: "SUB-2", Digest: "sha256:two", HeadCommit: "head-2"},
 		},
 	}
-	developer := Principal{Role: "developer", Resources: ResourceScope{Tasks: []string{"M001-T001"}}}
+	developer := Principal{Actor: "agent:developer", Role: "developer", Resources: ResourceScope{Tasks: []string{"M001-T001", "M001-T002"}}}
 	if err := authorizeRoleReadScope(state, developer, "work context", commandArgs{positionals: []string{"M001-T001"}}); err != nil {
 		t.Fatalf("in-scope Task context was rejected: %v", err)
 	}
 	if err := authorizeRoleReadScope(state, developer, "work context", commandArgs{positionals: []string{"M001-T002"}}); err == nil {
+		t.Fatal("another Developer's Task context was allowed")
+	}
+	if err := authorizeRoleReadScope(state, developer, "work context", commandArgs{positionals: []string{"M001-T003"}}); err == nil {
 		t.Fatal("out-of-scope Task context was allowed")
 	}
 	reviewer := Principal{

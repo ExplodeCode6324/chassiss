@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestEventV2AndTrustV1ProtocolGoldenValues(t *testing.T) {
+func TestEventV3AndTrustV1ProtocolGoldenValues(t *testing.T) {
 	when := time.Date(2025, 2, 3, 4, 5, 6, 123456789, time.UTC)
 	canonical, err := canonicalJSON(struct {
 		Name   string            `json:"name"`
@@ -42,10 +42,10 @@ func TestEventV2AndTrustV1ProtocolGoldenValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := CheckSpec{ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{"LANG": "C", "VALUE": "<&"}, TimeoutSeconds: 120}
+	check := CheckSpec{ID: "CHECK-001", Argv: []string{"go", "test", "./..."}, Cwd: ".", Env: map[string]string{"LANG": "C", "VALUE": "<&"}, TimeoutSeconds: 120, VerificationPaths: []string{"verification/**"}}
 	submission := Submission{
 		ID: "SUB-1", TaskID: "M001-T001", Actor: "agent:developer", BaseCommit: "base", HeadCommit: "head",
-		ChangedFiles: []string{"a.go", "dir/b.go"}, Checks: map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", SpecDigest: checkSpecDigest(check), Passed: true, Output: "ok", SnapshotDigest: "tree", CheckedAt: when}},
+		ChangedFiles: []string{"a.go", "dir/b.go"}, Checks: map[string]CheckResult{"CHECK-001": {ID: "CHECK-001", SpecDigest: checkSpecDigest(check), Passed: true, Output: "ok", SnapshotDigest: "tree", VerificationDigest: "verification", CheckedAt: when}},
 		Handoff: "ready", Status: "review_pending", CreatedAt: when,
 	}
 	submissionDigest, err := calculateSubmissionDigest(submission)
@@ -54,13 +54,13 @@ func TestEventV2AndTrustV1ProtocolGoldenValues(t *testing.T) {
 	}
 	wantCanonical := `{"name":"\u003c\u0026\u2028é","count":42,"at":"2025-02-03T04:05:06.123456789Z","labels":{"a":"first","z":"last"}}`
 	if string(canonical) != wantCanonical {
-		t.Fatalf("Event V2 canonical JSON changed\ngot:  %s\nwant: %s", canonical, wantCanonical)
+		t.Fatalf("Event V3 canonical JSON changed\ngot:  %s\nwant: %s", canonical, wantCanonical)
 	}
 	goldenDigests := map[string][2]string{
-		"event":      {digestBytes(eventBytes), "sha256:8d9a2d1da8e4205b7deeede1d378ad95043e1841cef6366f630dbe9edaf83222"},
+		"event":      {digestBytes(eventBytes), "sha256:e144761bd27c3a4fede3af72a25483a516ac1985ba4783d980de272833a40ebf"},
 		"trust":      {digestBytes(trustBytes), "sha256:37aaceff822dbe620a2a45921c9f4960427aa8d8390e0ef27a82320e25570783"},
-		"check":      {checkSpecDigest(check), "sha256:0c57a6fbdb2b2b20dde2ea04f8b67a2d060fa186442f270953fd57f3f94c7ec5"},
-		"submission": {submissionDigest, "sha256:4792060e687534172b1805223cff1a3f374eaa3b00435c07155f27e4e189eb3d"},
+		"check":      {checkSpecDigest(check), "sha256:63833fe8313130c55f81fa1432d7aecd0fcf70e1f326298bf575b80bd5faa513"},
+		"submission": {submissionDigest, "sha256:da9b2479c61f604acde7def8467db05c8fc00dd31ef6a4e78c2db483824b117a"},
 	}
 	for name, pair := range goldenDigests {
 		if pair[0] != pair[1] {

@@ -8,12 +8,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
 func createRoot(path string) (*RootKey, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil, &CLIError{Code: "CHS-AUTH-ROOT-EXISTS", Message: "refusing to overwrite existing Master Root", ExitCode: 10}
 	} else if !os.IsNotExist(err) {
@@ -85,22 +89,22 @@ func signTrust(trust *Trust, private ed25519.PrivateKey) error {
 
 func verifyTrust(config Config, trust Trust) error {
 	if trust.ProjectID != config.ProjectID || trust.Version != TrustVersion || trust.Revision < 1 {
-		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata does not match project", ExitCode: 40}
+		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata does not match project", Diagnostic: "trust_metadata_mismatch", ExitCode: 40}
 	}
 	public, err := base64.RawStdEncoding.DecodeString(trust.RootPublicKey)
 	if err != nil || len(public) != ed25519.PublicKeySize || keyFingerprint(public) != config.RootFingerprint {
-		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust root does not match the project root fingerprint", ExitCode: 40}
+		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust root does not match the project root fingerprint", Diagnostic: "root_mismatch", ExitCode: 40}
 	}
 	signature, err := base64.RawStdEncoding.DecodeString(trust.Signature)
 	if err != nil {
-		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust signature is malformed", ExitCode: 40}
+		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust signature is malformed", Diagnostic: "signature_invalid", ExitCode: 40}
 	}
 	data, err := trustSigningBytes(trust)
 	if err != nil {
 		return err
 	}
 	if !ed25519.Verify(ed25519.PublicKey(public), data, signature) {
-		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata signature is invalid", ExitCode: 40}
+		return &CLIError{Code: "CHS-INTEGRITY-TRUST", Message: "trust metadata signature is invalid", Diagnostic: "signature_invalid", ExitCode: 40}
 	}
 	return nil
 }
@@ -188,7 +192,7 @@ func loadPrincipal(rootDir, credentialPath string, action string) (Principal, er
 		return Principal{}, err
 	}
 	if credential.Kind != "chassiss-role-credential" || credential.ProjectID != config.ProjectID || credential.RootFingerprint != config.RootFingerprint {
-		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential does not belong to this project", ExitCode: 11}
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential does not belong to this project", Diagnostic: "project_mismatch", ExitCode: 11}
 	}
 	var grant *Grant
 	for index := range trust.Grants {
@@ -197,24 +201,27 @@ func loadPrincipal(rootDir, credentialPath string, action string) (Principal, er
 			break
 		}
 	}
-	if grant == nil || grant.Actor != credential.Actor || grant.Role != credential.Role || strings.Join(grant.Actions, "\x00") != strings.Join(credential.Actions, "\x00") {
-		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential is not present in current trust grants", ExitCode: 11}
-	}
-	if !equalCanonicalJSON(grant.NotBefore, credential.NotBefore) || !equalCanonicalJSON(grant.ExpiresAt, credential.ExpiresAt) || !equalCanonicalJSON(grant.Resources, credential.Resources) {
-		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential policy does not match its trust grant", ExitCode: 11}
+	if grant == nil {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential is not present in current trust grants", Diagnostic: "grant_not_found", ExitCode: 11}
 	}
 	for _, revoked := range trust.Revocations {
 		if revoked.CredentialID == credential.ID {
-			return Principal{}, &CLIError{Code: "CHS-AUTH-REVOKED", Message: "credential has been revoked", ExitCode: 11}
+			return Principal{}, &CLIError{Code: "CHS-AUTH-REVOKED", Message: "credential has been revoked", Diagnostic: "revoked", ExitCode: 11}
 		}
+	}
+	if grant.Actor != credential.Actor || grant.Role != credential.Role || strings.Join(grant.Actions, "\x00") != strings.Join(credential.Actions, "\x00") {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential metadata does not match its trust grant", Diagnostic: "metadata_mismatch", ExitCode: 11}
+	}
+	if !equalCanonicalJSON(grant.NotBefore, credential.NotBefore) || !equalCanonicalJSON(grant.ExpiresAt, credential.ExpiresAt) || !equalCanonicalJSON(grant.Resources, credential.Resources) {
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential policy does not match its trust grant", Diagnostic: "policy_mismatch", ExitCode: 11}
 	}
 	private, err := base64.RawStdEncoding.DecodeString(credential.PrivateKey)
 	if err != nil || len(private) != ed25519.PrivateKeySize {
-		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential private key is invalid", ExitCode: 11}
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential private key is invalid", Diagnostic: "key_invalid", ExitCode: 11}
 	}
 	public := ed25519.PrivateKey(private).Public().(ed25519.PublicKey)
 	if base64.RawStdEncoding.EncodeToString(public) != grant.PublicKey {
-		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential private key does not match trust grant", ExitCode: 11}
+		return Principal{}, &CLIError{Code: "CHS-AUTH-CREDENTIAL", Message: "credential private key does not match trust grant", Diagnostic: "key_mismatch", ExitCode: 11}
 	}
 	now := timeNow()
 	if credential.NotBefore != nil && now.Before(*credential.NotBefore) {

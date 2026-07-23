@@ -29,7 +29,7 @@ func digestBytes(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// canonicalJSON is the frozen Event V2 / Trust V1 signing codec. Changing its
+// canonicalJSON is the frozen Event V3 / Trust V1 signing codec. Changing its
 // byte output requires a new protocol version and a version-selective verifier.
 func canonicalJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
