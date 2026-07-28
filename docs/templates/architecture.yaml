@@ -1,0 +1,78 @@
+schema: chassiss.architecture/v1
+id: ARCHITECTURE-001
+
+overview: |-
+  Git stores shared facts, State stores the current projection, Architecture
+  stores cross-workflow structure, and the CLI evaluates the protocol.
+
+principles:
+  - Parent State determines authority.
+  - Reducers generate the complete next State.
+  - Local secrets never enter Git.
+
+modules:
+  core:
+    title: Protocol Core
+    description: |-
+      Canonical encoding, verification, authorization, reducers, and state.
+    paths:
+      - src/core/**
+      - tests/core/**
+    requires:
+      - schema:state
+      - dependency:git
+  cli:
+    title: CLI
+    description: |-
+      Commands, managed worktrees, structured output, and workflow orchestration.
+    paths:
+      - src/cli/**
+      - tests/cli/**
+    requires:
+      - api:cli
+      - module:core
+      - config:local-state
+
+apis:
+  cli:
+    title: CLI JSON API
+    description: |-
+      Stable command response envelopes, context objects, and error contracts.
+    owner: module:cli
+    paths:
+      - src/cli/api/**
+    requires:
+      - schema:state
+
+schemas:
+  state:
+    title: State Schema
+    description: |-
+      The minimal current projection required to validate the next transition.
+    owner: module:core
+    paths:
+      - src/core/state/**
+    requires: []
+
+dependencies:
+  git:
+    title: Git Runtime
+    description: |-
+      Standard Git objects, refs, transports, worktrees, and SSH signing.
+    paths:
+      - go.mod
+      - go.sum
+    requires: []
+
+configs:
+  local-state:
+    title: Local State Configuration
+    description: |-
+      Local trust anchors, checkpoints, key handles, worktrees, and pending
+      operations.
+    owner: module:cli
+    paths:
+      - src/cli/local/**
+    requires: []
+
+extensions: {}

@@ -1,0 +1,35 @@
+{
+  "projects": {
+    "PRJ-EXAMPLE": {
+      "genesis_commit": "0000000000000000000000000000000000000000",
+      "identity": {
+        "keys": {
+          "KEY-BUILDER-01": {
+            "private_key_handle": "keychain:chassiss/PRJ-EXAMPLE/KEY-BUILDER-01"
+          }
+        },
+        "selected_key_id": "KEY-BUILDER-01"
+      },
+      "minimum_checkpoint": {
+        "commit": "0000000000000000000000000000000000000000",
+        "state_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "pending_operations": {},
+      "remote": {
+        "url": "ssh://git.example.invalid/project.git",
+        "url_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "repo_instances": [
+        {
+          "created_by_cli": true,
+          "git_dir": "/local/project/.git",
+          "last_verified_head": "0000000000000000000000000000000000000000",
+          "repo_path": "/local/project"
+        }
+      ],
+      "root_fingerprint": "SHA256:<root-fingerprint>",
+      "worktrees": {}
+    }
+  },
+  "schema": "chassiss.local/v1"
+}

@@ -1,0 +1,1 @@
+{"action":"project.genesis","attempt":1,"facts":{"architecture_blob":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","initial_tree":"cccccccccccccccccccccccccccccccccccccccc","taskbook_blob":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"operation_digest":"sha256:9c3b8a0a169d02c70bccc424a07a6f23adf57d6e289061199f48ad7b6e9af5e1","parent":null,"schema":"chassiss.execution-evidence/v1"}

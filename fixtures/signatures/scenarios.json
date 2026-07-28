@@ -1,0 +1,13 @@
+[
+  "valid-root-genesis-self-sign",
+  "wrong-root-fingerprint",
+  "valid-parent-grant-signature",
+  "next-state-self-authorization-rejected",
+  "wrong-authority-trailer",
+  "revoked-grant",
+  "same-actor-unauthorized-key",
+  "commit-message-tree-parent-trailer-tamper",
+  "work-commit-provenance",
+  "malformed-openssh-public-key",
+  "non-ed25519-key-rejected"
+]

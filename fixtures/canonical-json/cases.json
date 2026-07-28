@@ -1,0 +1,32 @@
+[
+  {
+    "name": "unicode-escaping-and-key-order",
+    "input": "{\"z\":1,\"雪\":\"line\\n\\t\",\"a\":\"<>&\"}",
+    "canonical": "{\"a\":\"<>&\",\"z\":1,\"雪\":\"line\\n\\t\"}"
+  },
+  {
+    "name": "utf16-key-order",
+    "input": "{\"\":true,\"𐀀\":true}",
+    "canonical": "{\"𐀀\":true,\"\":true}"
+  },
+  {
+    "name": "safe-integer-boundaries",
+    "input": "[-9007199254740991,0,9007199254740991]",
+    "canonical": "[-9007199254740991,0,9007199254740991]"
+  },
+  {
+    "name": "duplicate-key",
+    "input": "{\"a\":1,\"a\":2}",
+    "error": "duplicate JSON key"
+  },
+  {
+    "name": "float-prohibited",
+    "input": "{\"a\":1.5}",
+    "error": "floating-point JSON number"
+  },
+  {
+    "name": "out-of-range-integer",
+    "input": "9007199254740992",
+    "error": "outside the supported range"
+  }
+]

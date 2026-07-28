@@ -1,0 +1,39 @@
+schema: chassiss.taskbook/v1
+id: TASKBOOK-DUPLICATE-CHECK
+workflow:
+  title: Invalid fixture
+  outcome: Demonstrate Check ID namespace rejection.
+  completion_criteria:
+    - Validation rejects this Taskbook.
+  checks:
+    - id: CHECK-DUPLICATE
+      argv:
+        - true
+      cwd: .
+      timeout_seconds: 1
+requirements: {}
+constraints: {}
+tasks:
+  TASK-DUPLICATE:
+    title: Duplicate Check
+    goal: Reuse a workflow Check ID.
+    requirements: []
+    constraints: []
+    deliverables: []
+    modules:
+      - module:core
+    depends_on: []
+    writes:
+      - internal/**
+    affects: []
+    checks:
+      - id: CHECK-DUPLICATE
+        argv:
+          - true
+        cwd: .
+        timeout_seconds: 1
+    out_of_scope: []
+    stop_conditions: []
+    reviewer_attention: []
+    supersedes: []
+extensions: {}

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "operation-domain",
+    "object_type": "operation",
+    "value": {"a": 1},
+    "expected": "sha256:5e23f3e3e8a5045716387ef7c37b8a85e7f4005df936f869c3ada31830b66131"
+  },
+  {
+    "name": "changed-paths-domain",
+    "object_type": "changed-paths",
+    "value": ["a", "b"],
+    "expected": "sha256:f3943797b7491a4a0033898ad0fced208a9e10eaf8b9710a97d6c3b87e709c15"
+  }
+]

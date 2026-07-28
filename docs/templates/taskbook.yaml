@@ -1,0 +1,86 @@
+schema: chassiss.taskbook/v1
+id: TASKBOOK-001
+
+workflow:
+  title: Example Workflow
+  outcome: |-
+    Deliver the deterministic reducer for the current development round.
+  completion_criteria:
+    - Every task has a Reviewer-accepted terminal disposition.
+    - Independent verification passes from Genesis to current main.
+  checks:
+    - id: CHECK-WORKFLOW-001
+      argv:
+        - chassiss
+        - verify
+        - --full
+      cwd: .
+      timeout_seconds: 300
+
+requirements:
+  REQ-001:
+    title: Deterministic verification
+    statement: |-
+      Identical Git inputs produce identical protocol verification results.
+    acceptance:
+      - Golden vectors pass in independent verifier runs.
+  REQ-002:
+    title: Git workflow control
+    statement: |-
+      All supported Git mutations are executed by the CHASSISS CLI.
+    acceptance:
+      - No supported workflow requires direct Git mutation commands.
+
+constraints:
+  CON-001:
+    title: No platform dependency
+    rule: |-
+      The core protocol must work with a standard Git remote or bare repository.
+  CON-002:
+    title: No direct Git mutation
+    rule: |-
+      Agents use CHASSISS CLI commands for every Git mutation.
+
+tasks:
+  TASK-001:
+    title: Implement deterministic reducer
+    goal: |-
+      Implement the complete next-State reducer for the v1 task lifecycle.
+    requirements:
+      - REQ-001
+      - REQ-002
+    constraints:
+      - CON-001
+      - CON-002
+    deliverables:
+      - Reducer implementation
+      - Reducer golden vectors
+    modules:
+      - module:core
+    depends_on: []
+    writes:
+      - src/core/reducer/**
+      - tests/core/reducer/**
+    affects:
+      - schema:state
+    checks:
+      - id: CHECK-001
+        argv:
+          - go
+          - test
+          - ./src/core/reducer/...
+          - ./tests/core/reducer/...
+        cwd: .
+        timeout_seconds: 120
+    change_limits:
+      max_changed_paths: 40
+    out_of_scope:
+      - CLI command implementation
+    stop_conditions:
+      - The State schema cannot express a required reducer invariant.
+    reviewer_attention:
+      - Reject extra fields in every sparse Task phase.
+      - Authorize from the parent State only.
+    supersedes: []
+
+extensions: {}

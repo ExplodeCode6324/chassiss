@@ -1,0 +1,8 @@
+[
+  "pure-authority-state-drift",
+  "unrelated-disjoint-content-drift",
+  "relevant-path-drift",
+  "relevant-resource-drift",
+  "unknown-is-relevant",
+  "candidate-conflict"
+]

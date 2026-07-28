@@ -1,0 +1,25 @@
+{
+  "completion_criteria_responses": [
+    {
+      "criterion": "Every task has a Reviewer-accepted terminal disposition.",
+      "response": "Verified from the current State and Integration history.",
+      "status": "pass"
+    },
+    {
+      "criterion": "Independent verification passes from Genesis to current main.",
+      "response": "Confirmed by the separately signed Workflow Closure Check Result.",
+      "status": "pass"
+    }
+  ],
+  "findings": [],
+  "schema": "chassiss.taskbook-closure-report/v1",
+  "summary": "The workflow outcome is accepted.",
+  "task_responses": [
+    {
+      "phase": "closed",
+      "response": "The integrated result is accepted.",
+      "task": "TASK-001"
+    }
+  ],
+  "taskbook": "TASKBOOK-001"
+}

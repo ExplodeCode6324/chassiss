@@ -1,0 +1,11 @@
+[
+  "prepared-pending-operation",
+  "signed-pending-operation",
+  "push-result-unknown",
+  "same-operation-id-reconciliation",
+  "operation-id-collision",
+  "remote-rollback",
+  "shared-checkpoint",
+  "remote-identity-change",
+  "three-attempt-cas-limit"
+]

@@ -1,0 +1,50 @@
+schema: chassiss.taskbook/v1
+id: TASKBOOK-FIXTURE
+workflow:
+  title: Fixture workflow
+  outcome: Verify the portable fixtures.
+  completion_criteria:
+    - Every Task has a reviewed terminal disposition.
+  checks:
+    - id: CHECK-WORKFLOW-FIXTURE
+      argv:
+        - go
+        - test
+        - ./...
+      cwd: .
+      timeout_seconds: 300
+requirements:
+  REQ-FIXTURE:
+    title: Portable behavior
+    statement: Identical fixture inputs produce identical outputs.
+    acceptance:
+      - The fixture suite passes.
+constraints: {}
+tasks:
+  TASK-FIXTURE:
+    title: Exercise fixture
+    goal: Validate portable behavior.
+    requirements:
+      - REQ-FIXTURE
+    constraints: []
+    deliverables:
+      - Passing fixture result
+    modules:
+      - module:core
+    depends_on: []
+    writes:
+      - internal/**
+    affects: []
+    checks:
+      - id: CHECK-TASK-FIXTURE
+        argv:
+          - go
+          - test
+          - ./internal/...
+        cwd: .
+        timeout_seconds: 300
+    out_of_scope: []
+    stop_conditions: []
+    reviewer_attention: []
+    supersedes: []
+extensions: {}

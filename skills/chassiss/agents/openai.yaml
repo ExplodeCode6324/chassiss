@@ -1,0 +1,4 @@
+interface:
+  display_name: "CHASSISS"
+  short_description: "Safely operate signed CHASSISS project workflows"
+  default_prompt: "Use $chassiss to enter a verified project context and carry out the next authorized workflow action."

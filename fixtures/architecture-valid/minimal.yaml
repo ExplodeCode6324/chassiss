@@ -1,0 +1,17 @@
+schema: chassiss.architecture/v1
+id: ARCHITECTURE-FIXTURE
+overview: Minimal cross-implementation fixture.
+principles:
+  - Verification is deterministic.
+modules:
+  core:
+    title: Core
+    description: Protocol core.
+    paths:
+      - internal/**
+    requires: []
+apis: {}
+schemas: {}
+dependencies: {}
+configs: {}
+extensions: {}
