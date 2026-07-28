@@ -51,12 +51,15 @@ Root trust anchor 和 Genesis。
    本地 Git 仓库与本地生命周期测试。
 2. **Secret backend。** 当前只实现 `file:` owner-only Ed25519 private-key
    handle；非 file backend 返回 `CHS_FEATURE_NOT_IN_V1`。文件权限与目录隔离已
-   验证，但尚未提供 keychain、硬件 key 或加密-at-rest backend。
+   在 POSIX 平台验证；Windows 当前依赖用户 profile 的继承 ACL，尚未独立构造和
+   校验 DACL。尚未提供 keychain、硬件 key 或加密-at-rest backend。
 3. **并发语义重试覆盖深度。** Runtime 已实现最多三次“重新 fetch/verify →
    对账 Operation ID → 重新计算 tree/facts/Checks/Evidence → 重签 → CAS 重推”。
    Review/Integration 会重新分类 drift，Closure 只允许纯 State/Authority drift，
    path collision 会 fail closed。本地 loopback remote 已验证 Authority Transition
-   的 attempt 2；所有 Action 与连续三次竞争的 fault-injection matrix 尚未完成。
+   的 attempt 2；该 `git daemon` receive-pack fixture 只在 macOS/Linux 执行，
+   Windows 仍执行其余 CLI/协议测试。所有 Action 与连续三次竞争的
+   fault-injection matrix 尚未完成。
 4. **Push response loss 覆盖深度。** Main Transition push error 后 Runtime 会
    立即 fetch/verify，以 Operation ID + digest 对账远端 history；已发布则收敛到
    实际 commit，否则才 retry 或进入 `push-unknown`。Genesis、exact proposal 与

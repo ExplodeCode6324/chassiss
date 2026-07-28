@@ -27,8 +27,10 @@ session or cache content
 ```
 
 Local State uses owner-only directories/files, temporary files, fsync, and
-atomic rename. Candidate worktrees and indices are isolated. Git and Check
-processes receive argv arrays rather than shell commands.
+atomic replacement. POSIX permission bits are validated; Windows currently
+relies on inherited user-profile ACLs, with explicit DACL construction and
+verification remaining a pre-lock gap. Candidate worktrees and indices are
+isolated. Git and Check processes receive argv arrays rather than shell commands.
 
 ## Out of scope
 
@@ -39,4 +41,3 @@ organizational independence.
 
 See the [implementation differences](../12-implementation-differences.md) for
 the file-key backend and untested remote fault-injection gaps.
-

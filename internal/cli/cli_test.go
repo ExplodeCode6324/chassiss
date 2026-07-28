@@ -103,6 +103,9 @@ func TestHelpSchemaUsesConcreteArraysAndErrors(t *testing.T) {
 }
 
 func TestRemoteCASRetryRecomputesAuthorityTransition(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Git for Windows daemon receive-pack is not a reliable loopback test transport")
+	}
 	workspace := t.TempDir()
 	dataDirectory := filepath.Join(t.TempDir(), "local-data")
 	remote := filepath.Join(t.TempDir(), "remote.git")

@@ -50,6 +50,6 @@ checkout 执行 `transition inspect` 与 `transition publish`。Proposal parent
 Revoke 使用 `grant revoke <grant-id> --reason ... --root-key ...`。历史签名仍可
 验证，但 revoked Grant 不能授权未来 Transition。
 
-当前实现只提供 owner-only `file:` key backend；安全差距见
+当前实现只提供 owner-only `file:` key backend；POSIX 平台校验 mode bits，
+Windows 当前依赖用户 profile 的继承 ACL，尚未独立构造和验证 DACL。安全差距见
 [实现差异登记](../12-implementation-differences.md)。
-

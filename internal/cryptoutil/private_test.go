@@ -2,6 +2,7 @@ package cryptoutil
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestGenerateFileKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("private key permissions are %o", info.Mode().Perm())
 	}
 	public, fingerprint, err := PublicFromHandle(generated.Handle)

@@ -54,4 +54,7 @@ signatures remain verifiable, while the revoked Grant cannot authorize a future
 Transition.
 
 The current implementation provides only an owner-only `file:` key backend.
-
+POSIX mode bits are validated; Windows currently relies on the inherited user
+profile ACL and does not yet construct and verify a dedicated DACL. See the
+documented gaps in the
+[implementation differences](../12-implementation-differences.md).
