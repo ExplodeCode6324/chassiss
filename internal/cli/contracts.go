@@ -18,6 +18,9 @@ import (
 //go:embed templates/taskbook-new.yaml
 var newTaskbookTemplate []byte
 
+//go:embed templates/architecture-new.yaml
+var newArchitectureTemplate []byte
+
 const draftMetadataSchema = "chassiss.draft-metadata/v1"
 
 type draftMetadata struct {
@@ -48,7 +51,7 @@ func contractCommand(ctx context.Context, invocation invocation) (Envelope, erro
 		return architectureDiffCommand(ctx, invocation)
 	case "architecture requires", "architecture required-by", "architecture impact":
 		return architectureGraphCommand(ctx, invocation)
-	case "architecture update":
+	case "architecture establish", "architecture update":
 		return architectureUpdateCommand(ctx, invocation)
 	default:
 		panic("unreachable")
@@ -102,6 +105,9 @@ func taskbookDraftCommand(ctx context.Context, invocation invocation) (Envelope,
 	project, err := loadProject(ctx, "", false)
 	if err != nil {
 		return Envelope{}, err
+	}
+	if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Establish Architecture before creating a Taskbook.")
 	}
 	output := invocation.Value("output")
 	if err := requireOutsideProject(project.RepoRoot, output); err != nil {
@@ -194,6 +200,9 @@ func taskbookMutationCommand(ctx context.Context, invocation invocation) (Envelo
 	project, err := loadMutableProject(ctx)
 	if err != nil {
 		return Envelope{}, err
+	}
+	if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Establish Architecture before opening or updating a Taskbook.")
 	}
 	action := "taskbook.opened"
 	capability := "taskbook.open"
@@ -330,6 +339,9 @@ func architectureShowCommand(ctx context.Context, invocation invocation) (Envelo
 			return Envelope{}, err
 		}
 	}
+	if architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture is not established.")
+	}
 	id := invocation.Positionals[0]
 	resource, exists := architecture.Resources()[id]
 	if !exists {
@@ -349,15 +361,28 @@ func architectureDraftCommand(ctx context.Context, invocation invocation) (Envel
 	if err := requireOutsideProject(project.RepoRoot, output); err != nil {
 		return Envelope{}, err
 	}
-	data, err := project.Runner.ReadBlob(ctx, project.Verified.State.Project.Architecture.BlobOID)
-	if err != nil {
-		return Envelope{}, err
+	base := ""
+	var data []byte
+	if project.Verified.State.Project.Architecture == nil {
+		if !invocation.Flags["new"] {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Source bootstrap requires architecture draft --new.")
+		}
+		data = append([]byte(nil), newArchitectureTemplate...)
+	} else {
+		if invocation.Flags["new"] {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture is already established.")
+		}
+		base = project.Verified.State.Project.Architecture.BlobOID
+		data, err = project.Runner.ReadBlob(ctx, base)
+		if err != nil {
+			return Envelope{}, err
+		}
 	}
 	if err := writeExternalFile(output, data); err != nil {
 		return Envelope{}, err
 	}
 	metadata := draftMetadata{
-		ArchitectureBlob: project.Verified.State.Project.Architecture.BlobOID,
+		ArchitectureBlob: base,
 		Kind:             "architecture", Project: project.Verified.State.Project.ID,
 		Schema: draftMetadataSchema, TaskbookBlob: nil,
 	}
@@ -375,6 +400,9 @@ func architectureDiffCommand(ctx context.Context, invocation invocation) (Envelo
 	project, err := loadProject(ctx, "", false)
 	if err != nil {
 		return Envelope{}, err
+	}
+	if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture diff requires an established Architecture.")
 	}
 	candidateData, err := os.ReadFile(invocation.Value("file"))
 	if err != nil {
@@ -409,6 +437,9 @@ func architectureGraphCommand(ctx context.Context, invocation invocation) (Envel
 	project, err := loadProject(ctx, "", false)
 	if err != nil {
 		return Envelope{}, err
+	}
+	if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture graph queries require an established Architecture.")
 	}
 	id := invocation.Positionals[0]
 	resources := project.Verified.Architecture.Resources()
@@ -461,6 +492,14 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	if err != nil {
 		return Envelope{}, err
 	}
+	establish := invocation.Definition.Path == "architecture establish"
+	if establish {
+		if project.Verified.State.Project.Architecture != nil || project.Verified.Architecture != nil {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture is already established.")
+		}
+	} else if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Use architecture establish for a source bootstrap.")
+	}
 	if project.Verified.State.Project.Taskbook != nil {
 		return Envelope{}, protocol.NewError(protocol.ErrTaskbookAlreadyActive, protocol.CategoryValidation, "Architecture update requires no active Taskbook.")
 	}
@@ -468,8 +507,12 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	if err != nil {
 		return Envelope{}, err
 	}
+	expectedBase := ""
+	if project.Verified.State.Project.Architecture != nil {
+		expectedBase = project.Verified.State.Project.Architecture.BlobOID
+	}
 	if metadata.Project != project.Verified.State.Project.ID ||
-		metadata.ArchitectureBlob != project.Verified.State.Project.Architecture.BlobOID {
+		metadata.ArchitectureBlob != expectedBase {
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureStale, protocol.CategoryConflict, "Architecture draft base is stale.")
 	}
 	candidateData, err := os.ReadFile(invocation.Value("file"))
@@ -480,51 +523,66 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	if err != nil {
 		return Envelope{}, protocol.WrapError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture candidate is invalid.", err)
 	}
-	if candidate.ID != project.Verified.Architecture.ID {
+	if !establish && candidate.ID != project.Verified.Architecture.ID {
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture ID cannot change.")
 	}
 	newBlob, err := project.Runner.HashBlob(ctx, candidateData)
 	if err != nil {
 		return Envelope{}, err
 	}
-	if newBlob == project.Verified.State.Project.Architecture.BlobOID {
+	if !establish && newBlob == expectedBase {
 		return Envelope{}, protocol.NewError(protocol.ErrUsageInvalid, protocol.CategoryValidation, "Architecture update cannot be a no-op.")
 	}
-	semantic := contracts.DiffArchitecture(
-		project.Verified.Architecture, candidate,
-		project.Verified.State.Project.Architecture.BlobOID, newBlob,
-	)
-	targets := append(append(append([]string(nil), semantic.AddedResources...), semantic.UpdatedResources...), semantic.RemovedResources...)
+	var semanticObject map[string]any
+	targets := make([]string, 0)
+	requireGlobal := true
+	if establish {
+		for id := range candidate.Resources() {
+			targets = append(targets, id)
+		}
+	} else {
+		semantic := contracts.DiffArchitecture(project.Verified.Architecture, candidate, expectedBase, newBlob)
+		targets = append(append(append([]string(nil), semantic.AddedResources...), semantic.UpdatedResources...), semantic.RemovedResources...)
+		requireGlobal = semantic.OverviewChanged || semantic.PrinciplesChanged
+		semanticObject, _ = objectMap(semantic)
+	}
 	sort.Strings(targets)
-	requireGlobal := semantic.OverviewChanged || semantic.PrinciplesChanged
-	authority, err := selectGrant(project, invocation, "architecture.update", "", targets, requireGlobal)
+	capability := "architecture.update"
+	action := "architecture.updated"
+	if establish {
+		capability = "architecture.establish"
+		action = "architecture.established"
+	}
+	authority, err := selectGrant(project, invocation, capability, "", targets, requireGlobal)
 	if err != nil {
 		return Envelope{}, err
 	}
-	semanticObject, _ := objectMap(semantic)
 	operationID, err := operationID(invocation)
 	if err != nil {
 		return Envelope{}, err
 	}
 	operation := protocol.Operation{
 		Schema: protocol.OperationSchema, OperationID: operationID,
-		Action: "architecture.updated", Project: project.Verified.State.Project.ID,
+		Action: action, Project: project.Verified.State.Project.ID,
 		Authority: authority.Reference, Target: candidate.ID,
-		Preconditions: map[string]any{
-			"architecture_blob": project.Verified.State.Project.Architecture.BlobOID,
-			"taskbook":          nil,
-		},
-		Payload: map[string]any{"candidate_blob": newBlob, "reason": invocation.Value("reason")},
+		Preconditions: map[string]any{},
+		Payload:       map[string]any{"candidate_blob": newBlob, "reason": invocation.Value("reason")},
+	}
+	if establish {
+		operation.Preconditions = map[string]any{"architecture": nil, "taskbook": nil}
+	} else {
+		operation.Preconditions = map[string]any{"architecture_blob": expectedBase, "taskbook": nil}
 	}
 	parent := project.Verified.Head
 	operationDigest, _ := protocol.ObjectDigest("operation", operation)
 	evidence := protocol.ExecutionEvidence{
 		Schema: protocol.EvidenceSchema, OperationDigest: operationDigest,
 		Action: operation.Action, Attempt: 1, Parent: &parent,
-		Facts: map[string]any{
-			"new_blob": newBlob, "old_blob": project.Verified.State.Project.Architecture.BlobOID,
-			"semantic_diff": semanticObject,
-		},
+		Facts: map[string]any{"new_blob": newBlob},
+	}
+	if !establish {
+		evidence.Facts["old_blob"] = expectedBase
+		evidence.Facts["semantic_diff"] = semanticObject
 	}
 	reduceFacts := state.ReduceFacts{
 		ObjectFormat: project.Verified.ObjectFormat, ParentCommit: parent,

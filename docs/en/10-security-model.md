@@ -6,6 +6,12 @@ A trusted clone uses the Project ID, Genesis Root fingerprint, and minimum
 checkpoint. Obtain them independently from the remote. Failed verification
 never advances the checkpoint.
 
+Existing-project bootstrap also requires Master to pin a full source commit
+OID. The old commit/tree and
+`docs/chassiss/onboarding/source-history.md` are Root-signed provenance
+statements, not authority for the old history. Source `.git`, refs, credentials,
+and local State must never be imported.
+
 ## Cryptography
 
 - Git Transitions and Work Commits: Ed25519 SSH commit signatures;

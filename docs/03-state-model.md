@@ -44,7 +44,7 @@ canonical bytes。
 | `protocol` | 是 | 固定 `chassiss/v1` |
 | `schema` | 是 | 固定 `chassiss.state/v1` |
 | `audit` | 否 | 历史报告/失败的轻量可解析索引；无条目时省略 |
-| `project` | 是 | Project ID、当前 Architecture 与可选活动 Taskbook |
+| `project` | 是 | Project ID、可选 source anchor、当前 Architecture 与可选活动 Taskbook |
 | `authority` | 是 | 当前 Root 与有效 Grants |
 | `tasks` | 是 | Task 当前 progress projection |
 
@@ -109,10 +109,32 @@ history 解析正文。未来归档/截断只能移动已完成索引，不能�
 | `taskbook.path` | v1 固定 `docs/taskbook.yaml` |
 | `taskbook.id` | 当前活动 Taskbook ID；Project history 中不复用 |
 | `taskbook.blob_oid` | 当前 main tree 中该路径的 exact Git blob OID |
+| `source` | 普通 Genesis 省略；已有项目 bootstrap 后永久保存 compact source anchor |
 
 `taskbook` 可以为 `null`，表示上一轮已经归档、下一轮尚未打开。此时
-`docs/taskbook.yaml` 必须不存在且 `tasks` 必须为空。Architecture 始终存在。
-Architecture/Taskbook update 同时改变 tree 中的文件与对应 `blob_oid`。
+`docs/taskbook.yaml` 必须不存在且 `tasks` 必须为空。
+
+`project.bootstrap` 后、`architecture.established` 前，`architecture` 也为
+`null`。此阶段必须同时满足 `source != null`、`taskbook=null`、`tasks={}`，
+只允许 Authority add/revoke 与首次 Architecture establish。Architecture
+建立后不得再变回 null。Architecture/Taskbook update 同时改变 tree 中的文件
+与对应 `blob_oid`。
+
+Source anchor exact 结构：
+
+```json
+{
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "history_blob": "0123456789abcdef0123456789abcdef01234567",
+  "history_path": "docs/chassiss/onboarding/source-history.md",
+  "object_format": "sha1",
+  "tree": "0123456789abcdef0123456789abcdef01234567"
+}
+```
+
+`commit`/`tree` 按 source object format 验证；`history_blob` 按 CHASSISS Project
+object format 验证。Source anchor 和 protected history document 是来源声明，
+不是对旧 commits 的 Authority 认可。
 
 ## 5. Authority
 

@@ -40,6 +40,11 @@ var commandDefinitions = []CommandDefinition{
 		{Name: "project", Required: true}, {Name: "architecture", Required: true},
 		{Name: "taskbook", Required: true}, {Name: "root-key", Required: true}, {Name: "remote"}, {Name: "operation-id"},
 	}, ResultSchema: "chassiss.init/v1"},
+	{Path: "bootstrap", Summary: "Adopt an existing Git snapshot into a Root-only Project bootstrap.", Mutating: true, Options: []Option{
+		{Name: "project", Required: true}, {Name: "source", Required: true},
+		{Name: "ref", Required: true}, {Name: "root-key", Required: true},
+		{Name: "history"}, {Name: "remote"}, {Name: "operation-id"},
+	}, ResultSchema: "chassiss.bootstrap/v1"},
 	{Path: "clone", Summary: "Clone and bootstrap a trusted Project.", Mutating: true, Arguments: []Argument{{Name: "remote", Required: true}, {Name: "directory", Required: true}}, Options: []Option{
 		{Name: "project", Required: true}, {Name: "root-fingerprint"},
 		{Name: "checkpoint"}, {Name: "key"}, {Name: "untrusted-read-only", Boolean: true},
@@ -88,12 +93,13 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "taskbook update", Summary: "Update ready portions of the Taskbook.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("taskbook.update")},
 	{Path: "taskbook archive", Summary: "Prepare or attest closure, run Workflow Checks, and archive.", Mutating: true, Options: append(mutationOptions(), Option{Name: "prepare", Boolean: true}, Option{Name: "output"}, Option{Name: "report"}), InputSchemas: []string{"chassiss.taskbook-closure-report/v1"}, RequiredCapability: capability("taskbook.archive")},
 	{Path: "architecture show", Summary: "Show an Architecture Resource.", Arguments: []Argument{{Name: "resource-id", Required: true}}, Options: []Option{{Name: "file"}}},
-	{Path: "architecture draft", Summary: "Copy current Architecture outside the repository.", Options: []Option{{Name: "output", Required: true}}},
+	{Path: "architecture draft", Summary: "Copy or create an Architecture candidate outside the repository.", Options: []Option{{Name: "output", Required: true}, {Name: "new", Boolean: true}}},
 	{Path: "architecture diff", Summary: "Diff an Architecture candidate.", Options: []Option{{Name: "file", Required: true}}},
 	{Path: "architecture requires", Summary: "Query upstream Resource closure.", Arguments: []Argument{{Name: "resource-id", Required: true}}, Options: []Option{{Name: "transitive", Boolean: true}}},
 	{Path: "architecture required-by", Summary: "Query downstream Resource closure.", Arguments: []Argument{{Name: "resource-id", Required: true}}, Options: []Option{{Name: "transitive", Boolean: true}}},
 	{Path: "architecture impact", Summary: "Query Resource impact.", Arguments: []Argument{{Name: "resource-id", Required: true}}},
 	{Path: "architecture validate", Summary: "Validate current or candidate Architecture.", Options: []Option{{Name: "file"}}},
+	{Path: "architecture establish", Summary: "Establish the first Architecture for a source bootstrap.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("architecture.establish")},
 	{Path: "architecture update", Summary: "Update Architecture with no active Taskbook.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("architecture.update")},
 	{Path: "key generate", Summary: "Generate a local Ed25519 key.", Mutating: true, Options: []Option{{Name: "id", Required: true}, {Name: "actor", Required: true}, {Name: "store"}}},
 	{Path: "key list", Summary: "List local key handles."},
@@ -161,7 +167,7 @@ func possibleErrorsFor(definition CommandDefinition) []string {
 	localOnly := definition.Path == "version" || definition.Path == "help" ||
 		(strings.HasPrefix(definition.Path, "key ") && definition.Path != "key attach") ||
 		definition.Path == "grant request" ||
-		definition.Path == "clone" || definition.Path == "init" ||
+		definition.Path == "clone" || definition.Path == "init" || definition.Path == "bootstrap" ||
 		definition.Path == "cache clean"
 	if !localOnly {
 		errors = append(errors,
@@ -180,6 +186,10 @@ func possibleErrorsFor(definition CommandDefinition) []string {
 			protocol.ErrResourceScopeDenied,
 			protocol.ErrLimitExceeded,
 		)
+	}
+	if strings.HasPrefix(definition.Path, "architecture ") ||
+		strings.HasPrefix(definition.Path, "taskbook ") {
+		errors = append(errors, protocol.ErrArchitectureNotEstablished)
 	}
 	if definition.Mutating && definition.Path != "key generate" &&
 		definition.Path != "key remove" && definition.Path != "cache clean" {

@@ -290,7 +290,8 @@ func (engine verifier) verifyGenesis(
 	message protocol.TransitionMessage,
 	options Options,
 ) (*state.State, *contracts.Architecture, *contracts.Taskbook, error) {
-	if message.Operation.Action != "project.genesis" || len(commit.Parents) != 0 ||
+	action := message.Operation.Action
+	if (action != "project.genesis" && action != "project.bootstrap") || len(commit.Parents) != 0 ||
 		message.Evidence.Parent != nil {
 		return nil, nil, nil, protocol.NewError(protocol.ErrGenesisInvalid, protocol.CategoryTrust, "Genesis topology or Action is invalid.")
 	}
@@ -304,16 +305,31 @@ func (engine verifier) verifyGenesis(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if taskbook == nil {
+	if action == "project.genesis" && taskbook == nil {
 		return nil, nil, nil, protocol.NewError(protocol.ErrGenesisInvalid, protocol.CategoryProtocol, "Genesis requires an initial Taskbook.")
 	}
-	ready := make([]string, 0, len(taskbook.Tasks))
-	for id := range taskbook.Tasks {
-		ready = append(ready, id)
+	if action == "project.bootstrap" {
+		if architecture != nil || taskbook != nil || parsed.Project.Source == nil {
+			return nil, nil, nil, protocol.NewError(protocol.ErrGenesisInvalid, protocol.CategoryProtocol, "Source bootstrap cannot contain Architecture or Taskbook.")
+		}
+		source := parsed.Project.Source
+		entry, exists := tree[source.HistoryPath]
+		if !exists || entry.Mode != "100644" || entry.OID != source.HistoryBlob {
+			return nil, nil, nil, protocol.NewError(protocol.ErrGenesisInvalid, protocol.CategoryProtocol, "Source bootstrap history document is missing or does not match State.")
+		}
+	}
+	ready := make([]string, 0)
+	taskbookID := ""
+	if taskbook != nil {
+		taskbookID = taskbook.ID
+		ready = make([]string, 0, len(taskbook.Tasks))
+		for id := range taskbook.Tasks {
+			ready = append(ready, id)
+		}
 	}
 	sort.Strings(ready)
 	reduced, err := state.Reduce(nil, message.Operation, message.Evidence, state.ReduceFacts{
-		ObjectFormat: engine.format, GenesisTaskbookID: taskbook.ID, GenesisReadyTasks: ready,
+		ObjectFormat: engine.format, GenesisTaskbookID: taskbookID, GenesisReadyTasks: ready,
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -329,6 +345,12 @@ func (engine verifier) verifyGenesis(
 }
 
 func (engine verifier) contractsForState(ctx context.Context, current *state.State) (*contracts.Architecture, *contracts.Taskbook, error) {
+	if current.Project.Architecture == nil {
+		if current.Project.Taskbook != nil || len(current.Tasks) != 0 {
+			return nil, nil, fmt.Errorf("bootstrap State cannot contain Taskbook data")
+		}
+		return nil, nil, nil
+	}
 	architectureData, err := engine.runner.ReadBlob(ctx, current.Project.Architecture.BlobOID)
 	if err != nil {
 		return nil, nil, err

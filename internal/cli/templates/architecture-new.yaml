@@ -1,0 +1,23 @@
+schema: chassiss.architecture/v1
+id: ARCHITECTURE-001
+
+overview: |-
+  Describe the system boundary, major data flows, and operational environment.
+
+principles:
+  - Keep responsibilities and compatibility boundaries explicit.
+
+modules:
+  root:
+    title: Project
+    description: |-
+      Replace this bootstrap node with audited module boundaries.
+    paths:
+      - "**"
+    requires: []
+
+apis: {}
+schemas: {}
+dependencies: {}
+configs: {}
+extensions: {}

@@ -1,6 +1,6 @@
 ---
 name: chassiss
-description: Operate a CHASSISS v1 signed project safely through its trusted public CLI. Use when entering a registered CHASSISS project, selecting or executing a Task, inspecting verified context, managing a CLI-owned worktree, submitting work, reviewing or integrating a candidate, maintaining Architecture or Taskbooks, or responding to a structured CHASSISS refusal.
+description: Adopt an existing Git project into CHASSISS or operate a CHASSISS v1 signed project safely through its trusted public CLI. Use when bootstrapping source history, establishing Architecture, entering a registered project, executing a Task, managing a CLI-owned worktree, reviewing or integrating a candidate, maintaining Taskbooks, or responding to a structured refusal.
 ---
 
 # CHASSISS
@@ -9,6 +9,10 @@ Use this Skill's `scripts/chassiss` launcher as the only protocol and Git workfl
 interface. The launcher selects the bundled macOS/Linux binary for the current
 platform and verifies its digest before execution. Do not parse protocol files,
 infer authority, or manipulate repository state yourself.
+
+For an existing Git repository that is not yet a CHASSISS Project, read and
+follow [references/onboarding.md](references/onboarding.md). The old commits
+remain non-authoritative source history; never reinterpret them as Transitions.
 
 ## Enter a project
 

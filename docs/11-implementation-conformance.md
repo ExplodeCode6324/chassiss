@@ -105,7 +105,7 @@ Git command execution 必须使用 argv array，不通过 shell string。所有 
 5. Semantic Operation、Execution Evidence 与 deterministic Reducers；
 6. first-parent verifier/checkpoint；
 7. local registry/pending Operation；
-8. init/clone/sync/status/context；
+8. init/bootstrap/clone/sync/status/context；
 9. Task start 与 managed worktree；
 10. Work commit/check/submit；
 11. Review Context/Report；
@@ -176,6 +176,7 @@ expected Error code（失败向量）
 必须覆盖：
 
 - valid Root Genesis self-sign；
+- valid Root source bootstrap self-sign and exact history-document binding；
 - wrong Root fingerprint；
 - valid parent Grant signature；
 - next State self-authorization attempt；
@@ -193,7 +194,7 @@ expected Error code（失败向量）
 
 必须覆盖：
 
-- zero-parent Genesis；
+- zero-parent Genesis/source bootstrap；
 - one-parent ordinary Transition；
 - two-parent exact Integration；
 - Integration parent order swapped；
@@ -313,6 +314,13 @@ expected Error code（失败向量）
 - work remove 拒绝 dirty/unreachable data，除非显式 destructive confirmation；
 - cache clean 不删除 active/pending/trust data；
 - remote set 先验证 identity/ancestry。
+- bootstrap 要求空 target 和 full source commit OID，拒绝 protected collision、
+  submodule、非法 path 与逃逸 symlink；
+- bootstrap 不复制 source `.git`/refs，State 只保存 compact source anchor；
+- bootstrap 阶段拒绝 Authority add/revoke 与 Architecture establish 之外的
+  Transition；
+- `architecture.established` 要求 null base、candidate ID 与 Operation target
+  一致、global scope，并保持 source history document exact；
 - Owner Apply 拒绝 active workflow、pending Operation、worktree 和协议文件；
 - Owner Apply 只 snapshot 当前目录所属 registered non-managed worktree 的
   repository root，且不接受 source path 参数；
@@ -355,7 +363,8 @@ CLI 必须声明支持的 exact protocol majors。
 - 支持 `chassiss/v1`：可读写；
 - 未知 major：拒绝 mutation；
 - 若有专门 legacy reader：只读 verify/export；
-- 不允许 silent upgrade、dual-write 或 automatic import。
+- 不允许 silent upgrade、dual-write 或把旧 history 自动解释成 Transition；
+  显式 source bootstrap 只导入 exact ordinary snapshot。
 
 ## 17. v1 完成条件
 
@@ -363,7 +372,7 @@ CLI 必须声明支持的 exact protocol majors。
 
 1. 全部 docs 字段/Action/Command 有 schema 或 parser；
 2. 所有 Reducer 有 golden vectors；
-3. full verify 可从 Genesis 重建 current State；
+3. full verify 可从 Genesis/source bootstrap 重建 current State；
 4. clone→Grant discover→Taskbook open→start→commit→submit→review→integrate→
    Workflow Closure Checks→Taskbook archive→next Taskbook 端到端通过；
 5. concurrent CAS/retry 与 push-unknown 恢复通过；
@@ -376,6 +385,8 @@ CLI 必须声明支持的 exact protocol majors。
 11. Local identity State/cache 中不存在 Grant object、cached Grant ID 或
     持久匹配结果；
 12. Owner Apply 只在静默 workflow 条件下通过。
+13. existing source bootstrap→Grant→Architecture establish→Taskbook open
+    端到端通过，旧 history 保持非权威。
 
 ## 18. 锁版流程
 

@@ -171,13 +171,18 @@ func projectEnvelope(command string, context *projectContext) Envelope {
 		ID: verified.State.Project.ID, Protocol: protocol.ProtocolID,
 		RootFingerprint: verified.RootFingerprint,
 	}
+	var architectureBlob *string
+	if verified.State.Project.Architecture != nil {
+		value := verified.State.Project.Architecture.BlobOID
+		architectureBlob = &value
+	}
 	var taskbookBlob *string
 	if verified.State.Project.Taskbook != nil {
 		value := verified.State.Project.Taskbook.BlobOID
 		taskbookBlob = &value
 	}
 	envelope.Snapshot = &SnapshotBody{
-		ArchitectureBlob: verified.State.Project.Architecture.BlobOID,
+		ArchitectureBlob: architectureBlob,
 		MainCommit:       verified.Head, Offline: false, StateDigest: verified.StateDigest,
 		TaskbookBlob: taskbookBlob, Trust: "verified",
 	}

@@ -61,6 +61,9 @@ func architectureValidateCommand(ctx context.Context, invocation invocation) (En
 		if loadErr != nil {
 			return Envelope{}, loadErr
 		}
+		if project.Verified.State.Project.Architecture == nil {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture is not established.")
+		}
 		data, err = project.Runner.ReadBlob(ctx, project.Verified.State.Project.Architecture.BlobOID)
 	}
 	if err != nil {
@@ -86,6 +89,9 @@ func taskbookValidateCommand(ctx context.Context, invocation invocation) (Envelo
 	project, err := loadProject(ctx, "", false)
 	if err != nil {
 		return Envelope{}, err
+	}
+	if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
+		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Establish Architecture before validating a Taskbook.")
 	}
 	data, err := os.ReadFile(invocation.Value("file"))
 	if err != nil {

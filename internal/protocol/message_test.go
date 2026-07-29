@@ -72,3 +72,18 @@ func TestTransitionMessageRejectsFreeText(t *testing.T) {
 		t.Fatal("expected free text rejection")
 	}
 }
+
+func TestArchitectureOperationRequiresArchitectureTarget(t *testing.T) {
+	operation := Operation{
+		Schema: OperationSchema, OperationID: "OPR-01BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.established", Project: "PRJ-EXAMPLE",
+		Authority: "grant:GRT-ARCHITECT-01", Target: "TASK-001",
+		Preconditions: map[string]any{"architecture": nil, "taskbook": nil},
+		Payload: map[string]any{
+			"candidate_blob": strings.Repeat("a", 40), "reason": "audited source",
+		},
+	}
+	if err := operation.Validate(); err == nil {
+		t.Fatal("Architecture operation unexpectedly accepted a non-Architecture target")
+	}
+}

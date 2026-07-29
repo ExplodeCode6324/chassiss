@@ -22,9 +22,13 @@
 | Role credential 分发 | Agent 本地生成 Ed25519 key 和 proof-of-possession Grant Request；Root 离线审批/签名 | Root 不接触 Agent private key，Grant 内容显式可审计 |
 | Reviewer/Owner 由 role 名称表达 | Review 由 capability 与签名 Report 表达；Owner Apply 是受限 Action | 协议身份不依赖 profile 名称，人工接管仍受 State 与 whitelist 约束 |
 
-这些变化是语义重写，不提供自动 import、dual-write 或 silent upgrade。旧项目应
-先做只读导出，再由 Master 为新 v1 Project 明确创建 Architecture、Taskbook、
-Root trust anchor 和 Genesis。
+这些变化是语义重写，不提供 dual-write 或 silent upgrade。已有 Git 项目可以
+使用显式 source bootstrap：Master 固定 full source commit，CLI 把 exact
+ordinary snapshot 导入新的零 parent Project，旧 commit/tree 和人工整理摘要
+写入 protected `docs/chassiss/onboarding/source-history.md` 并由 compact State
+anchor 绑定。旧 commits 不成为 CHASSISS Transition。Root 签发
+`architecture.establish` Grant 后，Agent 审计并建立首份 Architecture，再打开
+第一轮 Taskbook。
 
 ## 3. 当前实现选择
 
@@ -42,6 +46,9 @@ Root trust anchor 和 Genesis。
   checkout，使子进程 `chassiss verify` 看到正确上下文。
 - 通用 Skill 只调用公开 CLI，不解析 State/Git；捆绑 macOS/Linux
   arm64/amd64 静态 CLI，并由 launcher 校验 manifest digest。
+- `bootstrap` 只读导入 full source commit 的普通 blobs，拒绝 protected
+  collision、submodule 与逃逸 symlink；不复制 source `.git`、refs 或旧
+  Authority。
 
 ## 4. 已知 lock-candidate 差距
 

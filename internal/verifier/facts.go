@@ -43,7 +43,10 @@ func (engine verifier) verifyFacts(
 		facts.TaskResources = uniqueStrings(append(append([]string(nil), taskContract.Modules...), taskContract.Affects...))
 	}
 	switch action {
-	case "architecture.updated":
+	case "architecture.established":
+		if architecture != nil || parent.Project.Architecture != nil {
+			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture is already established.")
+		}
 		newBlob := stringFact(message.Evidence.Facts, "new_blob")
 		newData, err := engine.runner.ReadBlob(ctx, newBlob)
 		if err != nil {
@@ -53,7 +56,33 @@ func (engine verifier) verifyFacts(
 		if err != nil {
 			return facts, nil, nil, err
 		}
-		if newArchitecture.ID != architecture.ID || (engine.architectureID != "" && newArchitecture.ID != engine.architectureID) {
+		if message.Operation.Target != newArchitecture.ID {
+			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture target does not match the candidate ID.")
+		}
+		if engine.architectureID != "" {
+			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture was already established in history.")
+		}
+		for id := range newArchitecture.Resources() {
+			facts.TargetResources = append(facts.TargetResources, id)
+		}
+		sort.Strings(facts.TargetResources)
+		facts.RequireGlobalScope = true
+	case "architecture.updated":
+		if architecture == nil || parent.Project.Architecture == nil {
+			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture is not established.")
+		}
+		newBlob := stringFact(message.Evidence.Facts, "new_blob")
+		newData, err := engine.runner.ReadBlob(ctx, newBlob)
+		if err != nil {
+			return facts, nil, nil, err
+		}
+		newArchitecture, err := contracts.ParseArchitecture(newData)
+		if err != nil {
+			return facts, nil, nil, err
+		}
+		if message.Operation.Target != newArchitecture.ID ||
+			newArchitecture.ID != architecture.ID ||
+			(engine.architectureID != "" && newArchitecture.ID != engine.architectureID) {
 			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture ID cannot change.")
 		}
 		diff := contracts.DiffArchitecture(architecture, newArchitecture, parent.Project.Architecture.BlobOID, newBlob)

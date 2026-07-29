@@ -44,6 +44,7 @@ chassiss version
 chassiss help [command]
 
 chassiss init
+chassiss bootstrap
 chassiss clone
 chassiss sync
 chassiss verify
@@ -96,6 +97,7 @@ chassiss architecture requires
 chassiss architecture required-by
 chassiss architecture impact
 chassiss architecture validate
+chassiss architecture establish
 chassiss architecture update
 
 chassiss key generate
@@ -163,7 +165,33 @@ chassiss init
 目录中的现有普通文件可以进入 Genesis tree，但 private/local protected data
 必须拒绝。
 
-### 4.4 `clone`
+### 4.4 `bootstrap`
+
+```text
+chassiss bootstrap
+  --project <project-id>
+  --source <existing-git-repository>
+  --ref <full-source-commit-oid>
+  --root-key <private-key-handle>
+  [--history <outside-markdown>]
+  [--remote <url>]
+```
+
+命令必须在空目标目录运行。它只读解析 source commit/tree，把普通 blob 和安全
+相对 symlink 重新写入新 Project object store，不复制 source `.git` 或旧 refs。
+source `.chassiss/**`、CHASSISS protected path collision、submodule、非法 path
+或逃逸 symlink 必须拒绝。
+
+CLI 生成 `docs/chassiss/onboarding/source-history.md`，记录 source commit/tree、
+object format、导入路径数量和可选人工历史摘要，并创建零 parent、Root 自签的
+`project.bootstrap`。新 State 的 Architecture/Taskbook 为 null；旧 commit
+及其祖先是非权威参考。
+
+Bootstrap 后只允许 Root add/revoke Grant，或由具备
+`architecture.establish`、全局 Task/Resource scope 的 Grant 建立首份
+Architecture。普通 Task workflow 在 Architecture establish 前必须拒绝。
+
+### 4.5 `clone`
 
 ```text
 chassiss clone <remote> <directory>
@@ -179,7 +207,7 @@ ancestry 和 current main 后才登记本地 Project。
 缺少 Root fingerprint 或 checkpoint 时只允许显式
 `--untrusted-read-only`；该 checkout 不能 mutation。
 
-### 4.5 `sync`
+### 4.6 `sync`
 
 ```text
 chassiss sync [--all-work] [--prune]
@@ -191,7 +219,7 @@ pending Operation，推进 local checkpoint。
 `--prune` 只删除已确认进入 main 或已归档的本地/远程临时 ref，不删除 Archive
 Ref 或 active worktree。
 
-### 4.6 `verify`
+### 4.7 `verify`
 
 ```text
 chassiss verify [--full] [--commit <oid>] [--ref <ref>]
@@ -203,7 +231,7 @@ chassiss verify [--full] [--commit <oid>] [--ref <ref>]
 Archive Refs；本地 verified index 可以缓存要求集合，但 cache miss 时必须从
 history 重建。
 
-### 4.7 `status`
+### 4.8 `status`
 
 ```text
 chassiss status [--task <task-id>] [--offline]
@@ -213,7 +241,7 @@ chassiss status [--task <task-id>] [--offline]
 operations、Task phases、worktrees 和 remote divergence。它不返回完整
 Contract。
 
-### 4.8 `context`
+### 4.9 `context`
 
 ```text
 chassiss context [<task-id>]
@@ -226,7 +254,7 @@ chassiss context [<task-id>]
 Task 摘要；有 Task 时返回 effective Contract、Architecture slice、
 dependencies、runtime State、worktree 和 available actions。
 
-### 4.9 `log`
+### 4.10 `log`
 
 ```text
 chassiss log
@@ -239,7 +267,7 @@ chassiss log
 解析 verified first-parent Transition history，不直接暴露未经验证的 raw Git
 log 作为协议事实。
 
-### 4.10 `file show`
+### 4.11 `file show`
 
 ```text
 chassiss file show <repo-relative-path>
@@ -603,18 +631,22 @@ CAS 期间只出现纯 Authority Transition 时 CLI 可以在新 parent 重跑 C
 
 ```text
 chassiss architecture show <resource-id> [--file <candidate>]
-chassiss architecture draft --output <outside-repo-path>
+chassiss architecture draft [--new] --output <outside-repo-path>
 chassiss architecture diff --file <candidate>
 chassiss architecture requires <resource-id> [--transitive]
 chassiss architecture required-by <resource-id> [--transitive]
 chassiss architecture impact <resource-id>
 chassiss architecture validate [--file <candidate>]
+chassiss architecture establish --file <candidate> --reason <text>
 chassiss architecture update --file <candidate> --reason <text>
 ```
 
 `impact` 返回受影响 Resources、Modules、ready/nonterminal Tasks 与原因路径。
-`draft/diff/validate` 可在任意时刻只读使用；`update` 只允许没有活动 Taskbook，
-候选 base Architecture blob 必须匹配 current State。
+Source bootstrap 使用 `draft --new` 创建带 null base sidecar 的外部候选；
+`establish` 要求 Architecture/Taskbook 均为 null 和
+`architecture.establish` global Grant。Architecture 建立后，
+`draft/diff/validate` 可只读使用；`update` 只允许没有活动 Taskbook，候选 base
+Architecture blob 必须匹配 current State。
 
 ## 11. Key 与 Grant
 

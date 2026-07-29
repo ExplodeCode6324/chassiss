@@ -244,9 +244,10 @@ func initCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 	}
 	envelope := baseEnvelope("init")
 	envelope.Project = &ProjectBody{ID: projectID, Protocol: protocol.ProtocolID, RootFingerprint: rootFingerprint}
+	architectureValue := architectureBlob
 	taskbookValue := taskbookBlob
 	envelope.Snapshot = &SnapshotBody{
-		ArchitectureBlob: architectureBlob, MainCommit: commit, Offline: false,
+		ArchitectureBlob: &architectureValue, MainCommit: commit, Offline: false,
 		StateDigest: stateDigest, TaskbookBlob: &taskbookValue, Trust: "verified",
 	}
 	evidenceDigest, _ := protocol.ObjectDigest("execution-evidence", evidence)
@@ -282,8 +283,10 @@ func scanInitialTree(ctx context.Context, runner gitstore.Runner, repository str
 		if err := contracts.ValidateRepoPath(path); err != nil {
 			return nil, protocol.WrapError(protocol.ErrPathEncodingInvalid, protocol.CategoryValidation, "Initial tree contains an invalid path.", err)
 		}
-		if strings.HasPrefix(path, ".chassiss/") {
-			return nil, protocol.NewError(protocol.ErrDirectGitStateDetected, protocol.CategoryValidation, "Existing .chassiss local/protocol data is prohibited before init.")
+		if strings.HasPrefix(path, ".chassiss/") || contracts.IsProtectedPath(path) {
+			failure := protocol.NewError(protocol.ErrDirectGitStateDetected, protocol.CategoryValidation, "Existing CHASSISS protected data is prohibited before init.")
+			failure.Details["path"] = path
+			return nil, failure
 		}
 		absolute := filepath.Join(repository, filepath.FromSlash(path))
 		info, err := os.Lstat(absolute)

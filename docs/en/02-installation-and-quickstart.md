@@ -42,6 +42,12 @@ chassiss context --json
 zero-parent Root self-signed Genesis. Git history owned by the target directory
 is rejected; a parent directory's unrelated repository is not inherited.
 
+Do not disguise an existing Git repository as new by deleting `.git`. Use the
+Root-only `bootstrap` flow to pin a full source commit/tree, generate the
+non-authoritative history document, and authorize an Agent to establish the
+first Architecture. See
+[Existing project onboarding](13-existing-project-onboarding.md).
+
 ## Trusted clone
 
 Obtain the Project ID, Genesis Root fingerprint, and minimum checkpoint through

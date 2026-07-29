@@ -36,7 +36,7 @@ func (engine verifier) verifyWhitelist(
 		return true
 	}
 	switch action {
-	case "architecture.updated":
+	case "architecture.established", "architecture.updated":
 		if !exact(".chassiss/state.json", "docs/architecture.yaml") {
 			return whitelistError(action, changed)
 		}

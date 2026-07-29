@@ -39,6 +39,12 @@ chassiss taskbook update --file /outside/taskbook.yaml --reason "..." --json
 Architecture update 只允许没有 active Taskbook 时执行。Taskbook update 只能修改
 协议允许的 ready 范围，不能改变 non-ready Task 合同。
 
+已有项目的 Root-only bootstrap 初始没有 Architecture。使用
+`architecture draft --new` 创建外部候选，再由具有
+`architecture.establish` 和 global scope 的 Agent 执行
+`architecture establish --file ... --reason ...`。Architecture 建立前不能打开
+Taskbook 或运行普通开发 Task。
+
 全部 Tasks terminal 后，Reviewer 先执行
 `taskbook archive --prepare --output <file>`，得到按 exact Tasks 和 completion
 criteria 填充 response slot 的 Closure Report，填写后执行

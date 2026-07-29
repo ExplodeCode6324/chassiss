@@ -30,7 +30,7 @@ type ProjectBody struct {
 }
 
 type SnapshotBody struct {
-	ArchitectureBlob string  `json:"architecture_blob"`
+	ArchitectureBlob *string `json:"architecture_blob"`
 	MainCommit       string  `json:"main_commit"`
 	Offline          bool    `json:"offline"`
 	StateDigest      string  `json:"state_digest"`

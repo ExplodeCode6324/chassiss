@@ -42,6 +42,12 @@ Architecture can change only without an active Taskbook. Taskbook updates may
 change only the protocol-permitted ready portions and cannot mutate a non-ready
 Task contract.
 
+An existing-project Root-only bootstrap initially has no Architecture. Create
+an external candidate with `architecture draft --new`, then let an Agent with
+`architecture.establish` and global scope run
+`architecture establish --file ... --reason ...`. No Taskbook or ordinary
+development Task may start before establishment.
+
 After every Task is terminal, a Reviewer runs
 `taskbook archive --prepare --output <file>` to create a hydrated Closure Report
 with exact Task and completion-criteria response slots, completes it, and runs

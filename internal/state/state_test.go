@@ -70,6 +70,68 @@ func TestSparseTaskValidation(t *testing.T) {
 	}
 }
 
+func TestBootstrapReducerEstablishesFirstArchitecture(t *testing.T) {
+	rootPublic := publicKey(t)
+	agentPublic := publicKey(t)
+	sourceCommit := strings.Repeat("1", 40)
+	sourceTree := strings.Repeat("2", 40)
+	historyBlob := strings.Repeat("3", 40)
+	bootstrap := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-01BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "project.bootstrap", Project: "PRJ-BOOTSTRAP",
+		Authority: "root:KEY-ROOT-BOOTSTRAP", Target: "PRJ-BOOTSTRAP",
+		Preconditions: map[string]any{},
+		Payload: map[string]any{
+			"project_id": "PRJ-BOOTSTRAP", "root_key_id": "KEY-ROOT-BOOTSTRAP",
+			"root_public_key": rootPublic, "source_commit": sourceCommit,
+			"source_history_blob": historyBlob, "source_object_format": "sha1",
+			"source_tree": sourceTree,
+		},
+	}
+	current, err := Reduce(nil, bootstrap, evidenceFor(t, bootstrap, nil, map[string]any{
+		"initial_tree": strings.Repeat("4", 40), "source_commit": sourceCommit,
+		"source_history_blob": historyBlob, "source_tree": sourceTree,
+	}), ReduceFacts{ObjectFormat: "sha1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Project.Architecture != nil || current.Project.Source == nil ||
+		current.Project.Source.Commit != sourceCommit {
+		t.Fatalf("unexpected bootstrap projection: %#v", current.Project)
+	}
+	grant := Grant{
+		Actor: "architect", Capabilities: []string{"architecture.establish"},
+		KeyID: "KEY-ARCHITECT-01", Limits: Limits{Mode: "unbounded"},
+		PublicKey: agentPublic, Scope: Scope{Tasks: []string{"*"}, Resources: []string{"*"}},
+	}
+	current = reduceStep(t, current, protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-11BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "authority.grant-added", Project: "PRJ-BOOTSTRAP",
+		Authority: "root:KEY-ROOT-BOOTSTRAP", Target: "GRT-ARCHITECT-01",
+		Preconditions: map[string]any{"grant_absent": true, "root_key_id": "KEY-ROOT-BOOTSTRAP"},
+		Payload: map[string]any{
+			"grant": toMap(t, grant), "grant_id": "GRT-ARCHITECT-01", "request_digest": nil,
+		},
+	}, map[string]any{}, ReduceFacts{})
+	architectureBlob := strings.Repeat("5", 40)
+	current = reduceStep(t, current, protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-21BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.established", Project: "PRJ-BOOTSTRAP",
+		Authority: "grant:GRT-ARCHITECT-01", Target: "ARCHITECTURE-001",
+		Preconditions: map[string]any{"architecture": nil, "taskbook": nil},
+		Payload: map[string]any{
+			"candidate_blob": architectureBlob, "reason": "audited source",
+		},
+	}, map[string]any{"new_blob": architectureBlob}, ReduceFacts{
+		TargetResources: []string{"module:root"}, RequireGlobalScope: true,
+	})
+	if current.Project.Architecture == nil ||
+		current.Project.Architecture.BlobOID != architectureBlob ||
+		current.Project.Source == nil || current.Project.Source.Commit != sourceCommit {
+		t.Fatalf("Architecture establish lost bootstrap facts: %#v", current.Project)
+	}
+}
+
 func TestReducerLifecycle(t *testing.T) {
 	rootPublic := publicKey(t)
 	agentPublic := publicKey(t)

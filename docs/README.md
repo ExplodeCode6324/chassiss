@@ -65,6 +65,8 @@
 ## v1 核心边界
 
 - 一个 Git repository 是一个 Project。
+- 已有 Git 项目通过显式 Root-only source bootstrap 接入；旧 commits 只作为
+  `docs` 中的非权威参考。
 - `refs/heads/main` 是唯一权威共享主线。
 - `.chassiss/state.json` 只保存验证下一次转换必需的当前投影。
 - `docs/architecture.yaml` 是跨工作流架构合同。
@@ -83,7 +85,8 @@
 - Grant Authority 只来自 verified shared State/history；本地不另存 Grant
   object 或 discovery cache。
 - 不依赖 GitHub、GitLab、外部数据库、外部 CI 或 Artifact Store。
-- 不提供跨版本自动迁移，只提供只读导出。
+- 不提供跨版本 silent upgrade；已有项目接入必须固定 source commit/tree 并
+  建立新的 Root 签名 bootstrap。
 
 ## 明确排除
 
@@ -99,7 +102,7 @@ Global Budget / Reservation
 自由 Git branch / merge / rebase
 自动 Taskbook merge
 历史重写或裁剪
-跨版本 import
+把旧 commit 解释为 CHASSISS Transition
 模型、token、费用计量
 ```
 

@@ -22,14 +22,12 @@ examples, `chassiss` means the manifest-digest-verified CLI shipped with the
 trusted Skill. Keep private keys, requests, and document drafts outside the
 project directory.
 
-> **One-time v1 bootstrap constraint:** Agents may submit public keys and Grant
-> Requests first, but a Grant cannot enter the project ledger before Genesis.
-> Genesis currently requires the first Architecture and Taskbook. For the first
-> project setup, complete the human decisions in steps 0–4, then run `init`
-> followed by `grant add` in the order shown in step 4. Authorizing an
-> Architecture Agent in the ledger before the architecture discussion would
-> require a new Root-only bootstrap protocol state, not merely a different
-> command order.
+> **One-time new-project constraint:** Standard `init` records the first
+> Architecture and Taskbook in Genesis. Complete the human decisions in steps
+> 0–4, then run `init` followed by `grant add`. Existing Git projects use the
+> Root-only `bootstrap` flow instead: pin an exact source snapshot, grant the
+> Architecture Agent, then audit and establish the first Architecture. See
+> [Existing project onboarding](docs/en/13-existing-project-onboarding.md).
 
 ### 0. Prepare the project
 
@@ -188,6 +186,7 @@ arm64/amd64 CLIs.
 - [English guides](docs/en/README.md)
 - [中文使用指南](docs/cn/README.md)
 - [Implementation and legacy differences](docs/12-implementation-differences.md)
+- [Existing project onboarding](docs/en/13-existing-project-onboarding.md)
 - [Cross-implementation fixtures](fixtures/README.md)
 
 Use `chassiss help --json` as the machine-readable command source. Stable Error

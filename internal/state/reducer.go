@@ -39,9 +39,12 @@ func Reduce(parent *State, operation protocol.Operation, evidence protocol.Execu
 	if err := evidence.Validate(operation, facts.ObjectFormat); err != nil {
 		return nil, fmt.Errorf("%s: %w", protocol.ErrEvidenceInvalid, err)
 	}
-	if operation.Action == "project.genesis" {
+	if operation.Action == "project.genesis" || operation.Action == "project.bootstrap" {
 		if parent != nil {
-			return nil, fmt.Errorf("%s: Genesis cannot have a parent State", protocol.ErrGenesisInvalid)
+			return nil, fmt.Errorf("%s: Project bootstrap cannot have a parent State", protocol.ErrGenesisInvalid)
+		}
+		if operation.Action == "project.bootstrap" {
+			return reduceBootstrap(operation, evidence, facts)
 		}
 		return reduceGenesis(operation, evidence, facts)
 	}
@@ -61,12 +64,20 @@ func Reduce(parent *State, operation protocol.Operation, evidence protocol.Execu
 	if err != nil {
 		return nil, err
 	}
+	if parent.Project.Architecture == nil &&
+		operation.Action != "authority.grant-added" &&
+		operation.Action != "authority.grant-revoked" &&
+		operation.Action != "architecture.established" {
+		return nil, fmt.Errorf("%s: bootstrap permits only authority changes and Architecture establish", protocol.ErrOperationInvalid)
+	}
 	next, err := cloneState(parent)
 	if err != nil {
 		return nil, err
 	}
 
 	switch operation.Action {
+	case "architecture.established":
+		err = reduceArchitectureEstablished(next, operation, evidence)
 	case "architecture.updated":
 		err = reduceArchitectureUpdated(next, operation, evidence)
 	case "taskbook.opened":
@@ -220,7 +231,7 @@ func reduceGenesis(operation protocol.Operation, evidence protocol.ExecutionEvid
 		Protocol: protocol.ProtocolID,
 		Project: Project{
 			ID: projectID,
-			Architecture: BlobRef{
+			Architecture: &BlobRef{
 				Path: "docs/architecture.yaml", BlobOID: architectureBlob,
 			},
 			Taskbook: &TaskbookRef{
@@ -248,7 +259,67 @@ func reduceGenesis(operation protocol.Operation, evidence protocol.ExecutionEvid
 	return state, nil
 }
 
+func reduceBootstrap(operation protocol.Operation, evidence protocol.ExecutionEvidence, facts ReduceFacts) (*State, error) {
+	if operation.Authority != "root:"+stringValue(operation.Payload, "root_key_id") {
+		return nil, fmt.Errorf("%s: bootstrap authority must select its declared Root", protocol.ErrGenesisInvalid)
+	}
+	projectID := stringValue(operation.Payload, "project_id")
+	if projectID != operation.Project || operation.Target != projectID {
+		return nil, fmt.Errorf("%s: bootstrap Project identifiers disagree", protocol.ErrGenesisInvalid)
+	}
+	source := SourceRef{
+		Commit:       stringValue(operation.Payload, "source_commit"),
+		HistoryBlob:  stringValue(operation.Payload, "source_history_blob"),
+		HistoryPath:  "docs/chassiss/onboarding/source-history.md",
+		ObjectFormat: stringValue(operation.Payload, "source_object_format"),
+		Tree:         stringValue(operation.Payload, "source_tree"),
+	}
+	if stringValue(evidence.Facts, "source_commit") != source.Commit ||
+		stringValue(evidence.Facts, "source_history_blob") != source.HistoryBlob ||
+		stringValue(evidence.Facts, "source_tree") != source.Tree {
+		return nil, fmt.Errorf("%s: bootstrap source evidence mismatch", protocol.ErrGenesisInvalid)
+	}
+	next := &State{
+		Schema: protocol.StateSchema, Protocol: protocol.ProtocolID,
+		Project: Project{Architecture: nil, ID: projectID, Source: &source, Taskbook: nil},
+		Authority: Authority{
+			Root: Root{
+				KeyID:     stringValue(operation.Payload, "root_key_id"),
+				PublicKey: stringValue(operation.Payload, "root_public_key"),
+			},
+			Grants: map[string]Grant{},
+		},
+		Tasks: map[string]TaskState{},
+	}
+	if err := next.Validate(facts.ObjectFormat); err != nil {
+		return nil, fmt.Errorf("%s: %w", protocol.ErrGenesisInvalid, err)
+	}
+	return next, nil
+}
+
+func reduceArchitectureEstablished(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence) error {
+	if next.Project.Architecture != nil {
+		return fmt.Errorf("%s: Architecture is already established", protocol.ErrArchitectureInvalid)
+	}
+	if next.Project.Source == nil || next.Project.Taskbook != nil || len(next.Tasks) != 0 ||
+		operation.Preconditions["architecture"] != nil || operation.Preconditions["taskbook"] != nil {
+		return fmt.Errorf("%s: Architecture establish requires an empty source bootstrap", protocol.ErrArchitectureInvalid)
+	}
+	newBlob := stringValue(evidence.Facts, "new_blob")
+	if newBlob == "" || newBlob != stringValue(operation.Payload, "candidate_blob") {
+		return fmt.Errorf("%s: candidate Architecture blob mismatch", protocol.ErrArchitectureInvalid)
+	}
+	if strings.TrimSpace(stringValue(operation.Payload, "reason")) == "" {
+		return fmt.Errorf("%s: Architecture establish reason is required", protocol.ErrOperationInvalid)
+	}
+	next.Project.Architecture = &BlobRef{Path: "docs/architecture.yaml", BlobOID: newBlob}
+	return nil
+}
+
 func reduceArchitectureUpdated(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence) error {
+	if next.Project.Architecture == nil {
+		return fmt.Errorf("%s: Architecture is not established", protocol.ErrArchitectureInvalid)
+	}
 	if next.Project.Taskbook != nil || operation.Preconditions["taskbook"] != nil {
 		return fmt.Errorf("%s: Architecture update requires no active Taskbook", protocol.ErrTaskbookAlreadyActive)
 	}

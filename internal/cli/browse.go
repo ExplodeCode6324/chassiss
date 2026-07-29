@@ -77,6 +77,9 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 		}
 	}
 	if resourceID := invocation.Value("resource"); resourceID != "" {
+		if project.Verified.Architecture == nil {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture is not established.")
+		}
 		resource, exists := project.Verified.Architecture.Resources()[resourceID]
 		if !exists {
 			return Envelope{}, protocol.NewError(protocol.ErrReferenceNotFound, protocol.CategoryValidation, "Architecture Resource does not exist.")

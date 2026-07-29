@@ -16,6 +16,7 @@ not replace the normative specification in the parent directory.
 10. [Security model](10-security-model.md)
 11. [Testing and release](11-testing-and-release.md)
 12. [Legacy migration and differences](12-legacy-migration-and-differences.md)
+13. [Existing project onboarding](13-existing-project-onboarding.md)
 
-New readers should start with 01, 02, 03, 05, and 06.
-
+New projects should start with 01, 02, 03, 05, and 06. Read 13 first when
+adopting an existing project.

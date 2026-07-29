@@ -17,10 +17,24 @@ type ActionSpec struct {
 }
 
 var actionSpecs = map[string]ActionSpec{
+	"project.bootstrap": {
+		Name: "project.bootstrap", RootOnly: true, AllowedPathClass: "genesis",
+		PayloadFields: []string{
+			"project_id", "root_key_id", "root_public_key", "source_commit",
+			"source_history_blob", "source_object_format", "source_tree",
+		},
+		EvidenceFields: []string{"initial_tree", "source_commit", "source_history_blob", "source_tree"},
+	},
 	"project.genesis": {
 		Name: "project.genesis", RootOnly: true, AllowedPathClass: "genesis",
 		PayloadFields:  []string{"architecture_blob", "project_id", "root_key_id", "root_public_key", "taskbook_blob"},
 		EvidenceFields: []string{"architecture_blob", "initial_tree", "taskbook_blob"},
+	},
+	"architecture.established": {
+		Name: "architecture.established", Capability: "architecture.establish", AllowedPathClass: "architecture",
+		PayloadFields:      []string{"candidate_blob", "reason"},
+		PreconditionFields: []string{"architecture", "taskbook"},
+		EvidenceFields:     []string{"new_blob"},
 	},
 	"architecture.updated": {
 		Name: "architecture.updated", Capability: "architecture.update", AllowedPathClass: "architecture",
@@ -128,7 +142,7 @@ var actionSpecs = map[string]ActionSpec{
 
 var validCapabilities = map[string]struct{}{
 	"taskbook.update": {}, "taskbook.open": {}, "taskbook.archive": {},
-	"architecture.update": {}, "task.start": {}, "task.release": {},
+	"architecture.establish": {}, "architecture.update": {}, "task.start": {}, "task.release": {},
 	"task.block": {}, "task.resume": {}, "task.submit": {}, "task.cancel": {},
 	"task.supersede": {}, "review.attest": {}, "integration.apply": {},
 	"owner.apply": {},

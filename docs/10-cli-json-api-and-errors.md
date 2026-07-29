@@ -42,7 +42,7 @@ Human output 必须从同一 response object 渲染。
 
 ```json
 {
-  "architecture_blob": "<blob>",
+  "architecture_blob": "<blob-or-null>",
   "main_commit": "<commit>",
   "offline": false,
   "state_digest": "sha256:...",
@@ -61,6 +61,8 @@ rollback
 ```
 
 Mutation 只允许 `verified` 且 `offline=false`。
+`project.bootstrap` 到 `architecture.established` 之间，
+`architecture_blob=null`、`taskbook_blob=null`。
 
 ## 4. Identity
 
@@ -351,6 +353,7 @@ CHS_TASKBOOK_STALE
 CHS_ARCHITECTURE_STALE
 CHS_TASKBOOK_INVALID
 CHS_ARCHITECTURE_INVALID
+CHS_ARCHITECTURE_NOT_ESTABLISHED
 CHS_TASKBOOK_NOT_ACTIVE
 CHS_TASKBOOK_ALREADY_ACTIVE
 CHS_TASKBOOK_NOT_COMPLETE

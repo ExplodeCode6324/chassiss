@@ -19,14 +19,25 @@ Architecture 和 Taskbook。未知 major 必须拒绝 mutation。
 
 ## 2. Commit 类型
 
-### 2.1 Genesis Commit
+### 2.1 Genesis / Source Bootstrap Commit
 
-- Action 为 `project.genesis`；
+- 新项目 Action 为 `project.genesis`；已有项目接入 Action 为
+  `project.bootstrap`；
 - 零 parent；
-- tree 包含初始 `.chassiss/state.json`、`docs/architecture.yaml`、
-  `docs/taskbook.yaml` 和项目初始内容；
+- `project.genesis` tree 包含初始 `.chassiss/state.json`、
+  `docs/architecture.yaml`、`docs/taskbook.yaml` 和项目初始内容；
+- `project.bootstrap` tree 包含 exact source snapshot、
+  `.chassiss/state.json` 与
+  `docs/chassiss/onboarding/source-history.md`，但 Architecture/Taskbook
+  暂时为 null；
 - 由新 State 声明的 Root key 自签；
-- Project ID、Root fingerprint 和 Genesis commit 构成项目 identity bootstrap。
+- Project ID、Root fingerprint 和该零 parent commit 构成项目 identity
+  bootstrap。
+
+Source commit/tree 只证明 Root 选择了哪个已有源码快照。source commit 及其祖先
+不具备 CHASSISS Operation/Evidence/Grant 语义，不得被 verifier 当成
+Transition。bootstrap 之后只允许 Authority add/revoke 和
+`architecture.established`，直到首次 Architecture 建立。
 
 ### 2.2 Transition Commit
 
@@ -109,7 +120,9 @@ Overlay 是 whole-file/tree-entry replacement，不执行 line merge。相关 ma
 
 | Action | Authority/Capability | State 结果 |
 |---|---|---|
+| `project.bootstrap` | 新 Root 自签 | 创建 Root-only Project、source anchor，Architecture/Taskbook 为 null |
 | `project.genesis` | 新 Root 自签 | 创建 Project、Root、Architecture、Taskbook 与 ready Tasks |
+| `architecture.established` | `architecture.establish` | 为 source bootstrap 建立首份 Architecture |
 | `architecture.updated` | `architecture.update` | 无活动 Taskbook 时更新 Architecture blob |
 | `taskbook.opened` | `taskbook.open` | 创建下一轮活动 Taskbook 与 ready Tasks |
 | `taskbook.updated` | `taskbook.update` | 更新 Taskbook blob；增加/更新 ready Tasks |
@@ -142,7 +155,9 @@ Semantic Operation 只保存用户稳定选择，不保存会随 CAS parent 改�
 
 | Action | Operation payload exact 字段 |
 |---|---|
+| `project.bootstrap` | `project_id`、`root_key_id`、`root_public_key`、`source_commit`、`source_tree`、`source_object_format`、`source_history_blob` |
 | `project.genesis` | `project_id`、`root_key_id`、`root_public_key`、`architecture_blob`、`taskbook_blob` |
+| `architecture.established` | `candidate_blob`、`reason` |
 | `architecture.updated` | `candidate_blob`、`reason` |
 | `taskbook.opened` | `taskbook_id`、`candidate_blob`、`reason` |
 | `taskbook.updated` | `candidate_blob`、`reason` |
@@ -171,7 +186,9 @@ Execution Evidence 保存本次 exact parent 下可重算或可签名证明的�
 
 | Action | Evidence `facts` exact 字段 |
 |---|---|
+| `project.bootstrap` | `source_commit`、`source_tree`、`source_history_blob`、`initial_tree` |
 | `project.genesis` | `architecture_blob`、`taskbook_blob`、`initial_tree` |
+| `architecture.established` | `new_blob` |
 | `architecture.updated` | `old_blob`、`new_blob`、`semantic_diff` |
 | `taskbook.opened` | `architecture_blob`、`taskbook_blob`、`ready_tasks` |
 | `taskbook.updated` | `old_blob`、`new_blob`、`semantic_diff` |
@@ -255,7 +272,8 @@ Action-specific `preconditions` 也是 closed object：
 
 | Action | Preconditions exact 字段 |
 |---|---|
-| `project.genesis` | 空 object |
+| `project.genesis` / `project.bootstrap` | 空 object |
+| `architecture.established` | `architecture=null`、`taskbook=null` |
 | `architecture.updated` | `architecture_blob`、`taskbook`，后者必须为 null |
 | `taskbook.opened` | `architecture_blob`、`taskbook`，后者必须为 null |
 | `taskbook.updated` | `taskbook_blob` |
@@ -295,8 +313,9 @@ Results 不进入 Operation。Operation 使用 `operation` domain digest。
 ```
 
 Evidence exact 字段为 `schema`、`operation_digest`、`action`、`attempt`、
-`parent`、`facts`。Genesis 的 `parent` 必须为 null，其他 Action 必须为 full
-Git OID。`attempt` 从 1 开始；只有远端明确拒绝 CAS 且确认旧候选未发布后才能
+`parent`、`facts`。`project.genesis`/`project.bootstrap` 的 `parent` 必须为
+null，其他 Action 必须为 full Git OID。`attempt` 从 1 开始；只有远端明确拒绝
+CAS 且确认旧候选未发布后才能
 递增，v1 只允许整数 `1..3`。历史 verifier 不要求前序失败 Evidence 存在于
 Git。Evidence 使用 `execution-evidence` domain digest。
 
@@ -338,8 +357,8 @@ Evidence，从而全部被同一个 Git SSH signature 绑定。
 
 | Action | 允许变化 |
 |---|---|
-| `project.genesis` | 初始完整 tree |
-| `architecture.updated` | `docs/architecture.yaml`、`.chassiss/state.json` |
+| `project.genesis` / `project.bootstrap` | 初始完整 tree |
+| `architecture.established` / `architecture.updated` | `docs/architecture.yaml`、`.chassiss/state.json` |
 | `taskbook.opened` | `docs/taskbook.yaml`、`.chassiss/state.json` |
 | `taskbook.updated` | `docs/taskbook.yaml`、`.chassiss/state.json` |
 | `taskbook.archived` | 删除 `docs/taskbook.yaml`、新增唯一 archive path、`.chassiss/state.json` |
@@ -348,7 +367,7 @@ Evidence，从而全部被同一个 Git SSH signature 绑定。
 | 其他 Transition | 仅 `.chassiss/state.json` |
 
 任何 Transition 都禁止修改本地数据、private key 或 Git config。Integration
-和 Owner Apply 禁止修改 Architecture、Taskbook、Taskbook archive 或其他
+和 Owner Apply 禁止修改 Architecture、source history、Taskbook、Taskbook archive 或其他
 协议文件，即使 path scope 使用 `**`；Owner Apply 还禁止改变 State bytes。
 `owner.applied` 必须满足第 15 节的静默工作流条件。
 
@@ -382,7 +401,7 @@ Evidence facts 或“只验证字段 diff”模式。
 
 ## 9. Authority 取值
 
-非 Genesis Action 始终依据父 State：
+非 Genesis/bootstrap Action 始终依据父 State：
 
 ```text
 root:<key-id>
@@ -392,7 +411,8 @@ grant:<grant-id>
 候选 next State 中新增的 Root/Grant 不能授权产生自己的同一个 commit。
 
 Root 只可执行 `authority.grant-added`、`authority.grant-revoked`，并可直接
-执行 `task.superseded`。Root 也可以通过普通 Grant 获得其他 Task Capability；
+执行 `task.superseded`。Root-only bootstrap 阶段只允许前两种 Authority Action
+和由 Grant 执行的 `architecture.established`。Root 也可以通过普通 Grant 获得其他 Task Capability；
 此时 Authority 必须写对应 Grant。
 
 ## 10. Operation ID
@@ -448,7 +468,7 @@ Task projection 与 closing Integrations 均未改变，才可在新 parent 重�
 
 ## 12. Mainline 验证
 
-从 pinned Genesis 或 verified checkpoint 向目标 main：
+从 pinned Genesis/bootstrap 或 verified checkpoint 向目标 main：
 
 1. 验证目标是 checkpoint 的 descendant；
 2. 沿 first-parent 顺序读取每个 Transition；

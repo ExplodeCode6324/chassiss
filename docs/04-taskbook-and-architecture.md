@@ -522,7 +522,26 @@ R(A) intersects W(B)
 active/submitted/approved Task 即使 blocked 也继续占用资源。ready（包括
 blocked ready）、closed、cancelled、superseded 不占用。
 
-## 15. Architecture update
+## 15. Initial Architecture establish
+
+已有项目的 `project.bootstrap` 可以暂时令 Architecture 为 null。Root 审核
+并发布 `architecture.establish` Grant 后，Architecture Agent 从项目外候选执行
+`architecture.established`：
+
+1. parent 必须是 source bootstrap，Architecture/Taskbook 均为 null；
+2. 候选必须通过完整 YAML、closed schema、Resource Graph 与 path 校验；
+3. Operation target 必须等于候选的 Architecture ID；
+4. Grant 必须包含 `architecture.establish`、全局 Task scope 和全局 Resource
+   scope；
+5. exact candidate blob 写入 `docs/architecture.yaml` 和 State；
+6. Source anchor 与 `docs/chassiss/onboarding/source-history.md` 保持不变；
+7. Transition 完成后才允许 `taskbook.opened`。
+
+CLI 的机械校验不证明 Module/API/Schema/Dependency/Config 描述在语义上准确；
+首次 Architecture 必须由人类或独立 Reviewer 对照 adopted source snapshot
+复核。
+
+## 16. Architecture update
 
 `architecture.updated` 必须：
 
@@ -554,7 +573,7 @@ Architecture Semantic Diff exact object：
 所有 Resource arrays 规范排序、去重。调用者修改 overview/principles 时，
 Grant `scope.resources` 必须包含 `*`。删除的 Resource ID 永不复用。
 
-## 16. Taskbook open/update
+## 17. Taskbook open/update
 
 `taskbook.opened` 只允许 `project.taskbook=null`。它接受一个 source repo 外
 候选，要求全新 Taskbook/Requirement/Constraint/Task IDs，使用 current
@@ -607,7 +626,7 @@ Taskbook Action scope：
 stale candidate 不自动 merge。CLI 必须返回 current Taskbook/Architecture blob
 和差异，由 Planner 重新生成候选。
 
-## 17. Taskbook completion 与 archive
+## 18. Taskbook completion 与 archive
 
 `taskbook.archived` 必须：
 
@@ -686,7 +705,7 @@ Report 当成对新成果的批准。`push-unknown` 仍必须先对账，不能�
 Workflow Check 的 fail/error 在签名或 push archive Transition 前终止命令，
 不改变 main、Taskbook 或 State。
 
-## 18. Frozen Contract
+## 19. Frozen Contract
 
 `task.started` 同时冻结当前 Taskbook 与 Architecture blob：
 
@@ -706,7 +725,7 @@ parse(frozen_architecture_blob)
 没有活动 Taskbook 时更新，因此正常工作流不会跨 Architecture version；双
 blob freeze 仍用于完整历史验证。
 
-## 19. Context retrieval
+## 20. Context retrieval
 
 普通 Task Context 只返回：
 
