@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+skill_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+case "$(uname -s)" in
+	Darwin) bundle_os=darwin ;;
+	Linux) bundle_os=linux ;;
+	*)
+		echo "CHASSISS bundled CLI does not support this operating system." >&2
+		exit 126
+		;;
+esac
+
+case "$(uname -m)" in
+	arm64|aarch64) bundle_arch=arm64 ;;
+	x86_64|amd64) bundle_arch=amd64 ;;
+	*)
+		echo "CHASSISS bundled CLI does not support this architecture." >&2
+		exit 126
+		;;
+esac
+
+relative_path="bin/$bundle_os-$bundle_arch/chassiss"
+binary_path="$skill_dir/$relative_path"
+checksum_path="$skill_dir/manifest.sha256"
+
+if [ ! -f "$binary_path" ] || [ ! -f "$checksum_path" ]; then
+	echo "CHASSISS bundled CLI or checksum manifest is missing." >&2
+	exit 126
+fi
+
+expected=$(awk -v path="$relative_path" '$2 == path { print $1 }' "$checksum_path")
+if [ -z "$expected" ]; then
+	echo "CHASSISS bundled CLI is absent from the checksum manifest." >&2
+	exit 126
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+	actual=$(shasum -a 256 "$binary_path" | awk '{ print $1 }')
+elif command -v sha256sum >/dev/null 2>&1; then
+	actual=$(sha256sum "$binary_path" | awk '{ print $1 }')
+else
+	echo "No SHA-256 verifier is available for the CHASSISS bundled CLI." >&2
+	exit 126
+fi
+
+if [ "$actual" != "$expected" ]; then
+	echo "CHASSISS bundled CLI digest verification failed." >&2
+	exit 126
+fi
+
+exec "$binary_path" "$@"

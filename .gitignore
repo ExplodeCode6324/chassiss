@@ -1,0 +1,8 @@
+.DS_Store
+*.test
+/bin/
+/dist/
+/coverage/
+/chassiss
+*.prof
+*.out

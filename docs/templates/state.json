@@ -1,0 +1,28 @@
+{
+  "authority": {
+    "grants": {},
+    "root": {
+      "key_id": "KEY-ROOT-01",
+      "public_key": "ssh-ed25519 <root-public-key>"
+    }
+  },
+  "project": {
+    "architecture": {
+      "blob_oid": "0000000000000000000000000000000000000000",
+      "path": "docs/architecture.yaml"
+    },
+    "id": "PRJ-EXAMPLE",
+    "taskbook": {
+      "blob_oid": "0000000000000000000000000000000000000000",
+      "id": "TASKBOOK-001",
+      "path": "docs/taskbook.yaml"
+    }
+  },
+  "protocol": "chassiss/v1",
+  "schema": "chassiss.state/v1",
+  "tasks": {
+    "TASK-001": {
+      "phase": "ready"
+    }
+  }
+}

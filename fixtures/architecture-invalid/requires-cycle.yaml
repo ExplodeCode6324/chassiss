@@ -1,0 +1,25 @@
+schema: chassiss.architecture/v1
+id: ARCHITECTURE-CYCLE
+overview: Invalid cyclic resource graph.
+principles:
+  - Cycles are prohibited.
+modules:
+  one:
+    title: One
+    description: First module.
+    paths:
+      - one/**
+    requires:
+      - module:two
+  two:
+    title: Two
+    description: Second module.
+    paths:
+      - two/**
+    requires:
+      - module:one
+apis: {}
+schemas: {}
+dependencies: {}
+configs: {}
+extensions: {}

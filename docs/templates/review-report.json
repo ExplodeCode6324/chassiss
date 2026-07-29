@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "category": "architecture",
+      "paths": [],
+      "resources": [
+        "schema:state"
+      ],
+      "severity": "advisory",
+      "summary": "The implementation conforms to the declared State boundary."
+    }
+  ],
+  "results": {
+    "architecture": "conformant",
+    "contract": "pass",
+    "integration": "pass",
+    "requirements": "pass"
+  },
+  "reviewer_attention_responses": [
+    {
+      "attention": "Authorize from the parent State only.",
+      "response": "Verified in reducer tests and transition fixtures."
+    }
+  ],
+  "schema": "chassiss.review-report/v1",
+  "summary": "The exact candidate satisfies the frozen Task Contract.",
+  "verdict": "approve"
+}

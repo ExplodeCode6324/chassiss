@@ -1,0 +1,22 @@
+schema: chassiss.taskbook/v1
+id: TASKBOOK-EDIT-ME
+
+workflow:
+  title: Edit this workflow title
+  outcome: |-
+    Describe the observable outcome of this workflow.
+  completion_criteria:
+    - Replace this item with a completion criterion.
+  checks:
+    - id: CHECK-EDIT-ME
+      argv:
+        - chassiss
+        - verify
+        - --full
+      cwd: .
+      timeout_seconds: 300
+
+requirements: {}
+constraints: {}
+tasks: {}
+extensions: {}

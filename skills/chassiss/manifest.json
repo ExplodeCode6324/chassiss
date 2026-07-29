@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "goarch": "amd64",
+      "goos": "darwin",
+      "path": "bin/darwin-amd64/chassiss",
+      "sha256": "29f719bc3281082ee19c5c2a50c9f20db862c93a08b4851ed34614fffc5f0af6"
+    },
+    {
+      "goarch": "arm64",
+      "goos": "darwin",
+      "path": "bin/darwin-arm64/chassiss",
+      "sha256": "c028626d50097c139f3378d082aca41294ae03a7a46c5d52895a35844386bb4c"
+    },
+    {
+      "goarch": "amd64",
+      "goos": "linux",
+      "path": "bin/linux-amd64/chassiss",
+      "sha256": "a7af24ee570f3be6b45ee43732ea76219581a00490424278ad28245febf51461"
+    },
+    {
+      "goarch": "arm64",
+      "goos": "linux",
+      "path": "bin/linux-arm64/chassiss",
+      "sha256": "9d8244702a0bc96f019d3238744b5a3383145cc29318493bb0a2bc7ab40a2209"
+    }
+  ],
+  "protocol": "chassiss/v1",
+  "release_identity": "skill-bundled",
+  "schema": "chassiss.skill-bundle/v1",
+  "source_commit": "d2778995ff5c496538f0ad6f6e103e2d2d08f9a4",
+  "version": "v1.0.0-rc.1"
+}

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Configure test Git identity
+        run: |
+          git config --global user.name "CHASSISS CI"
+          git config --global user.email "ci@example.invalid"
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./cmd/chassiss
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Configure test Git identity
+        run: |
+          git config --global user.name "CHASSISS CI"
+          git config --global user.email "ci@example.invalid"
+      - name: Race test
+        run: go test -race ./...

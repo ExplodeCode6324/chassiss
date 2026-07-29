@@ -1,0 +1,30 @@
+{
+  "parent_state": null,
+  "operation": {
+    "schema": "chassiss.operation/v1",
+    "operation_id": "OPR-11ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "action": "project.genesis",
+    "project": "PRJ-FIXTURE",
+    "authority": "root:KEY-ROOT-FIXTURE",
+    "target": "PRJ-OTHER",
+    "preconditions": {},
+    "payload": {
+      "architecture_blob": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "project_id": "PRJ-FIXTURE",
+      "root_key_id": "KEY-ROOT-FIXTURE",
+      "root_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+      "taskbook_blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "evidence_facts": {
+    "architecture_blob": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "initial_tree": "cccccccccccccccccccccccccccccccccccccccc",
+    "taskbook_blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "git_facts": {
+    "object_format": "sha1",
+    "genesis_taskbook_id": "TASKBOOK-FIXTURE",
+    "genesis_ready_tasks": ["TASK-FIXTURE"]
+  },
+  "expected_error_code": "CHS_GENESIS_INVALID"
+}
