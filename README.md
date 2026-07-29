@@ -77,8 +77,10 @@ Report，再执行 `taskbook archive`。
 
 不要直接运行会改变协议仓库的 `git add/commit/branch/checkout/worktree/merge/
 rebase/reset/push/config`。通用 Agent 操作说明在
-[`skills/chassiss/`](skills/chassiss/)；该 Skill 不捆绑二进制，也不解析协议
-State。
+[`skills/chassiss/`](skills/chassiss/)；该 Skill 捆绑 macOS/Linux 的
+arm64/amd64 CLI，并由 launcher 在执行前校验 manifest digest，但不自行解析
+协议 State。Master 调度规范要求每个临时 Agent 使用独立 worktree/Key/Grant：
+成功后回收；失败时先用 `attempt abandon` 留下签名记录，再销毁并回收。
 
 ## 文档
 
@@ -101,4 +103,3 @@ Owner Apply。仓库还包含 14 类跨实现 fixture 目录。
 按 Master 要求，本轮没有运行真实 GitHub/网络 remote/系统 secret-store 外部集成
 测试。剩余 lock-candidate 差距和安全影响持续登记在
 [实现差异文档](docs/12-implementation-differences.md)，不会用 README 宣称掩盖。
-

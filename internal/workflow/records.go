@@ -265,6 +265,18 @@ type AttentionResponse struct {
 	Response  string `json:"response"`
 }
 
+func NewReviewReportTemplate(attention []string) ReviewReport {
+	responses := make([]AttentionResponse, len(attention))
+	for index, value := range attention {
+		responses[index] = AttentionResponse{Attention: value, Response: ""}
+	}
+	return ReviewReport{
+		Findings: []Finding{}, Results: ReviewResults{},
+		ReviewerAttentionResponses: responses, Schema: ReviewReportSchema,
+		Summary: "", Verdict: "",
+	}
+}
+
 func (report ReviewReport) Validate(attention []string, resources map[string]contracts.Resource) error {
 	if report.Schema != ReviewReportSchema ||
 		(report.Verdict != "approve" && report.Verdict != "request_changes") ||
@@ -363,6 +375,29 @@ type TaskResponse struct {
 	Phase    string `json:"phase"`
 	Response string `json:"response"`
 	Task     string `json:"task"`
+}
+
+func NewClosureReportTemplate(taskbook *contracts.Taskbook, phases map[string]string) ClosureReport {
+	taskIDs := make([]string, 0, len(phases))
+	for id := range phases {
+		taskIDs = append(taskIDs, id)
+	}
+	sort.Strings(taskIDs)
+	taskResponses := make([]TaskResponse, len(taskIDs))
+	for index, id := range taskIDs {
+		taskResponses[index] = TaskResponse{Task: id, Phase: phases[id], Response: ""}
+	}
+	criteria := make([]CriterionResponse, len(taskbook.Workflow.CompletionCriteria))
+	for index, criterion := range taskbook.Workflow.CompletionCriteria {
+		criteria[index] = CriterionResponse{
+			Criterion: criterion, Response: "", Status: "",
+		}
+	}
+	return ClosureReport{
+		CompletionCriteriaResponses: criteria, Findings: []ClosureFinding{},
+		Schema: ClosureReportSchema, Summary: "", TaskResponses: taskResponses,
+		Taskbook: taskbook.ID,
+	}
 }
 
 type DriftClassification struct {

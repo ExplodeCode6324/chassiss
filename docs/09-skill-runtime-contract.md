@@ -12,8 +12,9 @@
 哪些高代价边界不能绕过
 ```
 
-Skill 不实现协议、不解析 State、不管理 Git、不捆绑二进制、不复制项目
-Taskbook。
+Skill 不实现协议、不解析 State、不管理 Git、不复制项目 Taskbook。Skill
+直接捆绑四个 release CLI artifact，统一 launcher 在执行前按 manifest 校验
+SHA-256。
 
 ## 2. 分层
 
@@ -36,26 +37,36 @@ flowchart TD
 必须强制的架构边界进入 Architecture，当前工作要求进入 Taskbook；只写在
 AGENTS/Skill 的内容是工作方法，不是协议合法性条件。
 
-## 3. 安装
+## 3. 安装与可信 CLI
 
-Skill 目录不包含 executable binary。
+Skill 包含以下静态 artifact：
 
-CLI 由用户、管理员、安装器或受控运行环境安装。Skill：
+```text
+bin/darwin-arm64/chassiss
+bin/darwin-amd64/chassiss
+bin/linux-arm64/chassiss
+bin/linux-amd64/chassiss
+manifest.json
+manifest.sha256
+scripts/chassiss
+```
 
-1. 从管理员允许的 PATH/absolute configured path 找到 CLI；
-2. 执行 `chassiss version --json`；
-3. 确认 CLI 支持 Project 的 exact protocol major；
-4. 不接受 Project repository 指定的可执行文件覆盖 trusted CLI。
+Agent 只调用 Skill absolute path 下的 `scripts/chassiss`。Launcher 根据
+`uname` 选择 artifact、从 `manifest.sha256` 读取 exact digest、使用平台
+SHA-256 工具校验，然后 `exec`。缺少平台、manifest、校验器或 digest 不一致
+都 fail closed。不得用 Project repository 中的 binary 或 PATH 同名命令覆盖。
 
-CLI 与 Skill 不要求同版本发布。Skill 只声明兼容 protocol majors。
+`manifest.json` 绑定 Skill bundle schema、protocol、version、source commit、
+release identity、每个平台 path/digest。发布者从 clean source commit
+cross-build，原生平台再执行 wrapper smoke。
 
 ## 4. 每次进入 Project
 
 Agent 首次进入目录：
 
 ```text
-chassiss version --json
-chassiss context --json
+<skill>/scripts/chassiss version --json
+<skill>/scripts/chassiss context --json
 ```
 
 如果目录不是 registered Project，按 CLI remediation 使用 `clone` 或报告。
@@ -85,6 +96,26 @@ chassiss work open TASK-001 --json
 编辑和构建命令必须在该 path 下执行。
 
 Agent 不自行创建 branch、checkout 或 worktree。
+
+### 5.1 Master 调度临时 Agent
+
+Master 为每次 Task attempt 分配独立且不复用的 Actor、Key、narrow Grant、
+CLI-managed worktree 与临时父目录。并行 Agent 不共享 mutable checkout、
+worktree、Key、Grant 或 scratch directory；签名 mutation 显式传
+`--key/--grant`，不依赖全局 selected identity。
+
+成功 Integration 后立即 revoke 临时 Grant、remove Key、确认 worktree/Work
+Ref 已清理，再销毁临时目录。失败时顺序固定：
+
+```text
+attempt abandon（签名正文 + State 轻量索引 + worktree/ref cleanup）
+→ grant revoke
+→ key remove
+→ 删除临时目录
+```
+
+失败记录成功签名以前不得先销毁目录。目录隔离只是 workflow boundary；不互信
+Agent 还必须使用 OS/container isolation。
 
 ## 6. 动态 Context
 
@@ -152,9 +183,11 @@ Reviewer：
 
 ```text
 chassiss context TASK-001 --json
-chassiss review TASK-001 --prepare --output <local-file> --json
+chassiss review TASK-001 --prepare --output <context-file> \
+  --report-output <report-file> --json
 <阅读 candidate、执行语义复核、填写 Report>
 chassiss review TASK-001 --verdict ... --report <file> --json
+chassiss review show TASK-001 --operation <operation-id> --json
 ```
 
 Skill 必须区分：
@@ -170,9 +203,11 @@ Master，不能伪称为独立 Review，也不能擅自拒绝 Master 允许的�
 
 ### 9.1 Workflow closure
 
-全部 Tasks terminal 后，Reviewer 填写逐 Task disposition 与 completion
-criteria response，再调用 `chassiss taskbook archive`。Skill 不自行运行一份
-结果来替代协议检查：archive 命令必须在 exact current main 上重新执行全部
+全部 Tasks terminal 后，Reviewer 先用
+`taskbook archive --prepare --output <report-file>` 生成逐 Task disposition
+与 completion criteria response 模板，填写后调用
+`taskbook archive --report <report-file>`。Skill 不自行运行一份结果来替代
+协议检查：archive 命令必须在 exact current main 上重新执行全部
 `workflow.checks`，并把 Context/Results 放入 Reviewer 签名 Evidence。
 cancelled/superseded 不要求转成 closed，但必须有 Reviewer 的逐项非空确认。
 
@@ -227,9 +262,22 @@ Task Contract、Review 或 Integration。
 
 ```text
 SKILL.md
+agents/
+  openai.yaml
+bin/
+  darwin-arm64/chassiss
+  darwin-amd64/chassiss
+  linux-arm64/chassiss
+  linux-amd64/chassiss
 references/
   safety.md
   context.md
+  master-orchestration.md
+scripts/
+  chassiss
+  build-bundle.sh
+manifest.json
+manifest.sha256
 ```
 
 `SKILL.md` 目标不超过约 100 行。`references` 只解释稳定概念，不复制 CLI

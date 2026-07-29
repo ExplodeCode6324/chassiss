@@ -20,7 +20,8 @@ chassiss work open TASK-001 --json
 ```
 
 后两条返回 managed worktree absolute path。所有源码编辑和本地构建都必须在该
-目录完成。不要自行创建 branch、checkout 或 worktree。
+目录完成。不要自行创建 branch、checkout 或 worktree。每次尝试都得到不复用
+的 `<project>/<task>/<base-prefix>/<actor>` worktree path 和对应 Work Ref。
 
 ## Work loop
 
@@ -37,6 +38,9 @@ Work Commit 使用 Task Actor 的 Ed25519 key 签名。CLI 只 stage 指定路�
 symlink、protected path、frozen `writes`、linear parent chain 和 effective
 `max_changed_paths`。
 
+`work diff` 把 untracked file 作为新增内容显示，并使用 disposable index
+计算，不改变 worktree 的真实 index。
+
 `submit` 要求 clean worktree，在 exact Work Head 重跑 frozen Checks，发布
 canonical Work Ref，并将 Submission Evidence 绑定 base/head/tree、changed
 paths digest、contract blobs、submitter fingerprint 和 Check Results。
@@ -44,3 +48,6 @@ paths digest、contract blobs、submitter fingerprint 和 Check Results。
 `work restore` 只接受 explicit paths；`work remove` 对 dirty 或 unreachable data
 默认拒绝。`task release` 只允许未产生变化的 active work。
 
+临时 Agent 失败时，Master 必须在删除前执行 `attempt abandon`。完整失败记录
+进入签名 Transition，State 只保留轻量索引，CLI 随后销毁失败 worktree/Work
+Ref。使用 `attempt failures TASK-001 [--operation OPR-...]` 查询。

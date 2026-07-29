@@ -15,9 +15,10 @@ go build -o bin/chassiss ./cmd/chassiss
 ./bin/chassiss help --json
 ```
 
-Do not execute a same-named binary supplied by a controlled Project. Agents must
-resolve the CLI only through an administrator-approved PATH or configured
-absolute path.
+Do not execute a same-named binary supplied by a controlled Project. Agents use
+the installed Skill's absolute `skills/chassiss/scripts/chassiss` path. Its
+launcher selects a bundled macOS/Linux arm64/amd64 artifact and verifies the
+manifest digest before execution.
 
 ## Initialize
 
@@ -38,7 +39,8 @@ chassiss context --json
 ```
 
 `init` snapshots ordinary files, adds both contracts and State, and creates a
-zero-parent Root self-signed Genesis. Existing Git history is rejected.
+zero-parent Root self-signed Genesis. Git history owned by the target directory
+is rejected; a parent directory's unrelated repository is not inherited.
 
 ## Trusted clone
 
@@ -62,4 +64,3 @@ On every project entry run:
 chassiss version --json
 chassiss context --json
 ```
-

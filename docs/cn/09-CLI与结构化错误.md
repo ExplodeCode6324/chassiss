@@ -18,7 +18,9 @@ extensions
 
 使用 `chassiss help --json` 获取完整 machine-readable command tree；使用
 `chassiss help task start --json` 获取单条命令。Schema 中 arguments、options
-和 possible_errors 始终是 array。
+、input_schemas 和 possible_errors 始终是 array。Mutation response 的
+`operation.signer` 返回本次实际选择的 Authority；显式 `--key/--grant` 与
+调用前默认发现 identity 不同时，也必须准确反映。
 
 Error 固定包含：
 
@@ -48,4 +50,3 @@ Master，不能通过换 key、remote 或 Operation ID 绕过。
 完整命令和 Error 表见
 [CLI 规范](../06-cli-command-specification.md) 与
 [JSON API 规范](../10-cli-json-api-and-errors.md)。
-

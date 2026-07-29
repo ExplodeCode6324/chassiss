@@ -13,6 +13,7 @@ import (
 	"github.com/ExplodeCode6324/chassiss/internal/gitstore"
 	"github.com/ExplodeCode6324/chassiss/internal/localstate"
 	"github.com/ExplodeCode6324/chassiss/internal/protocol"
+	"github.com/ExplodeCode6324/chassiss/internal/state"
 	"github.com/ExplodeCode6324/chassiss/internal/verifier"
 )
 
@@ -106,6 +107,10 @@ func keyCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 		metadata, _ := readKeyMetadata(store.Paths, keyID)
 		envelope.Result = map[string]any{"actor": metadata.Actor, "fingerprint": fingerprint, "key_id": keyID, "public_key": public}
 		return envelope, nil
+	case "key attach":
+		return keyAttachCommand(ctx, invocation, store)
+	case "identity select":
+		return identitySelectCommand(ctx, invocation, store)
 	case "key remove":
 		if !invocation.Flags["yes"] {
 			return Envelope{}, protocol.NewError(protocol.ErrUsageInvalid, protocol.CategoryUsage, "key remove requires --yes after exact key inspection.")
@@ -185,6 +190,128 @@ func keyCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 	default:
 		panic("unreachable")
 	}
+}
+
+func keyAttachCommand(ctx context.Context, invocation invocation, store localstate.Store) (Envelope, error) {
+	keyID := invocation.Positionals[0]
+	if err := protocol.ValidateID(protocol.IDKey, keyID); err != nil {
+		return Envelope{}, usageError(err.Error())
+	}
+	project, err := loadProject(ctx, "", false)
+	if err != nil {
+		return Envelope{}, err
+	}
+	handle, err := resolveKeyHandle(keyID, store.Paths)
+	if err != nil {
+		return Envelope{}, protocol.WrapError(protocol.ErrSecretKeyNotFound, protocol.CategoryLocal, "Local key does not exist.", err)
+	}
+	public, fingerprint, err := cryptoutil.PublicFromHandle(handle)
+	if err != nil {
+		return Envelope{}, err
+	}
+	authorities := matchingKeyAuthorities(project.Verified.State, keyID, public)
+	if len(authorities) == 0 {
+		return Envelope{}, protocol.NewError(protocol.ErrKeyMismatch, protocol.CategoryAuthorization, "Local key does not match the current Project Root or any current Grant.")
+	}
+	if metadata, metadataErr := readKeyMetadata(store.Paths, keyID); metadataErr == nil {
+		for _, authority := range authorities {
+			if authority.Actor != "root" && metadata.Actor != authority.Actor {
+				return Envelope{}, protocol.NewError(protocol.ErrKeyMismatch, protocol.CategoryAuthorization, "Local key actor metadata does not match its current Grant.")
+			}
+		}
+	}
+	if err := store.Update(func(local *localstate.State) error {
+		value := local.Projects[project.Verified.State.Project.ID]
+		value.Identity.Keys[keyID] = localstate.Key{PrivateKeyHandle: handle}
+		if invocation.Flags["select"] || value.Identity.SelectedKeyID == "" {
+			value.Identity.SelectedKeyID = keyID
+		}
+		local.Projects[project.Verified.State.Project.ID] = value
+		return nil
+	}); err != nil {
+		return Envelope{}, err
+	}
+	refreshed, err := loadProject(ctx, "", false)
+	if err != nil {
+		return Envelope{}, err
+	}
+	envelope := projectEnvelope("key attach", refreshed)
+	envelope.Result = map[string]any{
+		"attached": true, "authorities": authorities, "fingerprint": fingerprint,
+		"key_id": keyID, "selected": refreshed.LocalProject.Identity.SelectedKeyID == keyID,
+	}
+	return envelope, nil
+}
+
+func identitySelectCommand(ctx context.Context, invocation invocation, store localstate.Store) (Envelope, error) {
+	keyID := invocation.Value("key")
+	if err := protocol.ValidateID(protocol.IDKey, keyID); err != nil {
+		return Envelope{}, usageError(err.Error())
+	}
+	project, err := loadProject(ctx, "", false)
+	if err != nil {
+		return Envelope{}, err
+	}
+	key, exists := project.LocalProject.Identity.Keys[keyID]
+	if !exists {
+		return Envelope{}, protocol.NewError(protocol.ErrSecretKeyNotFound, protocol.CategoryLocal, "Key is not attached to the current Project.")
+	}
+	public, _, err := cryptoutil.PublicFromHandle(key.PrivateKeyHandle)
+	if err != nil {
+		return Envelope{}, err
+	}
+	authorities := matchingKeyAuthorities(project.Verified.State, keyID, public)
+	if len(authorities) == 0 {
+		return Envelope{}, protocol.NewError(protocol.ErrKeyMismatch, protocol.CategoryAuthorization, "Attached key no longer matches the current Project Root or a current Grant.")
+	}
+	if err := store.Update(func(local *localstate.State) error {
+		value := local.Projects[project.Verified.State.Project.ID]
+		value.Identity.SelectedKeyID = keyID
+		local.Projects[project.Verified.State.Project.ID] = value
+		return nil
+	}); err != nil {
+		return Envelope{}, err
+	}
+	refreshed, err := loadProject(ctx, "", false)
+	if err != nil {
+		return Envelope{}, err
+	}
+	envelope := projectEnvelope("identity select", refreshed)
+	envelope.Result = map[string]any{
+		"authorities": authorities, "key_id": keyID, "selected": true,
+	}
+	return envelope, nil
+}
+
+type keyAuthority struct {
+	Actor     string `json:"actor"`
+	GrantID   string `json:"grant_id"`
+	Reference string `json:"reference"`
+	Root      bool   `json:"root"`
+}
+
+func matchingKeyAuthorities(shared *state.State, keyID, public string) []keyAuthority {
+	result := make([]keyAuthority, 0)
+	if shared.Authority.Root.KeyID == keyID && shared.Authority.Root.PublicKey == public {
+		result = append(result, keyAuthority{
+			Actor: "root", Reference: "root:" + keyID, Root: true,
+		})
+	}
+	grantIDs := make([]string, 0)
+	for grantID, grant := range shared.Authority.Grants {
+		if grant.KeyID == keyID && grant.PublicKey == public {
+			grantIDs = append(grantIDs, grantID)
+		}
+	}
+	sort.Strings(grantIDs)
+	for _, grantID := range grantIDs {
+		grant := shared.Authority.Grants[grantID]
+		result = append(result, keyAuthority{
+			Actor: grant.Actor, GrantID: grantID,
+			Reference: "grant:" + grantID, Root: false,
+		})
+	}
+	return result
 }
 
 type keyMetadata struct {

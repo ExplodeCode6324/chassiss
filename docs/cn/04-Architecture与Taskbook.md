@@ -39,7 +39,9 @@ chassiss taskbook update --file /outside/taskbook.yaml --reason "..." --json
 Architecture update 只允许没有 active Taskbook 时执行。Taskbook update 只能修改
 协议允许的 ready 范围，不能改变 non-ready Task 合同。
 
-全部 Tasks terminal 后，由 Reviewer 填写 Closure Report 并执行
-`taskbook archive`。CLI 在 exact current main 重新运行全部 workflow Checks，
-保存签名 Evidence，移动 exact Taskbook blob，并清空 State Task projection。
-
+全部 Tasks terminal 后，Reviewer 先执行
+`taskbook archive --prepare --output <file>`，得到按 exact Tasks 和 completion
+criteria 填充 response slot 的 Closure Report，填写后执行
+`taskbook archive --report <file>`。CLI 在 exact current main 重新运行全部
+workflow Checks，保存签名 Evidence，移动 exact Taskbook blob，并清空 State
+Task projection。

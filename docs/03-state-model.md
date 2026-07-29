@@ -30,6 +30,7 @@ canonical bytes。
 
 ```json
 {
+  "audit": {},
   "authority": {},
   "project": {},
   "protocol": "chassiss/v1",
@@ -42,11 +43,46 @@ canonical bytes。
 |---|---|---|
 | `protocol` | 是 | 固定 `chassiss/v1` |
 | `schema` | 是 | 固定 `chassiss.state/v1` |
+| `audit` | 否 | 历史报告/失败的轻量可解析索引；无条目时省略 |
 | `project` | 是 | Project ID、当前 Architecture 与可选活动 Taskbook |
 | `authority` | 是 | 当前 Root 与有效 Grants |
 | `tasks` | 是 | Task 当前 progress projection |
 
 v1 State 没有 `extensions`。
+
+### 3.1 轻量 Audit Index
+
+完整 Review Report、失败原因正文、Check Results 和签名证明只保存在
+first-parent Transition history。State 的可选 `audit` 只保存 CLI 定位这些
+记录所需的稳定摘要：
+
+```json
+{
+  "failures": [
+    {
+      "actor": "agent-builder-1",
+      "agent_grant_id": "GRT-BUILDER-01",
+      "agent_key_id": "KEY-BUILDER-01",
+      "changed_paths_digest": "sha256:...",
+      "code": "AGENT_TEST_FAILURE",
+      "operation_id": "OPR-...",
+      "phase": "active",
+      "summary": "Focused test failed.",
+      "task": "TASK-001",
+      "taskbook": "TASKBOOK-001",
+      "work_head": "0123456789abcdef0123456789abcdef01234567",
+      "work_tree": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ],
+  "reviews": []
+}
+```
+
+Review index 绑定 Taskbook、Task、Attempt/Context/Report digest、Reviewer
+Actor/Grant/Key/fingerprint、Verdict 与 Operation ID。失败 index 绑定失败
+code/summary、Agent Grant/Key、Work Head/tree 与 changed-path digest。索引不
+复制完整报告；`review show` 和 `attempt failures --operation` 从 verified
+history 解析正文。未来归档/截断只能移动已完成索引，不能改变被签名历史。
 
 ## 4. Project
 
@@ -261,10 +297,13 @@ stateDiagram-v2
     ready --> active: task.started
     active --> ready: task.released
     active --> submitted: task.submitted
-    submitted --> active: task.reviewed(request_changes)
-    submitted --> approved: task.reviewed(approve)
-    approved --> active: task.reviewed(request_changes)
-    approved --> approved: task.reviewed(approve/re-review)
+    submitted --> active: task.reviewed-indexed(request_changes)
+    submitted --> approved: task.reviewed-indexed(approve)
+    approved --> active: task.reviewed-indexed(request_changes)
+    approved --> approved: task.reviewed-indexed(approve/re-review)
+    active --> ready: attempt.abandoned
+    submitted --> ready: attempt.abandoned
+    approved --> ready: attempt.abandoned
     approved --> closed: integration.applied
     ready --> cancelled: task.cancelled
     active --> cancelled: task.cancelled
@@ -283,6 +322,8 @@ Block/resume 是非终态上的正交转换，不改变 phase。
 - `task.started` 增加 actor/base/contract；
 - `task.released` 的共享 Evidence 必须声明且证明 observed Work Head 等于
   base；worktree clean 只作本地 preflight；成功后删除 actor/base/contract；
+- `attempt.abandoned` 先把完整失败记录写入签名 Operation、把轻量索引追加到
+  `audit.failures`，再将 Task 稀疏化为 ready；
 - `task.submitted` 增加 attempt；
 - submitted/approved 上的 request_changes 删除 attempt/review，保留 active
   fields；
@@ -305,10 +346,10 @@ previous/current State digest
 current commit OID
 Requirements、Architecture、Task Contract 正文
 Task dependencies、writes、affects、Checks、change limits
-historical Attempt、Review、Integration
+完整 historical Attempt、Review、Integration
 Review Report 正文
 Grant revocation tombstone
-Operation ID、Operation/Evidence 与 pending Operation
+Operation/Evidence 与 pending Operation（Audit Index 可保存定位用 Operation ID）
 branch/ref/worktree/remote
 changed paths、metrics、Resource Graph
 cache、lock、PID、Session

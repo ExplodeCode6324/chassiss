@@ -42,8 +42,9 @@ Architecture can change only without an active Taskbook. Taskbook updates may
 change only the protocol-permitted ready portions and cannot mutate a non-ready
 Task contract.
 
-After every Task is terminal, a Reviewer completes a Closure Report and runs
-`taskbook archive`. The CLI reruns all workflow Checks on exact current main,
-records signed Evidence, relocates the exact Taskbook blob, and clears the State
-Task projection.
-
+After every Task is terminal, a Reviewer runs
+`taskbook archive --prepare --output <file>` to create a hydrated Closure Report
+with exact Task and completion-criteria response slots, completes it, and runs
+`taskbook archive --report <file>`. The CLI reruns all workflow Checks on exact
+current main, records signed Evidence, relocates the exact Taskbook blob, and
+clears the State Task projection.

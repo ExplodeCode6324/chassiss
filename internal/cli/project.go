@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ExplodeCode6324/chassiss/internal/cryptoutil"
 	"github.com/ExplodeCode6324/chassiss/internal/gitstore"
@@ -123,6 +124,44 @@ func discoverIdentity(shared *state.State, local localstate.Project) *IdentityBo
 			"resources": selected.grant.Scope.Resources, "tasks": selected.grant.Scope.Tasks,
 		},
 	}
+}
+
+func identityForAuthority(authority selectedAuthority) *IdentityBody {
+	if authority.Grant == nil {
+		return nil
+	}
+	limits := map[string]any{"mode": authority.Grant.Limits.Mode}
+	if authority.Grant.Limits.MaxActiveTasks != nil {
+		limits["max_active_tasks"] = *authority.Grant.Limits.MaxActiveTasks
+	}
+	if authority.Grant.Limits.MaxChangedPaths != nil {
+		limits["max_changed_paths"] = *authority.Grant.Limits.MaxChangedPaths
+	}
+	return &IdentityBody{
+		Actor: authority.Grant.Actor, Capabilities: authority.Grant.Capabilities,
+		GrantID: authority.GrantID, KeyFingerprint: authority.Fingerprint,
+		KeyID: authority.Grant.KeyID, Limits: limits,
+		Scope: map[string]any{
+			"resources": authority.Grant.Scope.Resources,
+			"tasks":     authority.Grant.Scope.Tasks,
+		},
+	}
+}
+
+func signerForAuthority(authority selectedAuthority) SignerBody {
+	signer := SignerBody{
+		Authority: authority.Reference, GrantID: authority.GrantID,
+		KeyFingerprint: authority.Fingerprint,
+		Root:           authority.Grant == nil,
+	}
+	if authority.Grant != nil {
+		signer.Actor = authority.Grant.Actor
+		signer.KeyID = authority.Grant.KeyID
+	} else {
+		signer.Actor = "root"
+		signer.KeyID = strings.TrimPrefix(authority.Reference, "root:")
+	}
+	return signer
 }
 
 func projectEnvelope(command string, context *projectContext) Envelope {

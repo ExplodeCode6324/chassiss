@@ -27,6 +27,16 @@ chassiss grant request \
 Request 使用 Agent private key 对 domain-separated digest 做 SSHSIG
 proof-of-possession。Request 不包含 private key。
 
+Root 发布 Grant 后，把已生成的本地 Key attach/select 到 verified Project：
+
+```text
+chassiss key attach KEY-AGENT-01 --select --json
+chassiss identity select --key KEY-AGENT-01 --json
+```
+
+Attach 会对照 current Root/Grant 校验 Key，不会凭本地信息产生 Authority。
+签名 mutation response 在 `operation.signer` 返回实际 Authority。
+
 ## Root 审批
 
 Root 必须明确审核 Capability、Task scope、Resource scope 和 limits：
@@ -49,6 +59,9 @@ checkout 执行 `transition inspect` 与 `transition publish`。Proposal parent
 
 Revoke 使用 `grant revoke <grant-id> --reason ... --root-key ...`。历史签名仍可
 验证，但 revoked Grant 不能授权未来 Transition。
+
+Master 调度的 Agent Grant/Key 按尝试临时分配。成功后立即回收；失败时必须先
+用 `attempt abandon` 把问题签入 history，再 revoke Grant 并删除本地 Key。
 
 当前实现只提供 owner-only `file:` key backend；POSIX 平台校验 mode bits，
 Windows 当前依赖用户 profile 的继承 ACL，尚未独立构造和验证 DACL。安全差距见

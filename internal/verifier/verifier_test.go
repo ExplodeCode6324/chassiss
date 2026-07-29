@@ -161,7 +161,7 @@ func TestCurrentAttemptRequiresExactWorkRef(t *testing.T) {
 	runner, head, _ := genesisRepository(t)
 	current := &state.State{Tasks: map[string]state.TaskState{
 		"TASK-001": {
-			Actor: "agent-one", Phase: "submitted",
+			Actor: "agent-one", Base: head, Phase: "submitted",
 			Attempt: &state.Attempt{Head: head},
 		},
 	}}
@@ -169,11 +169,21 @@ func TestCurrentAttemptRequiresExactWorkRef(t *testing.T) {
 	if err := verifyCurrentWorkRefs(ctx, runner, current); err == nil {
 		t.Fatal("missing Work Ref unexpectedly passed")
 	}
-	ref := "refs/heads/chassiss/work/TASK-001/agent-one"
+	ref := "refs/heads/chassiss/work/TASK-001/" + head[:12] + "/agent-one"
 	if err := runner.UpdateRefCAS(ctx, ref, head, strings.Repeat("0", 40), "fixture"); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyCurrentWorkRefs(ctx, runner, current); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := runner.Run(ctx, "update-ref", "-d", ref); err != nil {
+		t.Fatal(err)
+	}
+	legacyRef := "refs/heads/chassiss/work/TASK-001/agent-one"
+	if err := runner.UpdateRefCAS(ctx, legacyRef, head, strings.Repeat("0", 40), "legacy fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCurrentWorkRefs(ctx, runner, current); err != nil {
+		t.Fatalf("legacy v1 Work Ref did not remain readable: %v", err)
 	}
 }

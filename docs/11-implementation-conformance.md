@@ -298,12 +298,17 @@ expected Error code（失败向量）
 必须证明：
 
 - Task start 创建固定 managed branch/worktree；
+- 每次 Attempt 的 branch/worktree path 包含 frozen base prefix，旧 Work Ref
+  只读兼容；
 - Work commit 只 stage允许 paths；
+- work diff 显示 tracked/untracked 内容且不改变真实 index；
 - Work chain 每个 parent→child diff 都在 frozen writes 内；
 - direct State/Architecture/Taskbook/archive worktree changes 被拒绝；
 - 没有 generic branch/merge/rebase/reset/force flags；
 - submit 要求 clean；
 - task release 拒绝有变化的 Work Head；
+- attempt abandon 在销毁失败 worktree 前签入完整失败记录，并只向 State
+  追加轻量索引；
 - work restore 拒绝 broad target；
 - work remove 拒绝 dirty/unreachable data，除非显式 destructive confirmation；
 - cache clean 不删除 active/pending/trust data；
@@ -340,6 +345,8 @@ expected Error code（失败向量）
 - destructive local action 精确 target；
 - 不提供隐藏 bypass flag；
 - `help --json` 与实际 parser 一致。
+- mutation response 的 `operation.signer` 等于实际 Authority；Review/Closure
+  command 声明 input schema 并生成 hydrated template。
 
 ## 16. Protocol compatibility
 
@@ -363,7 +370,8 @@ CLI 必须声明支持的 exact protocol majors。
 6. offline Root proposal/publish 通过；
 7. rollback/illegal main/ref tamper 测试通过；
 8. 所有 templates 通过 parser；
-9. Skill 只依赖 public CLI API；
+9. Skill 只依赖 public CLI API，四个平台 artifact digest 与 manifest 一致，
+   launcher 在原生平台 smoke 通过；
 10. 无 secret/local data 出现在测试 Git tree；
 11. Local identity State/cache 中不存在 Grant object、cached Grant ID 或
     持久匹配结果；

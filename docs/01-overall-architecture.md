@@ -188,12 +188,13 @@ State 只保存：
 - 活动 Taskbook 中每个 Task 的 phase；
 - 非终态 Task 验证下一次转换所需的 actor/base/frozen contract；
 - 当前 Attempt 与当前 Review 的必要投影。
+- 可选的轻量 Review/失败索引，用于从签名 history 定位完整审计记录。
 
 State 不保存：
 
 - Action history；
 - revocation tombstone；
-- historical Attempt/Review/Integration；
+- 完整 historical Attempt/Review/Integration/失败报告；
 - Operation ID window；
 - changed paths、metrics 或 Resource Graph；
 - worktree、branch、remote、cache、lock 或 Session；

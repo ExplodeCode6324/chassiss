@@ -46,7 +46,7 @@ v1 不定义强制角色，只有 exact Capability/Scope：
 | `task.started` | signer Grant actor 成为 Task actor |
 | Work Commit、`task.released`、`task.submitted` | signer actor 必须等于 Task actor |
 | `task.blocked`、`task.resumed`、`task.cancelled` | 任意具有 exact Capability 和 Task/Resource scope 的 Grant |
-| `task.reviewed` | 任意具有 `review.attest` 和 Scope 的 Grant；可以与 submitter 相同 |
+| `task.reviewed-indexed` | 任意具有 `review.attest` 和 Scope 的 Grant；可以与 submitter 相同 |
 | `integration.applied` | 任意具有 `integration.apply` 和 Scope 的 Grant |
 | `task.superseded` | Root 或具有 `task.supersede` 和 Scope 的 Grant |
 
@@ -89,6 +89,11 @@ CLI 在 frozen base 上建立受管单 parent Work Branch。Agent 可以编辑�
 4. 使用 Task Actor Ed25519 key 创建 SSH-signed Work Commit；
 5. 更新本地受管 branch。
 
+每次尝试使用 `refs/heads/chassiss/work/<task>/<base-prefix>/<actor>` 与
+`.../<project>/<task>/<base-prefix>/<actor>` 临时 worktree path，避免同一
+Task 的不同尝试复用目录或 ref。验证器继续只读接受早期 v1 的
+`.../<task>/<actor>` Work Ref。
+
 Work Commit 不产生 State Action。Work Branch 不允许 merge、rebase、reset、
 cherry-pick 或 force-push。
 
@@ -117,6 +122,13 @@ cherry-pick 或 force-push。
 
 它删除 actor/base/contract，使 Task 回到 ready。存在实际工作时必须继续
 submit，或由授权者 cancel/supersede，不能用 release 隐藏工作。
+
+Master 调度的临时 Agent 失败时不得先删除 worktree。Root 使用
+`attempt abandon` 把 `chassiss.attempt-failure/v1` 正文和 observed Work
+Head/tree 写入签名 Transition，只把轻量索引追加到 State，然后将 Task
+恢复为 ready 并强制清理 worktree/Work Ref。之后 Master revoke 临时 Grant
+并删除临时 Key。失败正文通过 `attempt failures --operation` 从 verified
+history 读取。
 
 ### 5.2 Block
 
@@ -298,7 +310,8 @@ CLI 在 Review 时的 latest verified main 上计算：
 
 candidate tree 使用规范的 tree overlay，并包含 hypothetical
 `integration.applied` 后的 closed State。它不等于随后
-`task.reviewed(approve)` 的 approved State tree；Reviewer 绑定的是若立即集成
+`task.reviewed-indexed(approve)` 的 approved State tree；Reviewer
+绑定的是若立即集成
 将进入 main 的完整结果。
 
 首次 Review 的前置 phase 是 submitted。Mainline relevant drift 后允许对
@@ -388,7 +401,7 @@ v1 没有 Waiver 或 minor deviation 放行。发现架构缺口时必须
 
 ```text
 submitted | approved
-→ task.reviewed(verdict=request_changes)
+→ task.reviewed-indexed(verdict=request_changes)
 → active
 ```
 
@@ -400,13 +413,14 @@ CLI Work Commit 后重新 submit。
 
 ```text
 submitted | approved
-→ task.reviewed(verdict=approve)
+→ task.reviewed-indexed(verdict=approve)
 → approved
 ```
 
 submitted approve 创建当前 Review；approved re-review 原子替换当前 Review。
 State 保存新 Context digest、review_main、candidate tree、Reviewer identity/key
-和 Report digest。一个 Attempt 始终只有一个当前 Review。
+和 Report digest，并向 `audit.reviews` 追加轻量历史索引。完整 Report 只在
+签名 Transition 中。一个 Attempt 始终只有一个当前 Review。
 
 ## 13. Mainline Drift
 
@@ -456,7 +470,7 @@ Integrator 输入。每个 `reasons` entry 使用：
   `approved` 的预期机械变化；已完成且重新验证通过的 block/resume 控制对也
   可以视为机械变化；
 - Review projection 只包含把当前 exact Review 写入 State 的那次
-  `task.reviewed`；
+  `task.reviewed-indexed`；
 - changed paths 与 `writes`、selected Module paths、Resource paths 不相交；
 - drift affects 与 Task affects/requires closure 不相交；
 - Requirement、Constraint、Architecture、CheckSpec 未改变当前 frozen 语义；
@@ -477,7 +491,8 @@ relevant：
 
 - 原 Review 仍是历史事实；
 - 不能授权当前 Integration；
-- 必须在 approved Task 上生成新 Review Context 和新 `task.reviewed`；
+- 必须在 approved Task 上生成新 Review Context 和新
+  `task.reviewed-indexed`；
 - Integrator 无权 waiver。
 
 ## 14. Integration

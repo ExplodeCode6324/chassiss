@@ -17,7 +17,7 @@ Ed25519 keys, signed Transitions, and linked worktrees:
 Genesis → Grant → offline proposal/publish → Task start
 → Work Commit → submit → Review → Integration
 → Taskbook Closure/archive → Architecture update
-→ Owner Apply → next Taskbook open → full verify
+→ Owner Apply → next Taskbook open → failed Attempt capture/cleanup → full verify
 ```
 
 `fixtures/` contains fourteen cross-implementation categories. Tests directly
@@ -47,6 +47,18 @@ go build -trimpath \
   -X github.com/ExplodeCode6324/chassiss/internal/cli.ReleaseIdentity=<builder>" \
   -o dist/chassiss ./cmd/chassiss
 ```
+
+The Agent Skill bundle is built from an already committed source tree:
+
+```text
+CHASSISS_BUNDLE_SOURCE_COMMIT=<git-oid> \
+  skills/chassiss/scripts/build-bundle.sh
+skills/chassiss/scripts/chassiss version --json
+```
+
+It produces static darwin/linux arm64/amd64 artifacts plus
+`manifest.json`/`manifest.sha256`. Release verification checks every digest,
+inspects each binary's embedded build metadata, and smokes the native launcher.
 
 Protocol lock still requires Master's documentation review, a SHA-256 docs
 manifest, frozen fixtures, real remote fault injection, and cross-platform

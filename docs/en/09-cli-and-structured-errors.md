@@ -10,7 +10,10 @@ available_actions, warnings, error, extensions
 
 Use `chassiss help --json` for the complete machine-readable command tree and
 `chassiss help task start --json` for one command. Arguments, options, and
-possible-errors fields are always arrays.
+input-schemas, and possible-errors fields are always arrays. Mutation responses
+identify the exact selected authority in `operation.signer`; this may differ
+from the identity discovered before the command when explicit `--key` and
+`--grant` arguments are used.
 
 An Error always contains:
 
@@ -40,4 +43,3 @@ key, remote, or Operation ID.
 
 See the [CLI specification](../06-cli-command-specification.md) and
 [JSON API contract](../10-cli-json-api-and-errors.md).
-

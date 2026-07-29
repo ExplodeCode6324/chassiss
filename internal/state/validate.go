@@ -80,6 +80,109 @@ func (state *State) Validate(objectFormat string) error {
 			return fmt.Errorf("%s: %w", id, err)
 		}
 	}
+	if state.Audit != nil {
+		if err := state.Audit.Validate(objectFormat); err != nil {
+			return fmt.Errorf("audit: %w", err)
+		}
+	}
+	return nil
+}
+
+func (audit AuditIndex) Validate(objectFormat string) error {
+	if len(audit.Reviews) == 0 && len(audit.Failures) == 0 {
+		return fmt.Errorf("empty audit index is prohibited")
+	}
+	operations := make(map[string]struct{}, len(audit.Reviews)+len(audit.Failures))
+	for index, review := range audit.Reviews {
+		if err := review.Validate(); err != nil {
+			return fmt.Errorf("review %d: %w", index, err)
+		}
+		if _, exists := operations[review.OperationID]; exists {
+			return fmt.Errorf("duplicate audit operation %s", review.OperationID)
+		}
+		operations[review.OperationID] = struct{}{}
+	}
+	for index, failure := range audit.Failures {
+		if err := failure.Validate(objectFormat); err != nil {
+			return fmt.Errorf("failure %d: %w", index, err)
+		}
+		if _, exists := operations[failure.OperationID]; exists {
+			return fmt.Errorf("duplicate audit operation %s", failure.OperationID)
+		}
+		operations[failure.OperationID] = struct{}{}
+	}
+	return nil
+}
+
+func (review ReviewIndex) Validate() error {
+	if err := protocol.ValidateID(protocol.IDTaskbook, review.Taskbook); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDTask, review.Task); err != nil {
+		return err
+	}
+	if err := protocol.ValidateOperationID(review.OperationID); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDGrant, review.GrantID); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDKey, review.KeyID); err != nil {
+		return err
+	}
+	if err := protocol.ValidateActor(review.Reviewer); err != nil {
+		return err
+	}
+	if review.Verdict != "approve" && review.Verdict != "request_changes" {
+		return fmt.Errorf("review verdict is invalid")
+	}
+	for _, digest := range []string{review.AttemptDigest, review.ContextDigest, review.ReportDigest} {
+		if err := protocol.ValidateDigest(digest); err != nil {
+			return err
+		}
+	}
+	if !strings.HasPrefix(review.KeyFingerprint, "SHA256:") {
+		return fmt.Errorf("reviewer key fingerprint must use OpenSSH SHA256 format")
+	}
+	return nil
+}
+
+func (failure AttemptFailureIndex) Validate(objectFormat string) error {
+	if err := protocol.ValidateID(protocol.IDTaskbook, failure.Taskbook); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDTask, failure.Task); err != nil {
+		return err
+	}
+	if err := protocol.ValidateOperationID(failure.OperationID); err != nil {
+		return err
+	}
+	if err := protocol.ValidateActor(failure.Actor); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDGrant, failure.AgentGrantID); err != nil {
+		return err
+	}
+	if err := protocol.ValidateID(protocol.IDKey, failure.AgentKeyID); err != nil {
+		return err
+	}
+	switch failure.Phase {
+	case "active", "submitted", "approved":
+	default:
+		return fmt.Errorf("failure phase is not an active Agent phase")
+	}
+	if strings.TrimSpace(failure.Code) == "" || strings.TrimSpace(failure.Summary) == "" ||
+		len(failure.Code) > 128 || len(failure.Summary) > 2048 {
+		return fmt.Errorf("failure code or summary is invalid")
+	}
+	if err := protocol.ValidateDigest(failure.ChangedPathsDigest); err != nil {
+		return err
+	}
+	for _, oid := range []string{failure.WorkHead, failure.WorkTree} {
+		if err := protocol.ValidateOID(oid, objectFormat); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

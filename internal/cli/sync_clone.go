@@ -255,9 +255,16 @@ func verifyCurrentRemoteWork(ctx context.Context, project *projectContext, curre
 		if (task.Phase != "submitted" && task.Phase != "approved") || task.Attempt == nil {
 			continue
 		}
-		remoteRef := "refs/remotes/origin/" + strings.TrimPrefix(taskWorkRef(taskID, task.Actor), "refs/heads/")
-		head, err := project.Runner.Resolve(ctx, remoteRef)
-		if err != nil || head != task.Attempt.Head {
+		retained := false
+		for _, ref := range taskWorkRefs(taskID, task.Actor, task.Base) {
+			remoteRef := "refs/remotes/origin/" + strings.TrimPrefix(ref, "refs/heads/")
+			head, err := project.Runner.Resolve(ctx, remoteRef)
+			if err == nil && head == task.Attempt.Head {
+				retained = true
+				break
+			}
+		}
+		if !retained {
 			return protocol.NewError(protocol.ErrAttemptUnreachable, protocol.CategoryProtocol, "Current submitted/approved Attempt is not held by its exact remote Work Ref.")
 		}
 	}
@@ -288,13 +295,20 @@ func verifyRemoteRetainedRefs(
 		if (task.Phase != "submitted" && task.Phase != "approved") || task.Attempt == nil {
 			continue
 		}
-		ref := taskWorkRef(taskID, task.Actor)
-		if refs[ref] != task.Attempt.Head {
+		retained := false
+		candidates := taskWorkRefs(taskID, task.Actor, task.Base)
+		for _, ref := range candidates {
+			if refs[ref] == task.Attempt.Head {
+				retained = true
+				break
+			}
+		}
+		if !retained {
 			return &protocol.Error{
 				Code: protocol.ErrAttemptUnreachable, Category: protocol.CategoryTrust,
 				Message: "Candidate upstream does not retain the exact current Work Ref.",
 				Details: map[string]any{
-					"expected_head": task.Attempt.Head, "ref": ref, "task": taskID,
+					"expected_head": task.Attempt.Head, "refs": candidates, "task": taskID,
 				},
 			}
 		}

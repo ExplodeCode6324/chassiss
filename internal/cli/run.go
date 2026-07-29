@@ -59,6 +59,8 @@ func dispatch(ctx context.Context, rt runtime, invocation invocation) (Envelope,
 		return statusCommand(ctx, invocation)
 	case "context", "log", "file show", "remote show", "remote set", "task list", "task show":
 		return browseCommand(ctx, invocation)
+	case "attempt failures":
+		return attemptFailuresCommand(ctx, invocation)
 	case "architecture validate":
 		return architectureValidateCommand(ctx, invocation)
 	case "taskbook validate":
@@ -67,14 +69,16 @@ func dispatch(ctx context.Context, rt runtime, invocation invocation) (Envelope,
 		"architecture show", "architecture draft", "architecture diff", "architecture requires",
 		"architecture required-by", "architecture impact", "architecture update":
 		return contractCommand(ctx, invocation)
-	case "key generate", "key list", "key show", "key remove":
+	case "key generate", "key list", "key show", "key attach", "identity select", "key remove":
 		return keyCommand(ctx, invocation)
-	case "task start", "task release", "task block", "task resume", "task cancel", "task supersede":
+	case "task start", "task release", "attempt abandon", "task block", "task resume", "task cancel", "task supersede":
 		return taskMutationCommand(ctx, invocation)
 	case "grant request", "grant list", "grant show", "grant add", "grant revoke":
 		return grantCommand(ctx, invocation)
 	case "work open", "work status", "work diff", "work log", "work commit", "work restore", "work remove", "check", "submit":
 		return workCommand(ctx, invocation)
+	case "review list", "review show":
+		return reviewReadCommand(ctx, invocation)
 	case "review":
 		return reviewCommand(ctx, invocation)
 	case "integrate":

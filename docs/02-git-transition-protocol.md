@@ -116,10 +116,11 @@ Overlay 是 whole-file/tree-entry replacement，不执行 line merge。相关 ma
 | `taskbook.archived` | `taskbook.archive` | 全部 Task terminal、整体验收及 Workflow Checks 通过后归档 Taskbook 并清空当前 Task 投影 |
 | `task.started` | `task.start` | `ready → active` |
 | `task.released` | `task.release` | 无改动的 `active → ready` |
+| `attempt.abandoned` | Root | 记录失败尝试索引，`active/submitted/approved → ready` |
 | `task.blocked` | `task.block` | 非终态增加 `blocked: true` |
 | `task.resumed` | `task.resume` | 删除 `blocked` |
 | `task.submitted` | `task.submit` | `active → submitted`，固定 Attempt |
-| `task.reviewed` | `review.attest` | submitted/approved 上 approve→`approved`；request_changes→`active` |
+| `task.reviewed-indexed` | `review.attest` | 写入 Review 索引；approve→`approved`，request_changes→`active` |
 | `task.cancelled` | `task.cancel` | 非终态→`cancelled` |
 | `task.superseded` | `task.supersede` 或 Root | 非终态→`superseded` |
 | `integration.applied` | `integration.apply` | `approved → closed` |
@@ -130,6 +131,10 @@ Overlay 是 whole-file/tree-entry replacement，不执行 line merge。相关 ma
 v1 没有独立 `task.created`；Task 创建属于 `taskbook.opened` 或
 `taskbook.updated`。Check、Context、Work Commit、Work Ref publish、verify 和
 export 不产生 Action。
+
+`task.reviewed` 是早期 v1 历史的只读兼容 Action，保持原 Reducer 语义但不追加
+Audit Index。新 CLI 只产生 `task.reviewed-indexed`，从而不改变既有签名历史的
+验证结果。
 
 ### 3.1 Semantic Operation payload
 
@@ -144,10 +149,11 @@ Semantic Operation 只保存用户稳定选择，不保存会随 CAS parent 改�
 | `taskbook.archived` | `closure_report` |
 | `task.started` | 空 object |
 | `task.released` | `reason` |
+| `attempt.abandoned` | `failure` |
 | `task.blocked` | `reason` |
 | `task.resumed` | `reason`，string 或 null |
 | `task.submitted` | `head` |
-| `task.reviewed` | `verdict`、`report` |
+| `task.reviewed-indexed` | `verdict`、`report` |
 | `task.cancelled` | `reason` |
 | `task.superseded` | `reason`、`replacement_task`，string 或 null |
 | `integration.applied` | 空 object |
@@ -172,9 +178,10 @@ Execution Evidence 保存本次 exact parent 下可重算或可签名证明的�
 | `taskbook.archived` | `active_blob`、`architecture_blob`、`archive_path`、`archive_blob`、`terminal_tasks`、`closing_integrations`、`check_results` |
 | `task.started` | `actor`、`base`、`taskbook_blob`、`architecture_blob` |
 | `task.released` | `base`、`observed_work_head`、`observed_work_tree` |
+| `attempt.abandoned` | `changed_paths_digest`、`observed_work_head`、`observed_work_tree` |
 | `task.blocked` / `task.resumed` | 空 object |
 | `task.submitted` | `submission_evidence` |
-| `task.reviewed` | `attempt_digest`、`review_context`、`check_results` |
+| `task.reviewed-indexed` | `attempt_digest`、`review_context`、`check_results` |
 | `task.cancelled` / `task.superseded` | `attempt_digest`、`archive_ref`、`archive_head`，三者同时为 null 或同时非 null |
 | `integration.applied` | `attempt_head`、`review_context_digest`、`review_report_digest`、`drift_classification`、`candidate_tree`、`check_results` |
 | Authority Actions | 空 object |
@@ -255,10 +262,11 @@ Action-specific `preconditions` 也是 closed object：
 | `taskbook.archived` | `taskbook_blob`、`all_tasks_terminal=true` |
 | `task.started` | `phase=ready`、`taskbook_blob`、`architecture_blob` |
 | `task.released` | `phase=active`、`actor`、`base` |
+| `attempt.abandoned` | `phase`、`actor`、`base`、`agent_grant_id`、`agent_key_id` |
 | `task.blocked` | `phase`、`blocked=false` |
 | `task.resumed` | `phase`、`blocked=true` |
 | `task.submitted` | `phase=active`、`actor`、`base`、`taskbook_blob`、`architecture_blob` |
-| `task.reviewed` | `phase`、`attempt_digest` |
+| `task.reviewed-indexed` | `phase`、`attempt_digest` |
 | `task.cancelled` / `task.superseded` | `phase`、`attempt_digest`，后者可为 null |
 | `integration.applied` | `phase=approved`、`attempt_digest`、`review_context_digest`、`review_report_digest` |
 | `authority.grant-added` | `root_key_id`、`grant_absent=true` |

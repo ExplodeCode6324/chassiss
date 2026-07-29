@@ -114,32 +114,21 @@ func workDiffCommand(ctx context.Context, invocation invocation) (Envelope, erro
 	default:
 		return Envelope{}, usageError("--against must be base, main, or head")
 	}
-	args := []string{"diff", "--no-ext-diff", "--no-renames"}
-	if invocation.Flags["stat"] {
-		args = append(args, "--stat")
-	}
-	if against == "head" {
-		// HEAD vs the current worktree is Git's one-revision diff.
-		args = append(args, revision)
-	} else {
-		args = append(args, revision)
-	}
-	if paths := invocation.Values["path"]; len(paths) > 0 {
+	paths := invocation.Values["path"]
+	if len(paths) > 0 {
 		for _, path := range paths {
 			if err := contracts.ValidateRepoPath(path); err != nil {
 				return Envelope{}, usageError(err.Error())
 			}
 		}
-		args = append(args, "--")
-		args = append(args, paths...)
 	}
-	result, err := runner.Run(ctx, args...)
+	diff, err := runner.WorkingDiff(ctx, revision, invocation.Flags["stat"], paths)
 	if err != nil {
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("work diff", project)
 	envelope.Result = map[string]any{
-		"against": against, "diff": string(result.Stdout), "task": invocation.Positionals[0],
+		"against": against, "diff": string(diff), "task": invocation.Positionals[0],
 	}
 	return envelope, nil
 }
@@ -412,7 +401,7 @@ func submitCommand(ctx context.Context, invocation invocation) (Envelope, error)
 		return Envelope{}, err
 	}
 	if project.LocalProject.Remote.URL != "" {
-		ref := taskWorkRef(taskID, task.Actor)
+		ref := taskWorkRef(taskID, task.Actor, task.Base)
 		expected := worktree.PublishedHead
 		args := []string{"push", "--porcelain"}
 		if expected != "" {

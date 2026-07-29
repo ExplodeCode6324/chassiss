@@ -57,6 +57,12 @@ var actionSpecs = map[string]ActionSpec{
 		PreconditionFields: []string{"actor", "base", "phase"},
 		EvidenceFields:     []string{"base", "observed_work_head", "observed_work_tree"},
 	},
+	"attempt.abandoned": {
+		Name: "attempt.abandoned", RootOnly: true, TaskAction: true, AllowedPathClass: "state",
+		PayloadFields:      []string{"failure"},
+		PreconditionFields: []string{"actor", "agent_grant_id", "agent_key_id", "base", "phase"},
+		EvidenceFields:     []string{"changed_paths_digest", "observed_work_head", "observed_work_tree"},
+	},
 	"task.blocked": {
 		Name: "task.blocked", Capability: "task.block", TaskAction: true, AllowedPathClass: "state",
 		PayloadFields:      []string{"reason"},
@@ -75,6 +81,12 @@ var actionSpecs = map[string]ActionSpec{
 	},
 	"task.reviewed": {
 		Name: "task.reviewed", Capability: "review.attest", TaskAction: true, AllowedPathClass: "state",
+		PayloadFields:      []string{"report", "verdict"},
+		PreconditionFields: []string{"attempt_digest", "phase"},
+		EvidenceFields:     []string{"attempt_digest", "check_results", "review_context"},
+	},
+	"task.reviewed-indexed": {
+		Name: "task.reviewed-indexed", Capability: "review.attest", TaskAction: true, AllowedPathClass: "state",
 		PayloadFields:      []string{"report", "verdict"},
 		PreconditionFields: []string{"attempt_digest", "phase"},
 		EvidenceFields:     []string{"attempt_digest", "check_results", "review_context"},

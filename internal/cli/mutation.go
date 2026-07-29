@@ -402,10 +402,12 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 		Identity: discoverIdentity(verified.State, project.LocalProject),
 	})
 	envelope.Command = commandForAction(plan.Operation.Action)
+	envelope.Identity = identityForAuthority(plan.Authority)
 	envelope.Operation = &OperationBody{
 		Commit: commit, EvidenceAttempt: plan.Evidence.Attempt,
 		EvidenceDigest: evidenceDigest, OperationDigest: operationDigest,
-		OperationID: plan.Operation.OperationID, Status: "published",
+		OperationID: plan.Operation.OperationID, Signer: signerForAuthority(plan.Authority),
+		Status: "published",
 	}
 	envelope.Result = plan.Result
 	if envelope.Result == nil {
@@ -500,7 +502,7 @@ func rebaseTransitionPlan(
 				plan.ReduceFacts.ActiveTasksForActor++
 			}
 		}
-	case "task.reviewed":
+	case "task.reviewed", "task.reviewed-indexed":
 		if err := rebuildReviewRetry(ctx, current, &plan); err != nil {
 			return transitionPlan{}, err
 		}
@@ -923,6 +925,8 @@ func commandForAction(action string) string {
 		return "task start"
 	case "task.released":
 		return "task release"
+	case "attempt.abandoned":
+		return "attempt abandon"
 	case "task.blocked":
 		return "task block"
 	case "task.resumed":
@@ -933,7 +937,7 @@ func commandForAction(action string) string {
 		return "task supersede"
 	case "task.submitted":
 		return "submit"
-	case "task.reviewed":
+	case "task.reviewed", "task.reviewed-indexed":
 		return "review"
 	case "integration.applied":
 		return "integrate"
@@ -985,10 +989,20 @@ func matchesResource(resource string, patterns []string) bool {
 	return false
 }
 
-func taskWorkRef(taskID, actor string) string {
-	return "refs/heads/chassiss/work/" + taskID + "/" + actor
+func taskWorkRef(taskID, actor, base string) string {
+	return "refs/heads/chassiss/work/" + taskID + "/" + base[:12] + "/" + actor
 }
 
-func worktreePath(project *projectContext, taskID, actor string) string {
-	return filepath.Join(project.Store.Paths.Data, "worktrees", project.Verified.State.Project.ID, taskID, actor)
+func taskWorkRefs(taskID, actor, base string) []string {
+	return []string{
+		taskWorkRef(taskID, actor, base),
+		"refs/heads/chassiss/work/" + taskID + "/" + actor,
+	}
+}
+
+func worktreePath(project *projectContext, taskID, actor, base string) string {
+	return filepath.Join(
+		project.Store.Paths.Data, "worktrees", project.Verified.State.Project.ID,
+		taskID, base[:12], actor,
+	)
 }

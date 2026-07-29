@@ -1,11 +1,46 @@
 package state
 
 type State struct {
+	Audit     *AuditIndex          `json:"audit,omitempty"`
 	Authority Authority            `json:"authority"`
 	Project   Project              `json:"project"`
 	Protocol  string               `json:"protocol"`
 	Schema    string               `json:"schema"`
 	Tasks     map[string]TaskState `json:"tasks"`
+}
+
+type AuditIndex struct {
+	Failures []AttemptFailureIndex `json:"failures,omitempty"`
+	Reviews  []ReviewIndex         `json:"reviews,omitempty"`
+}
+
+type ReviewIndex struct {
+	AttemptDigest  string `json:"attempt_digest"`
+	ContextDigest  string `json:"context_digest"`
+	GrantID        string `json:"grant_id"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	KeyID          string `json:"key_id"`
+	OperationID    string `json:"operation_id"`
+	ReportDigest   string `json:"report_digest"`
+	Reviewer       string `json:"reviewer"`
+	Task           string `json:"task"`
+	Taskbook       string `json:"taskbook"`
+	Verdict        string `json:"verdict"`
+}
+
+type AttemptFailureIndex struct {
+	Actor              string `json:"actor"`
+	AgentGrantID       string `json:"agent_grant_id"`
+	AgentKeyID         string `json:"agent_key_id"`
+	ChangedPathsDigest string `json:"changed_paths_digest"`
+	Code               string `json:"code"`
+	OperationID        string `json:"operation_id"`
+	Phase              string `json:"phase"`
+	Summary            string `json:"summary"`
+	Task               string `json:"task"`
+	Taskbook           string `json:"taskbook"`
+	WorkHead           string `json:"work_head"`
+	WorkTree           string `json:"work_tree"`
 }
 
 type Project struct {

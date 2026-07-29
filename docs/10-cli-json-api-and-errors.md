@@ -170,6 +170,14 @@ Read-only command 使用 `operation=null`。
     "evidence_digest": "sha256:...",
     "operation_digest": "sha256:...",
     "operation_id": "OPR-...",
+    "signer": {
+      "actor": "agent-builder-1",
+      "authority": "grant:GRT-BUILDER-01",
+      "grant_id": "GRT-BUILDER-01",
+      "key_fingerprint": "SHA256:...",
+      "key_id": "KEY-BUILDER-01",
+      "root": false
+    },
     "status": "published"
   },
   "project": {
@@ -193,6 +201,11 @@ Read-only command 使用 `operation=null`。
   "warnings": []
 }
 ```
+
+Mutation success 中的 `identity` 和 `operation.signer` 必须对应本次实际选择并
+验证的 Authority，而不是调用前默认发现的 identity。显式
+`--key/--grant` 因此可以被调用方逐字段审计。Root mutation 的
+`operation.signer.root=true`、`grant_id=""`，且 `identity=null`。
 
 ## 8. Error envelope
 
@@ -489,6 +502,11 @@ Extension：
 
 Project State 不允许 extension。Architecture/Taskbook extension 不参与 Reducer
 语义，只参与 exact blob 与 semantic-diff binding。
+
+`help --json` 的每条 command definition 还包含始终为 array 的
+`input_schemas`。`review` 声明 `chassiss.review-report/v1`，`taskbook archive`
+声明 `chassiss.taskbook-closure-report/v1`；prepare 和 validation error 同时
+返回 hydrated template/schema 与可执行 remediation argv。
 
 ## 15. 输出安全
 

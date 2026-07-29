@@ -153,7 +153,7 @@ func driftRange(
 			continue
 		}
 		switch message.Operation.Action {
-		case "task.reviewed":
+		case "task.reviewed", "task.reviewed-indexed":
 			targetReviews++
 		case "task.blocked", "task.resumed":
 			// A completed control pair is checked below.

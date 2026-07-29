@@ -28,12 +28,15 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 	}
 	action := map[string]string{
 		"task start": "task.started", "task release": "task.released",
-		"task block": "task.blocked", "task resume": "task.resumed",
+		"attempt abandon": "attempt.abandoned",
+		"task block":      "task.blocked", "task resume": "task.resumed",
 		"task cancel": "task.cancelled", "task supersede": "task.superseded",
 	}[invocation.Definition.Path]
 	spec, _ := protocol.Action(action)
 	var authority selectedAuthority
-	if action == "task.superseded" && invocation.Value("grant") == "" && invocation.Value("key") != "" {
+	if action == "attempt.abandoned" {
+		authority, err = selectRoot(project, invocation.Value("root-key"))
+	} else if action == "task.superseded" && invocation.Value("grant") == "" && invocation.Value("key") != "" {
 		authority, err = selectRoot(project, invocation.Value("key"))
 	} else {
 		authority, err = selectGrant(project, invocation, spec.Capability, taskID, resources, false)
@@ -97,6 +100,55 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 			"base": runtimeTask.Base, "observed_work_head": runtimeTask.Base,
 			"observed_work_tree": baseCommit.Tree,
 		}
+	case "attempt.abandoned":
+		if runtimeTask.Phase != "active" && runtimeTask.Phase != "submitted" &&
+			runtimeTask.Phase != "approved" {
+			return Envelope{}, protocol.NewError(protocol.ErrTaskPhaseInvalid, protocol.CategoryValidation, "Attempt abandon requires an active Agent phase.")
+		}
+		agentGrantID := invocation.Value("agent-grant")
+		agentKeyID := invocation.Value("agent-key")
+		agentGrant, exists := project.Verified.State.Authority.Grants[agentGrantID]
+		if !exists || agentGrant.Actor != runtimeTask.Actor || agentGrant.KeyID != agentKeyID {
+			return Envelope{}, protocol.NewError(protocol.ErrGrantNotFound, protocol.CategoryAuthorization, "Agent Grant/key does not match the active Task actor.")
+		}
+		worktree, exists := project.LocalProject.Worktrees[taskID]
+		if !exists {
+			return Envelope{}, protocol.NewError(protocol.ErrWorktreeNotFound, protocol.CategoryLocal, "Managed Task worktree is not registered.")
+		}
+		workRunner := gitstore.New(worktree.Path)
+		changed, err := workingChangedPaths(ctx, workRunner)
+		if err != nil {
+			return Envelope{}, err
+		}
+		changedDigest, _ := protocol.ObjectDigest("changed-paths", changed)
+		workHead, err := workRunner.Resolve(ctx, "HEAD")
+		if err != nil {
+			return Envelope{}, err
+		}
+		workCommit, err := workRunner.ReadCommit(ctx, workHead)
+		if err != nil {
+			return Envelope{}, err
+		}
+		failure := map[string]any{
+			"actor": runtimeTask.Actor, "agent_grant_id": agentGrantID,
+			"agent_key_id": agentKeyID, "changed_paths_digest": changedDigest,
+			"code": invocation.Value("code"), "phase": runtimeTask.Phase,
+			"reason": invocation.Value("reason"), "schema": "chassiss.attempt-failure/v1",
+			"summary": invocation.Value("summary"), "task": taskID,
+			"taskbook":  project.Verified.State.Project.Taskbook.ID,
+			"work_head": workHead, "work_tree": workCommit.Tree,
+		}
+		operation.Preconditions = map[string]any{
+			"actor": runtimeTask.Actor, "agent_grant_id": agentGrantID,
+			"agent_key_id": agentKeyID, "base": runtimeTask.Base,
+			"phase": runtimeTask.Phase,
+		}
+		operation.Payload = map[string]any{"failure": failure}
+		evidenceFacts = map[string]any{
+			"changed_paths_digest": changedDigest,
+			"observed_work_head":   workHead,
+			"observed_work_tree":   workCommit.Tree,
+		}
 	case "task.blocked":
 		operation.Preconditions = map[string]any{"blocked": false, "phase": runtimeTask.Phase}
 		operation.Payload = map[string]any{"reason": invocation.Value("reason")}
@@ -157,6 +209,13 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 	if err != nil {
 		return Envelope{}, err
 	}
+	if action == "attempt.abandoned" {
+		worktreeRemoved, warnings := cleanupAbandonedWork(ctx, project, taskID)
+		envelope.Warnings = append(envelope.Warnings, warnings...)
+		envelope.Result.(map[string]any)["worktree_removed"] = worktreeRemoved
+		envelope.Result.(map[string]any)["agent_grant"] = invocation.Value("agent-grant")
+		envelope.Result.(map[string]any)["agent_key"] = invocation.Value("agent-key")
+	}
 	if action == "task.started" {
 		published, readErr := project.Runner.ReadCommit(ctx, envelope.Operation.Commit)
 		base := project.Verified.Head
@@ -177,12 +236,48 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 	return envelope, nil
 }
 
+func cleanupAbandonedWork(ctx context.Context, project *projectContext, taskID string) (bool, []Warning) {
+	worktree, exists := project.LocalProject.Worktrees[taskID]
+	if !exists {
+		return true, nil
+	}
+	if _, err := project.Runner.Run(ctx, "worktree", "remove", "--force", worktree.Path); err != nil {
+		return false, []Warning{cleanupWarning(taskID, "worktree")}
+	}
+	warnings := make([]Warning, 0)
+	if _, err := project.Runner.Run(ctx, "update-ref", "-d", worktree.Branch); err != nil {
+		warnings = append(warnings, cleanupWarning(taskID, "local_ref"))
+	}
+	if project.LocalProject.Remote.URL != "" {
+		if _, err := project.Runner.Run(ctx, "push", "--porcelain", "origin", ":"+worktree.Branch); err != nil {
+			warnings = append(warnings, cleanupWarning(taskID, "remote_ref"))
+		}
+	}
+	if err := project.Store.Update(func(local *localstate.State) error {
+		value := local.Projects[project.Verified.State.Project.ID]
+		delete(value.Worktrees, taskID)
+		local.Projects[project.Verified.State.Project.ID] = value
+		return nil
+	}); err != nil {
+		warnings = append(warnings, cleanupWarning(taskID, "registry"))
+	}
+	return true, warnings
+}
+
+func cleanupWarning(taskID, artifact string) Warning {
+	return Warning{
+		Code:    "CHS_WARN_LOCAL_CLEANUP",
+		Message: "Attempt failure was recorded, but managed Work cleanup requires reconciliation.",
+		Details: map[string]any{"artifact": artifact, "task": taskID},
+	}
+}
+
 func createManagedWorktree(ctx context.Context, project *projectContext, taskID, actor, base string) (string, error) {
-	path := worktreePath(project, taskID, actor)
+	path := worktreePath(project, taskID, actor, base)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	ref := taskWorkRef(taskID, actor)
+	ref := taskWorkRef(taskID, actor, base)
 	zero := zeroOID(project.Verified.ObjectFormat)
 	if err := project.Runner.UpdateRefCAS(ctx, ref, base, zero, "CHASSISS Work start"); err != nil {
 		if existing, resolveErr := project.Runner.Resolve(ctx, ref); resolveErr != nil || existing != base {

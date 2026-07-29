@@ -13,6 +13,7 @@ type CommandDefinition struct {
 	Mutating           bool       `json:"mutating"`
 	Arguments          []Argument `json:"arguments"`
 	Options            []Option   `json:"options"`
+	InputSchemas       []string   `json:"input_schemas"`
 	RequiredCapability *string    `json:"required_capability"`
 	PossibleErrors     []string   `json:"possible_errors"`
 	ResultSchema       string     `json:"result_schema"`
@@ -55,6 +56,13 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "task show", Summary: "Show a Task and effective Contract.", Arguments: []Argument{{Name: "task-id", Required: true}}, Options: []Option{{Name: "history", Boolean: true}}},
 	{Path: "task start", Summary: "Start a ready Task and create its managed worktree.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: mutationOptions(), RequiredCapability: capability("task.start")},
 	{Path: "task release", Summary: "Release unchanged active work.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "reason", Required: true}), RequiredCapability: capability("task.release")},
+	{Path: "attempt abandon", Summary: "Record a failed temporary Agent attempt and destroy its worktree.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: []Option{
+		{Name: "root-key", Required: true}, {Name: "agent-key", Required: true},
+		{Name: "agent-grant", Required: true}, {Name: "code", Required: true},
+		{Name: "summary", Required: true}, {Name: "reason", Required: true},
+		{Name: "operation-id"},
+	}},
+	{Path: "attempt failures", Summary: "Read compact failed-attempt indices and signed failure records.", Arguments: []Argument{{Name: "task-id", Required: true}}, Options: []Option{{Name: "operation"}}},
 	{Path: "task block", Summary: "Block a non-terminal Task.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "reason", Required: true}), RequiredCapability: capability("task.block")},
 	{Path: "task resume", Summary: "Resume a blocked Task.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "reason"}), RequiredCapability: capability("task.resume")},
 	{Path: "task cancel", Summary: "Cancel a non-terminal Task.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "reason", Required: true}), RequiredCapability: capability("task.cancel")},
@@ -68,7 +76,9 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "work remove", Summary: "Remove an eligible managed worktree.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: []Option{{Name: "discard-unreachable", Boolean: true}, {Name: "yes", Boolean: true}}},
 	{Path: "check", Summary: "Run frozen Task Checks locally.", Arguments: []Argument{{Name: "task-id", Required: true}}},
 	{Path: "submit", Summary: "Publish and submit an exact Attempt.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: mutationOptions(), RequiredCapability: capability("task.submit")},
-	{Path: "review", Summary: "Prepare or attest a semantic Review.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "prepare", Boolean: true}, Option{Name: "output"}, Option{Name: "verdict"}, Option{Name: "report"}), RequiredCapability: capability("review.attest")},
+	{Path: "review", Summary: "Prepare or attest a semantic Review.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: append(mutationOptions(), Option{Name: "prepare", Boolean: true}, Option{Name: "output"}, Option{Name: "report-output"}, Option{Name: "verdict"}, Option{Name: "report"}), InputSchemas: []string{"chassiss.review-report/v1"}, RequiredCapability: capability("review.attest")},
+	{Path: "review list", Summary: "List verified Review Report indices.", Arguments: []Argument{{Name: "task-id", Required: true}}},
+	{Path: "review show", Summary: "Resolve a verified Review Report from signed history.", Arguments: []Argument{{Name: "task-id", Required: true}}, Options: []Option{{Name: "attempt"}, {Name: "operation"}}},
 	{Path: "integrate", Summary: "Apply the exact approved Integration.", Mutating: true, Arguments: []Argument{{Name: "task-id", Required: true}}, Options: mutationOptions(), RequiredCapability: capability("integration.apply")},
 	{Path: "taskbook show", Summary: "Show active Taskbook content.", Options: []Option{{Name: "task"}, {Name: "requirement"}, {Name: "constraint"}}},
 	{Path: "taskbook draft", Summary: "Copy or create an external Taskbook candidate.", Options: []Option{{Name: "output", Required: true}, {Name: "new", Boolean: true}}},
@@ -76,7 +86,7 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "taskbook diff", Summary: "Diff a Taskbook candidate.", Options: []Option{{Name: "file", Required: true}}},
 	{Path: "taskbook open", Summary: "Open a new Taskbook workflow.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("taskbook.open")},
 	{Path: "taskbook update", Summary: "Update ready portions of the Taskbook.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("taskbook.update")},
-	{Path: "taskbook archive", Summary: "Attest closure, run Workflow Checks, and archive.", Mutating: true, Options: append(mutationOptions(), Option{Name: "report", Required: true}), RequiredCapability: capability("taskbook.archive")},
+	{Path: "taskbook archive", Summary: "Prepare or attest closure, run Workflow Checks, and archive.", Mutating: true, Options: append(mutationOptions(), Option{Name: "prepare", Boolean: true}, Option{Name: "output"}, Option{Name: "report"}), InputSchemas: []string{"chassiss.taskbook-closure-report/v1"}, RequiredCapability: capability("taskbook.archive")},
 	{Path: "architecture show", Summary: "Show an Architecture Resource.", Arguments: []Argument{{Name: "resource-id", Required: true}}, Options: []Option{{Name: "file"}}},
 	{Path: "architecture draft", Summary: "Copy current Architecture outside the repository.", Options: []Option{{Name: "output", Required: true}}},
 	{Path: "architecture diff", Summary: "Diff an Architecture candidate.", Options: []Option{{Name: "file", Required: true}}},
@@ -88,6 +98,8 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "key generate", Summary: "Generate a local Ed25519 key.", Mutating: true, Options: []Option{{Name: "id", Required: true}, {Name: "actor", Required: true}, {Name: "store"}}},
 	{Path: "key list", Summary: "List local key handles."},
 	{Path: "key show", Summary: "Show a local public key.", Arguments: []Argument{{Name: "key-id", Required: true}}},
+	{Path: "key attach", Summary: "Attach an external local key to the current verified Project.", Mutating: true, Arguments: []Argument{{Name: "key-id", Required: true}}, Options: []Option{{Name: "select", Boolean: true}}},
+	{Path: "identity select", Summary: "Select an attached local Project identity.", Mutating: true, Options: []Option{{Name: "key", Required: true}}},
 	{Path: "key remove", Summary: "Remove eligible local private material.", Mutating: true, Arguments: []Argument{{Name: "key-id", Required: true}}, Options: []Option{{Name: "orphan-grant", Boolean: true}, {Name: "yes", Boolean: true}}},
 	{Path: "grant request", Summary: "Create a proof-of-possession Grant Request.", Options: grantRequestOptions()},
 	{Path: "grant list", Summary: "List current verified Grants.", Options: []Option{{Name: "actor"}}},
@@ -135,6 +147,9 @@ func sortedDefinitions() []CommandDefinition {
 		if result[index].Options == nil {
 			result[index].Options = []Option{}
 		}
+		if result[index].InputSchemas == nil {
+			result[index].InputSchemas = []string{}
+		}
 		result[index].PossibleErrors = possibleErrorsFor(result[index])
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
@@ -144,7 +159,8 @@ func sortedDefinitions() []CommandDefinition {
 func possibleErrorsFor(definition CommandDefinition) []string {
 	errors := []string{protocol.ErrUsageInvalid}
 	localOnly := definition.Path == "version" || definition.Path == "help" ||
-		strings.HasPrefix(definition.Path, "key ") || definition.Path == "grant request" ||
+		(strings.HasPrefix(definition.Path, "key ") && definition.Path != "key attach") ||
+		definition.Path == "grant request" ||
 		definition.Path == "clone" || definition.Path == "init" ||
 		definition.Path == "cache clean"
 	if !localOnly {

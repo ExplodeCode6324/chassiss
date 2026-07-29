@@ -202,10 +202,13 @@ func verifyCurrentWorkRefs(ctx context.Context, runner gitstore.Runner, current 
 		if (task.Phase != "submitted" && task.Phase != "approved") || task.Attempt == nil {
 			continue
 		}
-		suffix := "chassiss/work/" + taskID + "/" + task.Actor
+		newSuffix := "chassiss/work/" + taskID + "/" + task.Base[:12] + "/" + task.Actor
+		legacySuffix := "chassiss/work/" + taskID + "/" + task.Actor
 		refs := []string{
-			"refs/heads/" + suffix,
-			"refs/remotes/origin/" + suffix,
+			"refs/heads/" + newSuffix,
+			"refs/remotes/origin/" + newSuffix,
+			"refs/heads/" + legacySuffix,
+			"refs/remotes/origin/" + legacySuffix,
 		}
 		retained := false
 		for _, ref := range refs {

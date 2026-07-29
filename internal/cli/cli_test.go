@@ -96,6 +96,9 @@ func TestHelpSchemaUsesConcreteArraysAndErrors(t *testing.T) {
 	if definition.Arguments == nil || definition.Options == nil || definition.PossibleErrors == nil {
 		t.Fatalf("help schema contains a null array: %#v", definition)
 	}
+	if definition.InputSchemas == nil {
+		t.Fatalf("help schema contains a null input_schemas array: %#v", definition)
+	}
 	if !containsString(definition.PossibleErrors, "CHS_CAPABILITY_DENIED") ||
 		!containsString(definition.PossibleErrors, "CHS_USAGE_INVALID") {
 		t.Fatalf("help schema omitted stable possible errors: %#v", definition.PossibleErrors)
@@ -350,11 +353,18 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		t.Fatalf("unexpected verify envelope %#v", verifyEnvelope)
 	}
 
+	externalKeyWorkspace := t.TempDir()
+	if err := os.Chdir(externalKeyWorkspace); err != nil {
+		t.Fatal(err)
+	}
 	keyEnvelope := runJSON(t, []string{
 		"key", "generate", "--id", "KEY-AGENT-01", "--actor", "agent-one",
 	}, &stdout, &stderr)
 	if !keyEnvelope.OK {
 		t.Fatal("agent key generation failed")
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
 	}
 	requestPath := filepath.Join(t.TempDir(), "grant-request.json")
 	requestEnvelope := runJSON(t, []string{
@@ -382,6 +392,20 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	}, &stdout, &stderr)
 	if grantEnvelope.Operation == nil {
 		t.Fatalf("Grant transition missing: %#v", grantEnvelope)
+	}
+	if !grantEnvelope.Operation.Signer.Root ||
+		grantEnvelope.Operation.Signer.KeyID != "KEY-ROOT-01" {
+		t.Fatalf("Grant response omitted the exact Root signer: %#v", grantEnvelope.Operation)
+	}
+	contextBeforeAttach := runJSON(t, []string{"context"}, &stdout, &stderr)
+	if contextBeforeAttach.Identity != nil {
+		t.Fatalf("Externally generated key was unexpectedly auto-attached: %#v", contextBeforeAttach.Identity)
+	}
+	attachEnvelope := runJSON(t, []string{
+		"key", "attach", "KEY-AGENT-01", "--select",
+	}, &stdout, &stderr)
+	if attachEnvelope.Identity == nil || attachEnvelope.Identity.Actor != "agent-one" {
+		t.Fatalf("External key attach did not discover the Grant identity: %#v", attachEnvelope)
 	}
 	runJSON(t, []string{
 		"key", "generate", "--id", "KEY-EXTRA-01", "--actor", "extra-agent",
@@ -443,6 +467,11 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	diffEnvelope := runJSON(t, []string{"work", "diff", "TASK-001"}, &stdout, &stderr)
+	diffText, _ := diffEnvelope.Result.(map[string]any)["diff"].(string)
+	if !strings.Contains(diffText, "func Apply") || !strings.Contains(diffText, "TestPlaceholder") {
+		t.Fatalf("Work diff omitted untracked source files: %q", diffText)
+	}
 	commitEnvelope := runJSON(t, []string{
 		"work", "commit", "TASK-001", "--message", "implement reducer",
 	}, &stdout, &stderr)
@@ -452,6 +481,27 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	submitEnvelope := runJSON(t, []string{"submit", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
 	if submitEnvelope.Operation == nil {
 		t.Fatalf("Submit transition missing: %#v", submitEnvelope)
+	}
+	reviewContextPath := filepath.Join(t.TempDir(), "review-context.json")
+	reviewTemplatePath := filepath.Join(t.TempDir(), "review-template.json")
+	prepareReview := runJSON(t, []string{
+		"review", "TASK-001", "--prepare", "--output", reviewContextPath,
+		"--report-output", reviewTemplatePath,
+	}, &stdout, &stderr)
+	if prepareReview.Result.(map[string]any)["report_schema"] != "chassiss.review-report/v1" {
+		t.Fatalf("Review prepare did not expose its input schema: %#v", prepareReview)
+	}
+	var reviewTemplate map[string]any
+	templateData, err := os.ReadFile(reviewTemplatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(templateData, &reviewTemplate); err != nil {
+		t.Fatal(err)
+	}
+	responses, _ := reviewTemplate["reviewer_attention_responses"].([]any)
+	if len(responses) != 2 {
+		t.Fatalf("Review template was not hydrated from reviewer_attention: %#v", reviewTemplate)
 	}
 	reportPath := filepath.Join(t.TempDir(), "review-report.json")
 	report := map[string]any{
@@ -481,12 +531,40 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if err := os.WriteFile(reportPath, reportData, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	selectExtra := runJSON(t, []string{
+		"identity", "select", "--key", "KEY-EXTRA-01",
+	}, &stdout, &stderr)
+	if selectExtra.Identity == nil || selectExtra.Identity.Actor != "extra-agent" {
+		t.Fatalf("Failed to select the alternate local identity: %#v", selectExtra)
+	}
 	reviewEnvelope := runJSON(t, []string{
 		"review", "TASK-001", "--verdict", "approve", "--report", reportPath,
 		"--grant", "GRT-AGENT-01",
 	}, &stdout, &stderr)
 	if reviewEnvelope.Operation == nil || len(reviewEnvelope.Warnings) != 2 {
 		t.Fatalf("Review transition or independence warnings missing: %#v", reviewEnvelope)
+	}
+	if reviewEnvelope.Identity == nil || reviewEnvelope.Identity.Actor != "agent-one" ||
+		reviewEnvelope.Operation.Signer.Actor != "agent-one" ||
+		reviewEnvelope.Operation.Signer.GrantID != "GRT-AGENT-01" {
+		t.Fatalf("Review response attributed the explicit signer incorrectly: %#v", reviewEnvelope)
+	}
+	reviewList := runJSON(t, []string{"review", "list", "TASK-001"}, &stdout, &stderr)
+	if len(reviewList.Result.(map[string]any)["reviews"].([]any)) != 1 {
+		t.Fatalf("Review list did not resolve the signed history: %#v", reviewList)
+	}
+	reviewShow := runJSON(t, []string{"review", "show", "TASK-001", "--attempt", "1"}, &stdout, &stderr)
+	if reviewShow.Result.(map[string]any)["review"] == nil {
+		t.Fatalf("Review show did not return the signed Report: %#v", reviewShow)
+	}
+	projectAfterReview, err := loadProject(context.Background(), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectAfterReview.Verified.State.Audit == nil ||
+		len(projectAfterReview.Verified.State.Audit.Reviews) != 1 ||
+		projectAfterReview.Verified.State.Audit.Reviews[0].OperationID != reviewEnvelope.Operation.OperationID {
+		t.Fatalf("State lacks the compact Review index: %#v", projectAfterReview.Verified.State.Audit)
 	}
 	integrateEnvelope := runJSON(t, []string{"integrate", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
 	if integrateEnvelope.Operation == nil {
@@ -511,6 +589,25 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		t.Fatalf("build check binary: %v\n%s", err, output)
 	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	closureTemplatePath := filepath.Join(t.TempDir(), "closure-template.json")
+	prepareClosure := runJSON(t, []string{
+		"taskbook", "archive", "--prepare", "--output", closureTemplatePath,
+	}, &stdout, &stderr)
+	if prepareClosure.Result.(map[string]any)["report_schema"] != "chassiss.taskbook-closure-report/v1" {
+		t.Fatalf("Closure prepare did not expose its input schema: %#v", prepareClosure)
+	}
+	var closureTemplate map[string]any
+	closureTemplateData, err := os.ReadFile(closureTemplatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(closureTemplateData, &closureTemplate); err != nil {
+		t.Fatal(err)
+	}
+	taskResponses, _ := closureTemplate["task_responses"].([]any)
+	if len(taskResponses) != 1 || taskResponses[0].(map[string]any)["response"] == nil {
+		t.Fatalf("Closure template omitted the exact response field: %#v", closureTemplate)
+	}
 	closurePath := filepath.Join(t.TempDir(), "closure-report.json")
 	closureReport := map[string]any{
 		"schema":   "chassiss.taskbook-closure-report/v1",
@@ -613,6 +710,39 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	currentData = []byte(strings.Replace(
 		string(currentData), "Edit this workflow title", "Next verified workflow", 1,
 	))
+	currentData = []byte(strings.Replace(
+		string(currentData), "tasks: {}", `tasks:
+  TASK-FAILURE:
+    title: Exercise failed temporary Agent cleanup
+    goal: |-
+      Record an abandoned attempt and clean its isolated worktree.
+    requirements: []
+    constraints: []
+    deliverables:
+      - Signed failure record
+    modules:
+      - module:core
+    depends_on: []
+    writes:
+      - src/core/reducer/**
+    affects:
+      - schema:state
+    checks:
+      - id: CHECK-FAILURE
+        argv:
+          - chassiss
+          - verify
+          - --full
+        cwd: .
+        timeout_seconds: 120
+    change_limits:
+      max_changed_paths: 4
+    out_of_scope: []
+    stop_conditions: []
+    reviewer_attention:
+      - Verify failure evidence precedes cleanup.
+    supersedes: []`, 1,
+	))
 	if err := os.WriteFile(currentTaskbook, currentData, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -622,6 +752,55 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	}, &stdout, &stderr)
 	if updateEnvelope.Operation == nil {
 		t.Fatalf("Taskbook update transition missing: %#v", updateEnvelope)
+	}
+	abandonStart := runJSON(t, []string{
+		"task", "start", "TASK-FAILURE", "--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	abandonWorktree := abandonStart.Result.(map[string]any)["worktree"].(string)
+	if err := os.MkdirAll(filepath.Join(abandonWorktree, "src", "core", "reducer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(abandonWorktree, "src", "core", "reducer", "failed.go"),
+		[]byte("package reducer\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	abandonEnvelope := runJSON(t, []string{
+		"attempt", "abandon", "TASK-FAILURE", "--root-key", "KEY-ROOT-01",
+		"--agent-key", "KEY-AGENT-01", "--agent-grant", "GRT-AGENT-01",
+		"--code", "AGENT_TEST_FAILURE", "--summary", "Temporary Agent failed its focused test.",
+		"--reason", "Record the failed attempt before destroying its worktree.",
+	}, &stdout, &stderr)
+	if abandonEnvelope.Result.(map[string]any)["worktree_removed"] != true {
+		t.Fatalf("Attempt abandon did not clean the failed worktree: %#v", abandonEnvelope)
+	}
+	if _, err := os.Stat(abandonWorktree); !os.IsNotExist(err) {
+		t.Fatalf("Failed worktree still exists after signed failure capture: %v", err)
+	}
+	afterAbandon, err := loadProject(context.Background(), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterAbandon.Verified.State.Tasks["TASK-FAILURE"].Phase != "ready" ||
+		afterAbandon.Verified.State.Audit == nil ||
+		len(afterAbandon.Verified.State.Audit.Failures) != 1 {
+		t.Fatalf("Attempt failure was not compactly indexed in State: %#v", afterAbandon.Verified.State)
+	}
+	failureList := runJSON(t, []string{
+		"attempt", "failures", "TASK-FAILURE",
+	}, &stdout, &stderr)
+	failures := failureList.Result.(map[string]any)["failures"].([]any)
+	if len(failures) != 1 {
+		t.Fatalf("Attempt failure list did not resolve the State index: %#v", failureList)
+	}
+	failureShow := runJSON(t, []string{
+		"attempt", "failures", "TASK-FAILURE", "--operation", abandonEnvelope.Operation.OperationID,
+	}, &stdout, &stderr)
+	failureRecords := failureShow.Result.(map[string]any)["failures"].([]any)
+	if len(failureRecords) != 1 ||
+		failureRecords[0].(map[string]any)["failure"] == nil {
+		t.Fatalf("Attempt failure detail did not resolve signed history: %#v", failureShow)
 	}
 	verifyEnvelope = runJSON(t, []string{"verify", "--full"}, &stdout, &stderr)
 	if verifyEnvelope.Snapshot == nil || verifyEnvelope.Snapshot.Trust != "verified" {

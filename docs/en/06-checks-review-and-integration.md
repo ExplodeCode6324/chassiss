@@ -18,11 +18,14 @@ Prepare an exact candidate:
 chassiss review TASK-001 \
   --prepare \
   --output /outside/review-context.json \
+  --report-output /outside/review-report.json \
   --json
 ```
 
 The Reviewer inspects the candidate, Requirements, Architecture, findings, and
-reviewer-attention items, completes a `chassiss.review-report/v1`, and runs:
+reviewer-attention items. Prepare returns the input schema and a hydrated Report
+template with one response slot per frozen attention item. The Reviewer
+completes that `chassiss.review-report/v1` and runs:
 
 ```text
 chassiss review TASK-001 \
@@ -34,6 +37,10 @@ chassiss review TASK-001 \
 `request_changes` returns to a sparse active projection. Passing Checks never
 create automatic approval. A same-Actor or same-key Review remains protocol
 valid but produces a warning that must be shown to Master.
+
+The full Report remains in signed history; State stores only a compact audit
+index. Resolve it with `review list TASK-001` and
+`review show TASK-001 --operation OPR-...`.
 
 ## Integration
 
@@ -54,4 +61,3 @@ tree      = exact recomputed candidate
 
 Success leaves only `phase=closed` in State and starts safe cleanup of the Work
 Ref and worktree.
-

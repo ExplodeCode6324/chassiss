@@ -62,11 +62,13 @@ func initCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 	if pathWithin(repository, rootPath) {
 		return Envelope{}, protocol.NewError(protocol.ErrUsageInvalid, protocol.CategoryUsage, "Root private key must be stored outside the Project repository.")
 	}
+	gitMarker := filepath.Join(repository, ".git")
 	runner := gitstore.New(repository)
-	if _, err := runner.Run(ctx, "rev-parse", "--verify", "HEAD^{commit}"); err == nil {
-		return Envelope{}, protocol.NewError(protocol.ErrProjectAlreadyRegistered, protocol.CategoryLocal, "Target directory already has Git history.")
-	}
-	if _, err := os.Stat(filepath.Join(repository, ".git")); os.IsNotExist(err) {
+	if _, err := os.Stat(gitMarker); err == nil {
+		if _, err := runner.Run(ctx, "rev-parse", "--verify", "HEAD^{commit}"); err == nil {
+			return Envelope{}, protocol.NewError(protocol.ErrProjectAlreadyRegistered, protocol.CategoryLocal, "Target directory already has Git history.")
+		}
+	} else if os.IsNotExist(err) {
 		bootstrap := gitstore.New("")
 		if _, err := bootstrap.Run(ctx, "init", "-b", "main", repository); err != nil {
 			return Envelope{}, err
@@ -250,7 +252,14 @@ func initCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 	evidenceDigest, _ := protocol.ObjectDigest("execution-evidence", evidence)
 	envelope.Operation = &OperationBody{
 		Commit: commit, EvidenceAttempt: 1, EvidenceDigest: evidenceDigest,
-		OperationDigest: operationDigest, OperationID: operationID, Status: "published",
+		OperationDigest: operationDigest, OperationID: operationID,
+		Signer: SignerBody{
+			Actor: "root", Authority: operation.Authority,
+			KeyFingerprint: rootFingerprint,
+			KeyID:          invocationRootKeyID(rootHandle, rootPublic, invocation),
+			Root:           true,
+		},
+		Status: "published",
 	}
 	envelope.Result = map[string]any{"genesis": commit, "repository": repository}
 	return envelope, nil

@@ -210,7 +210,7 @@ func TestReducerLifecycle(t *testing.T) {
 	}
 	current = reduceStep(t, current, protocol.Operation{
 		Schema: protocol.OperationSchema, OperationID: "OPR-61ARZ3NDEKTSV4RRFFQ69G5FAV",
-		Action: "task.reviewed", Project: "PRJ-EXAMPLE",
+		Action: "task.reviewed-indexed", Project: "PRJ-EXAMPLE",
 		Authority: "grant:GRT-AGENT-01", Target: "TASK-001",
 		Preconditions: map[string]any{"attempt_digest": attemptDigest, "phase": "submitted"},
 		Payload:       map[string]any{"report": report, "verdict": "approve"},
@@ -219,6 +219,10 @@ func TestReducerLifecycle(t *testing.T) {
 	}, ReduceFacts{TaskResources: []string{"module:core"}})
 	if current.Tasks["TASK-001"].Phase != "approved" {
 		t.Fatal("Task was not approved")
+	}
+	if current.Audit == nil || len(current.Audit.Reviews) != 1 ||
+		current.Audit.Reviews[0].OperationID != "OPR-61ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Fatalf("Review audit index is missing: %#v", current.Audit)
 	}
 
 	review := current.Tasks["TASK-001"].Review

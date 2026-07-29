@@ -79,6 +79,8 @@ func Reduce(parent *State, operation protocol.Operation, evidence protocol.Execu
 		err = reduceTaskStarted(next, operation, evidence, principal)
 	case "task.released":
 		err = reduceTaskReleased(next, operation, evidence, principal)
+	case "attempt.abandoned":
+		err = reduceAttemptAbandoned(next, operation, evidence, facts.ObjectFormat)
 	case "task.blocked":
 		err = reduceTaskBlocked(next, operation)
 	case "task.resumed":
@@ -86,7 +88,9 @@ func Reduce(parent *State, operation protocol.Operation, evidence protocol.Execu
 	case "task.submitted":
 		err = reduceTaskSubmitted(next, operation, evidence, principal, facts)
 	case "task.reviewed":
-		err = reduceTaskReviewed(next, operation, evidence, principal, facts.ObjectFormat)
+		err = reduceTaskReviewed(next, operation, evidence, principal, facts.ObjectFormat, false)
+	case "task.reviewed-indexed":
+		err = reduceTaskReviewed(next, operation, evidence, principal, facts.ObjectFormat, true)
 	case "task.cancelled":
 		err = reduceTaskTerminal(next, operation, evidence, "cancelled", facts.ObjectFormat)
 	case "task.superseded":
@@ -398,6 +402,69 @@ func reduceTaskReleased(next *State, operation protocol.Operation, evidence prot
 	return nil
 }
 
+func reduceAttemptAbandoned(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence, objectFormat string) error {
+	task, err := taskFor(next, operation.Target)
+	if err != nil {
+		return err
+	}
+	switch task.Phase {
+	case "active", "submitted", "approved":
+	default:
+		return fmt.Errorf("%s: abandon requires an active Agent phase", protocol.ErrTaskPhaseInvalid)
+	}
+	if task.Actor != stringValue(operation.Preconditions, "actor") ||
+		task.Base != stringValue(operation.Preconditions, "base") ||
+		task.Phase != stringValue(operation.Preconditions, "phase") {
+		return fmt.Errorf("%s: abandon Task preconditions are stale", protocol.ErrAttemptStale)
+	}
+	agentGrantID := stringValue(operation.Preconditions, "agent_grant_id")
+	agentKeyID := stringValue(operation.Preconditions, "agent_key_id")
+	grant, exists := next.Authority.Grants[agentGrantID]
+	if !exists || grant.Actor != task.Actor || grant.KeyID != agentKeyID {
+		return fmt.Errorf("%s: abandoned Agent identity is not a current matching Grant", protocol.ErrGrantNotFound)
+	}
+	failure, ok := operation.Payload["failure"].(map[string]any)
+	if !ok || stringValue(failure, "schema") != "chassiss.attempt-failure/v1" {
+		return fmt.Errorf("%s: attempt failure record is invalid", protocol.ErrOperationInvalid)
+	}
+	if next.Project.Taskbook == nil ||
+		stringValue(failure, "taskbook") != next.Project.Taskbook.ID ||
+		stringValue(failure, "task") != operation.Target ||
+		stringValue(failure, "phase") != task.Phase ||
+		stringValue(failure, "actor") != task.Actor ||
+		stringValue(failure, "agent_grant_id") != agentGrantID ||
+		stringValue(failure, "agent_key_id") != agentKeyID {
+		return fmt.Errorf("%s: attempt failure record does not match the parent State", protocol.ErrAttemptStale)
+	}
+	workHead := stringValue(evidence.Facts, "observed_work_head")
+	workTree := stringValue(evidence.Facts, "observed_work_tree")
+	changedDigest := stringValue(evidence.Facts, "changed_paths_digest")
+	if stringValue(failure, "work_head") != workHead ||
+		stringValue(failure, "work_tree") != workTree ||
+		stringValue(failure, "changed_paths_digest") != changedDigest {
+		return fmt.Errorf("%s: attempt failure evidence is inconsistent", protocol.ErrEvidenceInvalid)
+	}
+	index := AttemptFailureIndex{
+		Actor: task.Actor, AgentGrantID: agentGrantID, AgentKeyID: agentKeyID,
+		ChangedPathsDigest: changedDigest, Code: stringValue(failure, "code"),
+		OperationID: operation.OperationID, Phase: task.Phase,
+		Summary: stringValue(failure, "summary"), Task: operation.Target,
+		Taskbook: next.Project.Taskbook.ID, WorkHead: workHead, WorkTree: workTree,
+	}
+	if err := index.Validate(objectFormat); err != nil {
+		return fmt.Errorf("%s: %w", protocol.ErrOperationInvalid, err)
+	}
+	if strings.TrimSpace(stringValue(failure, "reason")) == "" {
+		return fmt.Errorf("%s: attempt failure reason is required", protocol.ErrOperationInvalid)
+	}
+	if next.Audit == nil {
+		next.Audit = &AuditIndex{}
+	}
+	next.Audit.Failures = append(next.Audit.Failures, index)
+	next.Tasks[operation.Target] = TaskState{Phase: "ready"}
+	return nil
+}
+
 func reduceTaskBlocked(next *State, operation protocol.Operation) error {
 	task, err := taskFor(next, operation.Target)
 	if err != nil {
@@ -484,7 +551,7 @@ func reduceTaskSubmitted(next *State, operation protocol.Operation, evidence pro
 	return nil
 }
 
-func reduceTaskReviewed(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence, signer principal, objectFormat string) error {
+func reduceTaskReviewed(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence, signer principal, objectFormat string, appendIndex bool) error {
 	task, err := taskFor(next, operation.Target)
 	if err != nil {
 		return err
@@ -513,6 +580,29 @@ func reduceTaskReviewed(next *State, operation protocol.Operation, evidence prot
 	if err != nil || len(reportBytes) > 65536 {
 		return fmt.Errorf("%s: Review Report is invalid or too large", protocol.ErrReviewReportInvalid)
 	}
+	reportDigest, err := protocol.ObjectDigest("review-report", report)
+	if err != nil {
+		return err
+	}
+	context, ok := evidence.Facts["review_context"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s: Review Context must be an object", protocol.ErrEvidenceInvalid)
+	}
+	contextDigest, err := protocol.ObjectDigest("review-context", context)
+	if err != nil {
+		return err
+	}
+	if next.Project.Taskbook == nil {
+		return fmt.Errorf("%s: Review requires an active Taskbook", protocol.ErrTaskbookNotActive)
+	}
+	reviewIndex := ReviewIndex{
+		AttemptDigest: stringValue(operation.Preconditions, "attempt_digest"),
+		ContextDigest: contextDigest, GrantID: signer.GrantID,
+		KeyFingerprint: signer.Fingerprint, KeyID: signer.KeyID,
+		OperationID: operation.OperationID, ReportDigest: reportDigest,
+		Reviewer: signer.Actor, Task: operation.Target,
+		Taskbook: next.Project.Taskbook.ID, Verdict: verdict,
+	}
 	switch verdict {
 	case "request_changes":
 		task.Phase = "active"
@@ -521,10 +611,6 @@ func reduceTaskReviewed(next *State, operation protocol.Operation, evidence prot
 	case "approve":
 		if err := validateApprovalReport(report); err != nil {
 			return fmt.Errorf("%s: %w", protocol.ErrReviewReportInvalid, err)
-		}
-		context, ok := evidence.Facts["review_context"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("%s: Review Context must be an object", protocol.ErrEvidenceInvalid)
 		}
 		if stringValue(context, "task") != operation.Target ||
 			stringValue(context, "attempt_head") != task.Attempt.Head ||
@@ -537,14 +623,6 @@ func reduceTaskReviewed(next *State, operation protocol.Operation, evidence prot
 			protocol.ValidateOID(reviewMain, objectFormat) != nil {
 			return fmt.Errorf("%s: Review Context contains invalid Git OIDs", protocol.ErrReviewContextStale)
 		}
-		contextDigest, err := protocol.ObjectDigest("review-context", context)
-		if err != nil {
-			return err
-		}
-		reportDigest, err := protocol.ObjectDigest("review-report", report)
-		if err != nil {
-			return err
-		}
 		task.Phase = "approved"
 		task.Review = &Review{
 			CandidateTree: candidate, ContextDigest: contextDigest,
@@ -553,6 +631,12 @@ func reduceTaskReviewed(next *State, operation protocol.Operation, evidence prot
 		}
 	default:
 		return fmt.Errorf("%s: unknown review verdict %q", protocol.ErrReviewReportInvalid, verdict)
+	}
+	if appendIndex {
+		if next.Audit == nil {
+			next.Audit = &AuditIndex{}
+		}
+		next.Audit.Reviews = append(next.Audit.Reviews, reviewIndex)
 	}
 	next.Tasks[operation.Target] = task
 	return nil

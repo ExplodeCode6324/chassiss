@@ -49,12 +49,22 @@ type IdentityBody struct {
 }
 
 type OperationBody struct {
-	Commit          string `json:"commit"`
-	EvidenceAttempt int64  `json:"evidence_attempt"`
-	EvidenceDigest  string `json:"evidence_digest"`
-	OperationDigest string `json:"operation_digest"`
-	OperationID     string `json:"operation_id"`
-	Status          string `json:"status"`
+	Commit          string     `json:"commit"`
+	EvidenceAttempt int64      `json:"evidence_attempt"`
+	EvidenceDigest  string     `json:"evidence_digest"`
+	OperationDigest string     `json:"operation_digest"`
+	OperationID     string     `json:"operation_id"`
+	Signer          SignerBody `json:"signer"`
+	Status          string     `json:"status"`
+}
+
+type SignerBody struct {
+	Actor          string `json:"actor"`
+	Authority      string `json:"authority"`
+	GrantID        string `json:"grant_id"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	KeyID          string `json:"key_id"`
+	Root           bool   `json:"root"`
 }
 
 type AvailableAction struct {

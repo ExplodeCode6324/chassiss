@@ -40,7 +40,8 @@ Root trust anchor 和 Genesis。
   object 或 Grant discovery 结果。
 - Candidate/Closure Checks 在临时 linked worktree 中运行，并临时注册 exact
   checkout，使子进程 `chassiss verify` 看到正确上下文。
-- 通用 Skill 只调用公开 CLI，不捆绑二进制、不解析 State/Git。
+- 通用 Skill 只调用公开 CLI，不解析 State/Git；捆绑 macOS/Linux
+  arm64/amd64 静态 CLI，并由 launcher 校验 manifest digest。
 
 ## 4. 已知 lock-candidate 差距
 

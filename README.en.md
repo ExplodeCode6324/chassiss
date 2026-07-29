@@ -89,8 +89,11 @@ completes the Closure Report and runs `taskbook archive`.
 
 Do not directly run Git-mutating commands such as add, commit, branch, checkout,
 worktree, merge, rebase, reset, push, or config. The reusable Agent instructions
-live in [`skills/chassiss/`](skills/chassiss/); the Skill contains no binary and
-does not parse protocol State.
+live in [`skills/chassiss/`](skills/chassiss/). The Skill bundles digest-verified
+macOS/Linux arm64/amd64 CLIs but does not parse protocol State. Its Master
+orchestration contract assigns every temporary Agent an isolated
+worktree/Key/Grant, reclaims them after success, and records a signed
+`attempt abandon` before failed-attempt cleanup.
 
 ## Documentation
 
@@ -115,4 +118,3 @@ At Master's request, this pass did not perform real GitHub/network remote/system
 secret-store integration tests. Remaining lock-candidate gaps and their security
 impact are explicitly tracked in the
 [implementation differences](docs/12-implementation-differences.md).
-

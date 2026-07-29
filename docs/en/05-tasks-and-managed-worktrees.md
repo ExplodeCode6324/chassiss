@@ -21,7 +21,8 @@ chassiss work open TASK-001 --json
 
 The latter commands return the managed worktree's absolute path. All source
 edits and local builds must happen there. Do not create a branch, checkout, or
-worktree directly.
+worktree directly. Each attempt gets a non-reused
+`<project>/<task>/<base-prefix>/<actor>` worktree path and matching Work Ref.
 
 ## Work loop
 
@@ -38,6 +39,9 @@ Work Commits use the Task Actor's Ed25519 key. The CLI stages only selected
 paths and validates symlinks, protected paths, frozen `writes`, linear parent
 provenance, and effective `max_changed_paths`.
 
+`work diff` includes untracked files as additions and computes them through a
+disposable index, leaving the real worktree index unchanged.
+
 `submit` requires a clean worktree, reruns frozen Checks on the exact Work Head,
 publishes the canonical Work Ref, and binds Submission Evidence to base, head,
 tree, changed-path digest, contract blobs, submitter fingerprint, and Check
@@ -47,3 +51,7 @@ Results.
 unreachable data by default. `task release` applies only to unchanged active
 work.
 
+For a failed temporary Agent, Master runs `attempt abandon` before deletion.
+The signed transition retains the full failure record, State retains only its
+compact index, and the CLI then destroys the failed worktree/Work Ref. Use
+`attempt failures TASK-001 [--operation OPR-...]` to inspect it.

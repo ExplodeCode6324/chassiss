@@ -35,13 +35,52 @@ func taskbookArchiveCommand(ctx context.Context, invocation invocation) (Envelop
 			closing[id] = commit
 		}
 	}
+	if invocation.Flags["prepare"] {
+		if invocation.Value("report") != "" {
+			return Envelope{}, usageError("--prepare cannot be combined with --report")
+		}
+		output := invocation.Value("output")
+		if output == "" {
+			return Envelope{}, usageError("taskbook archive --prepare requires --output")
+		}
+		template := workflow.NewClosureReportTemplate(project.Verified.Taskbook, phases)
+		data, err := protocol.CanonicalJSON(template)
+		if err != nil {
+			return Envelope{}, err
+		}
+		if err := writeExternalFile(output, append(data, '\n')); err != nil {
+			return Envelope{}, err
+		}
+		envelope := projectEnvelope("taskbook archive", project)
+		envelope.Result = map[string]any{
+			"output": output, "prepared": true,
+			"report_schema":   workflow.ClosureReportSchema,
+			"report_template": template, "taskbook": project.Verified.Taskbook.ID,
+		}
+		return envelope, nil
+	}
+	if invocation.Value("output") != "" {
+		return Envelope{}, usageError("--output requires --prepare")
+	}
+	if invocation.Value("report") == "" {
+		return Envelope{}, usageError("taskbook archive requires --report")
+	}
 	var report workflow.ClosureReport
 	reportObject, err := readClosedJSON(invocation.Value("report"), &report)
 	if err != nil {
 		return Envelope{}, protocol.WrapError(protocol.ErrSchemaInvalid, protocol.CategoryReview, "Taskbook Closure Report JSON is invalid.", err)
 	}
 	if err := report.Validate(project.Verified.Taskbook, phases, project.Verified.Architecture.Resources()); err != nil {
-		return Envelope{}, protocol.WrapError(protocol.ErrTaskbookClosureStale, protocol.CategoryReview, "Taskbook Closure Report is invalid or stale.", err)
+		failure := protocol.WrapError(protocol.ErrTaskbookClosureStale, protocol.CategoryReview, "Taskbook Closure Report is invalid or stale.", err)
+		failure.Details["schema"] = workflow.ClosureReportSchema
+		failure.Remediation = []protocol.Remediation{{
+			Argv: []string{
+				"chassiss", "taskbook", "archive", "--prepare",
+				"--output", "<closure-report.json>", "--json",
+			},
+			Description: "Generate a hydrated Closure Report template for the exact terminal Task set.",
+		}}
+		return Envelope{}, failure
 	}
 	authority, err := selectGrant(project, invocation, "taskbook.archive", "", nil, true)
 	if err != nil {

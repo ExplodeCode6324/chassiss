@@ -130,6 +130,10 @@ func (engine verifier) verifyFacts(
 		if stringFact(message.Evidence.Facts, "observed_work_tree") != baseCommit.Tree {
 			return facts, nil, nil, protocol.NewError(protocol.ErrReleaseHasChanges, protocol.CategoryValidation, "Release Work tree is not the frozen base tree.")
 		}
+	case "attempt.abandoned":
+		if err := engine.verifyAbandonedAttempt(ctx, parent, message); err != nil {
+			return facts, nil, nil, err
+		}
 	case "task.submitted":
 		changed, err := engine.verifySubmission(ctx, parent, taskContract, message)
 		if err != nil {
@@ -140,7 +144,7 @@ func (engine verifier) verifyFacts(
 			limit := taskContract.ChangeLimits.MaxChangedPaths
 			facts.EffectiveMaxChangedPaths = &limit
 		}
-	case "task.reviewed":
+	case "task.reviewed", "task.reviewed-indexed":
 		if err := engine.verifyReview(ctx, parentCommit, parentTree, parent, taskContract, frozenArchitecture, frozenTaskbook, message); err != nil {
 			return facts, nil, nil, err
 		}
@@ -159,6 +163,31 @@ func (engine verifier) verifyFacts(
 		}
 	}
 	return facts, architecture, taskbook, nil
+}
+
+func (engine verifier) verifyAbandonedAttempt(
+	ctx context.Context,
+	parent *state.State,
+	message protocol.TransitionMessage,
+) error {
+	task, exists := parent.Tasks[message.Operation.Target]
+	if !exists {
+		return protocol.NewError(protocol.ErrReferenceNotFound, protocol.CategoryValidation, "Abandoned Task does not exist.")
+	}
+	workHead := stringFact(message.Evidence.Facts, "observed_work_head")
+	workTree := stringFact(message.Evidence.Facts, "observed_work_tree")
+	commit, err := engine.runner.ReadCommit(ctx, workHead)
+	if err != nil {
+		return protocol.WrapError(protocol.ErrAttemptUnreachable, protocol.CategoryProtocol, "Abandoned Work Head is unreachable.", err)
+	}
+	if commit.Tree != workTree {
+		return protocol.NewError(protocol.ErrEvidenceInvalid, protocol.CategoryProtocol, "Abandoned Work tree does not match its Work Head.")
+	}
+	descendant, err := engine.runner.IsAncestor(ctx, task.Base, workHead)
+	if err != nil || !descendant {
+		return protocol.NewError(protocol.ErrAttemptUnreachable, protocol.CategoryProtocol, "Abandoned Work Head is not descended from the frozen Task base.")
+	}
+	return nil
 }
 
 func (engine verifier) effectiveTaskContract(ctx context.Context, parent *state.State, taskID string) (contracts.Task, *contracts.Architecture, *contracts.Taskbook, error) {

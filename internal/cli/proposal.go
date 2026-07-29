@@ -202,10 +202,12 @@ func createProposal(
 		return Envelope{}, usageError("proposal ref output must use the canonical Transition ref")
 	}
 	envelope := projectEnvelope(commandForAction(plan.Operation.Action), project)
+	envelope.Identity = identityForAuthority(plan.Authority)
 	envelope.Operation = &OperationBody{
 		Commit: commit, EvidenceAttempt: plan.Evidence.Attempt,
 		EvidenceDigest: evidenceDigest, OperationDigest: operationDigest,
-		OperationID: plan.Operation.OperationID, Status: "signed",
+		OperationID: plan.Operation.OperationID, Signer: signerForAuthority(plan.Authority),
+		Status: "signed",
 	}
 	envelope.Result = map[string]any{"commit": commit, "proposal": artifact, "ref": ref}
 	return envelope, nil

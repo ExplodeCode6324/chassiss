@@ -59,6 +59,8 @@ chassiss task list
 chassiss task show
 chassiss task start
 chassiss task release
+chassiss attempt abandon
+chassiss attempt failures
 chassiss task block
 chassiss task resume
 chassiss task cancel
@@ -75,6 +77,8 @@ chassiss work remove
 chassiss check
 chassiss submit
 chassiss review
+chassiss review list
+chassiss review show
 chassiss integrate
 
 chassiss taskbook show
@@ -97,6 +101,8 @@ chassiss architecture update
 chassiss key generate
 chassiss key list
 chassiss key show
+chassiss key attach
+chassiss identity select
 chassiss key remove
 
 chassiss grant request
@@ -144,7 +150,8 @@ chassiss init
   [--remote <url>]
 ```
 
-要求目标目录尚无 Git history。CLI：
+要求目标目录本身尚无 Git history。父目录即使属于另一个 Git repository 也不
+算目标历史，CLI 会在目标目录建立独立 repository。CLI：
 
 1. 验证 Architecture 与 Taskbook 及其交叉引用；
 2. 从 Taskbook Tasks 生成 ready State；
@@ -296,8 +303,15 @@ Task 的 verified Transition history。
 chassiss task start <task-id> [--key <handle>]
 ```
 
-产生 `task.started`，随后创建固定受管 branch/worktree。输出 worktree absolute
-path 只存在本地 CLI response，不写入 Git。
+产生 `task.started`，随后创建本次尝试专用的受管 branch/worktree：
+
+```text
+refs/heads/chassiss/work/<task-id>/<base-prefix>/<actor>
+<local-data>/worktrees/<project>/<task-id>/<base-prefix>/<actor>
+```
+
+输出 worktree absolute path 只存在本地 CLI response，不写入 Git。新尝试不
+复用旧目录；verifier 只读兼容早期 v1 未带 `base-prefix` 的 Work Ref。
 
 ### 6.4 `task release`
 
@@ -307,13 +321,33 @@ chassiss task release <task-id> --reason <text>
 
 只允许 active、unblocked、clean 且 Work Head 恰好等于 frozen base。
 
-### 6.5 `task block`
+### 6.5 `attempt abandon` / `attempt failures`
+
+```text
+chassiss attempt abandon <task-id>
+  --root-key <root-key-id>
+  --agent-key <agent-key-id>
+  --agent-grant <agent-grant-id>
+  --code <stable-code>
+  --summary <text>
+  --reason <text>
+
+chassiss attempt failures <task-id> [--operation <operation-id>]
+```
+
+`attempt abandon` 是 Master/Root 的失败回收路径。它先验证 active Agent
+identity 与本地受管 worktree，把完整失败记录和 observed Work Head/tree
+签入 `attempt.abandoned`，向 State 追加轻量 index，将 Task 恢复为 ready，
+然后销毁 worktree/Work Ref。失败记录签名成功前不得清理。`attempt failures`
+默认返回索引；指定 Operation 后从 verified history 返回完整正文。
+
+### 6.6 `task block`
 
 ```text
 chassiss task block <task-id> --reason <text>
 ```
 
-### 6.6 `task resume`
+### 6.7 `task resume`
 
 ```text
 chassiss task resume <task-id> [--reason <text>]
@@ -321,7 +355,7 @@ chassiss task resume <task-id> [--reason <text>]
 
 重新验证全部当前前置条件后删除 `blocked`。
 
-### 6.7 `task cancel`
+### 6.8 `task cancel`
 
 ```text
 chassiss task cancel <task-id> --reason <text>
@@ -330,7 +364,7 @@ chassiss task cancel <task-id> --reason <text>
 有 current Attempt 时使用 remote atomic push 同时 create-only 创建 Archive
 Ref 并 CAS main；remote 不支持 atomic push 时拒绝。
 
-### 6.8 `task supersede`
+### 6.9 `task supersede`
 
 ```text
 chassiss task supersede <task-id>
@@ -371,7 +405,8 @@ chassiss work diff <task-id>
 
 默认 `--against base`，右侧是 current worktree。`--against main` 用于查看
 Work 期望内容与 latest verified main 的差异；`--against head` 只显示未提交
-变化。
+变化。未跟踪文件按新增内容进入 diff；CLI 使用 disposable index 计算，绝不
+修改 worktree 的真实 index。
 
 ### 7.4 `work log`
 
@@ -451,7 +486,9 @@ chassiss review <task-id>
 ```
 
 CLI 先生成最新 candidate、运行 Checks、输出 Review Context；只有给定 Report
-与该 Context 匹配时才产生 `task.reviewed`。
+与该 Context 匹配时才产生 `task.reviewed-indexed`。完整 Report 留在签名
+history，State 只追加可由 CLI 解析的轻量索引。旧 `task.reviewed` history
+继续验证，但新 CLI 不再产生它。
 
 Reviewer 与 submitter actor/key 相同时 CLI 必须显示 warning 并写入 JSON
 `warnings`，但不拒绝。
@@ -459,11 +496,18 @@ Reviewer 与 submitter actor/key 相同时 CLI 必须显示 warning 并写入 JS
 可以分两步使用：
 
 ```text
-chassiss review <task-id> --prepare --output <local-context-file>
+chassiss review <task-id> --prepare
+  --output <local-context-file>
+  [--report-output <hydrated-report-file>]
 chassiss review <task-id> --verdict ... --report ...
+chassiss review list <task-id>
+chassiss review show <task-id> [--attempt <n> | --operation <operation-id>]
 ```
 
-prepare 文件是本地辅助数据，不是权威证明；最终命令重新同步并验证。
+prepare response 总是包含 `report_schema` 和按 frozen reviewer-attention
+填充的 `report_template`；`--report-output` 可直接写出模板。prepare 文件是
+本地辅助数据，不是权威证明；最终命令重新同步并验证。`review list/show`
+从 verified State index 和签名 Transition history 解析报告。
 
 ### 8.4 `integrate`
 
@@ -537,8 +581,13 @@ Taskbook。
 
 ```text
 chassiss taskbook archive
-  --report <taskbook-closure-report-json>
+  --prepare --output <hydrated-closure-report-json>
+chassiss taskbook archive
+  --report <completed-taskbook-closure-report-json>
 ```
+
+`--prepare` 根据 exact terminal Task projection 和 Taskbook completion criteria
+生成逐项带 `response` 字段的模板，不产生 Transition。
 
 要求全部 Tasks terminal，重新验证逐 Task disposition、所有 closing
 Integration 和 completion criteria response；随后在 exact current main 的
@@ -583,13 +632,20 @@ key/fingerprint。
 
 Root key 也使用同一命令，但 `init --root-key` 决定其 Root 身份。
 
-### 11.2 `key list/show/remove`
+### 11.2 `key list/show/attach/select/remove`
 
 ```text
 chassiss key list
 chassiss key show <key-id>
+chassiss key attach <key-id> [--select]
+chassiss identity select --key <key-id>
 chassiss key remove <key-id> [--orphan-grant] [--yes]
 ```
+
+`attach` 只把已存在的外部本地 Key handle 绑定到 current verified Project；
+CLI 必须从当前 Root/Grant 验证 public key、Key ID 和 Actor，不能凭本地标签
+授予身份。`identity select` 明确选择已 attach 的 Key。多个并行临时 Agent
+不得依赖隐式 selected identity，签名 mutation 应显式传 `--key/--grant`。
 
 `remove` 只删除本地 private-key material/handle，不撤销 Git Grant。若 State
 仍有 Grant，CLI 必须警告并默认拒绝，除非用户先由 Root revoke 或明确

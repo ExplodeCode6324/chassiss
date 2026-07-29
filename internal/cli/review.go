@@ -48,12 +48,28 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 		if err := writeExternalFile(output, append(data, '\n')); err != nil {
 			return Envelope{}, err
 		}
+		reportTemplate := workflow.NewReviewReportTemplate(contract.ReviewerAttention)
+		reportOutput := invocation.Value("report-output")
+		if reportOutput != "" {
+			templateData, err := protocol.CanonicalJSON(reportTemplate)
+			if err != nil {
+				return Envelope{}, err
+			}
+			if err := writeExternalFile(reportOutput, append(templateData, '\n')); err != nil {
+				return Envelope{}, err
+			}
+		}
 		envelope := projectEnvelope("review", project)
 		envelope.Result = map[string]any{
 			"candidate_tree": candidate.TreeOID, "context": context,
-			"output": output, "prepared": true, "task": taskID,
+			"context_output": output, "prepared": true,
+			"report_output": reportOutput, "report_schema": workflow.ReviewReportSchema,
+			"report_template": reportTemplate, "task": taskID,
 		}
 		return envelope, nil
+	}
+	if invocation.Value("report-output") != "" {
+		return Envelope{}, usageError("--report-output requires --prepare")
 	}
 	verdict := invocation.Value("verdict")
 	if verdict != "approve" && verdict != "request_changes" {
@@ -72,7 +88,16 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 		return Envelope{}, protocol.NewError(protocol.ErrReviewReportInvalid, protocol.CategoryReview, "Review Report verdict does not match --verdict.")
 	}
 	if err := report.Validate(contract.ReviewerAttention, project.Verified.Architecture.Resources()); err != nil {
-		return Envelope{}, protocol.WrapError(protocol.ErrReviewReportInvalid, protocol.CategoryReview, "Review Report is invalid.", err)
+		failure := protocol.WrapError(protocol.ErrReviewReportInvalid, protocol.CategoryReview, "Review Report is invalid.", err)
+		failure.Details["schema"] = workflow.ReviewReportSchema
+		failure.Remediation = []protocol.Remediation{{
+			Argv: []string{
+				"chassiss", "review", taskID, "--prepare",
+				"--output", "<review-context.json>", "--report-output", "<review-report.json>", "--json",
+			},
+			Description: "Generate a hydrated Review Report template for this exact Attempt.",
+		}}
+		return Envelope{}, failure
 	}
 	if err := context.Validate(contract.Checks, project.Verified.ObjectFormat, verdict == "approve"); err != nil {
 		return Envelope{}, protocol.WrapError(protocol.ErrReviewContextStale, protocol.CategoryReview, "Review Context or Checks are invalid.", err)
@@ -99,7 +124,7 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 	}
 	operation := protocol.Operation{
 		Schema: protocol.OperationSchema, OperationID: operationID,
-		Action: "task.reviewed", Project: project.Verified.State.Project.ID,
+		Action: "task.reviewed-indexed", Project: project.Verified.State.Project.ID,
 		Authority: authority.Reference, Target: taskID,
 		Preconditions: map[string]any{"attempt_digest": attemptDigest, "phase": task.Phase},
 		Payload:       map[string]any{"report": reportObject, "verdict": verdict},

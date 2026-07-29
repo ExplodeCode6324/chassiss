@@ -29,6 +29,18 @@ chassiss grant request \
 The Agent signs a domain-separated proof-of-possession digest with SSHSIG. The
 Request never contains the private key.
 
+After Root publishes the Grant, attach and select the already-generated local
+Key in the verified Project:
+
+```text
+chassiss key attach KEY-AGENT-01 --select --json
+chassiss identity select --key KEY-AGENT-01 --json
+```
+
+Attachment verifies the Key cryptographically against the current Root/Grant;
+it does not create authority. Signed mutation responses expose the exact
+authority in `operation.signer`.
+
 ## Root approval
 
 Root explicitly reviews capabilities, Task scope, Resource scope, and limits:
@@ -52,6 +64,10 @@ proposal parent must still be exact current main.
 Revocation uses `grant revoke <grant-id> --reason ... --root-key ...`. Historical
 signatures remain verifiable, while the revoked Grant cannot authorize a future
 Transition.
+
+Master-orchestrated Agent Grants and Keys are temporary per attempt. After
+success, or after a failed attempt has been signed with `attempt abandon`,
+Master revokes the Grant and removes the local Key material.
 
 The current implementation provides only an owner-only `file:` key backend.
 POSIX mode bits are validated; Windows currently relies on the inherited user
