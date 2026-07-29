@@ -26,6 +26,7 @@ for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
 	(
 		cd "$repo_dir"
 		CGO_ENABLED=0 GOOS="$bundle_os" GOARCH="$bundle_arch" go build \
+			-buildvcs=false \
 			-trimpath \
 			-ldflags "-s -w -X github.com/ExplodeCode6324/chassiss/internal/cli.Version=$bundle_version -X github.com/ExplodeCode6324/chassiss/internal/cli.BuildDigest=$source_commit -X github.com/ExplodeCode6324/chassiss/internal/cli.ReleaseIdentity=skill-bundled" \
 			-o "$output_dir/chassiss" \
