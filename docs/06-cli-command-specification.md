@@ -26,7 +26,9 @@ chassiss <command> [arguments] [--json]
 - progress/diagnostic 只写 stderr；
 - mutation 可以接受 `--operation-id`，省略时 CLI 安全生成并持久化稳定
   Semantic Operation；每次 CAS attempt 的 Evidence 由 CLI 管理；
-- mutation 可以接受 `--key <key-id>` 与 `--grant <grant-id>`；
+- 产生签名 Transition 的 mutation 可以接受 `--key <key-id>` 与
+  `--grant <grant-id>`；本地 managed-worktree mutation 仅接受各自 command
+  schema 声明的选项；
 - 只有一个 current Grant 能完整授权 Action 时 CLI 才自动选择；多个 Grant
   同时匹配时必须显式 `--grant`；
 - 不建立本地 Grant object 或 discovery cache；显式或自动选择都只针对本次
@@ -454,6 +456,9 @@ chassiss work commit <task-id>
 
 省略 `--path` 时 stage 当前 Task worktree 的全部允许变化。CLI 拒绝 protected
 path、越界 path、空 commit 和非线性 parent；使用 Task Actor key SSH-sign。
+该 key 从 frozen Task runtime 确定性解析，不依赖 selected identity；
+`work commit` 不接受 `--key/--grant`。并行 Agent 只需在后续 `submit` 等产生
+Transition 的命令上显式传自己的 `--key/--grant`。
 
 不提供 amend。
 
@@ -677,7 +682,9 @@ chassiss key remove <key-id> [--orphan-grant] [--yes]
 `attach` 只把已存在的外部本地 Key handle 绑定到 current verified Project；
 CLI 必须从当前 Root/Grant 验证 public key、Key ID 和 Actor，不能凭本地标签
 授予身份。`identity select` 明确选择已 attach 的 Key。多个并行临时 Agent
-不得依赖隐式 selected identity，签名 mutation 应显式传 `--key/--grant`。
+不得依赖隐式 selected identity，产生 Transition 且 command schema 暴露 signer
+选项的 mutation 应显式传 `--key/--grant`。`work commit` 例外：它固定使用
+frozen Task Actor key，不接受这两个选项。
 
 `remove` 只删除本地 private-key material/handle，不撤销 Git Grant。若 State
 仍有 Grant，CLI 必须警告并默认拒绝，除非用户先由 Root revoke 或明确

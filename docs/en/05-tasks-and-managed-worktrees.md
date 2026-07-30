@@ -35,9 +35,12 @@ chassiss check TASK-001 --json
 chassiss submit TASK-001 --json
 ```
 
-Work Commits use the Task Actor's Ed25519 key. The CLI stages only selected
-paths and validates symlinks, protected paths, frozen `writes`, linear parent
-provenance, and effective `max_changed_paths`.
+Work Commits use the Task Actor's Ed25519 key resolved deterministically from
+the frozen Task runtime. They do not accept `--key` or `--grant` and do not
+depend on the globally selected identity. The CLI stages only selected paths
+and validates symlinks, protected paths, frozen `writes`, linear parent
+provenance, and effective `max_changed_paths`. Parallel Agents pass explicit
+`--key` and `--grant` to the later `submit` Transition.
 
 `work diff` includes untracked files as additions and computes them through a
 disposable index, leaving the real worktree index unchanged.

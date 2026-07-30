@@ -32,8 +32,16 @@ chassiss task start <task> --key <agent-key> --grant <agent-grant> --json
 
 Pass only the returned worktree path, Agent Key ID, Grant ID, Task ID, and
 current Context to the subagent. Require explicit `--key` and `--grant` on
-signed Task mutations; never let a parallel workflow rely on an implicitly
-selected identity. The exact signer is returned in `operation.signer`.
+Transition-producing Task mutations whose command schema exposes those options;
+never let a parallel workflow rely on an implicitly selected identity. The
+exact signer is returned in `operation.signer`.
+
+`work commit` is a local managed-ref mutation and SSH-signs with the frozen Task
+Actor's Key resolved from Task runtime. It intentionally does not accept
+`--key` or `--grant`; do not add those options. `check` and the `work`
+inspection commands also do not select Transition authority. Pass explicit
+`--key` and `--grant` to `submit`, `task release`, and other
+Transition-producing Task commands when their schema exposes them.
 
 ## Reclaim on success
 

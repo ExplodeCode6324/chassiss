@@ -121,8 +121,9 @@ Agent 不自行创建 branch、checkout 或 worktree。
 
 Master 为每次 Task attempt 分配独立且不复用的 Actor、Key、narrow Grant、
 CLI-managed worktree 与临时父目录。并行 Agent 不共享 mutable checkout、
-worktree、Key、Grant 或 scratch directory；签名 mutation 显式传
-`--key/--grant`，不依赖全局 selected identity。
+worktree、Key、Grant 或 scratch directory；产生 Transition 且 command schema
+暴露 signer 选项的 mutation 显式传 `--key/--grant`，不依赖全局 selected
+identity。`work commit` 固定使用 frozen Task Actor key，不接受这两个选项。
 
 成功 Integration 后立即 revoke 临时 Grant、remove Key、确认 worktree/Work
 Ref 已清理，再销毁临时目录。失败时顺序固定：

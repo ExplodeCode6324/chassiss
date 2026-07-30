@@ -45,9 +45,12 @@ before creating an Agent identity or starting a Task.
 5. Inspect with `chassiss work status`, `chassiss work diff`, and
    `chassiss work log`.
 6. Record changes with `chassiss work commit`; use `work restore` or `work remove`
-   only when the requested outcome requires them.
+   only when the requested outcome requires them. `work commit` always resolves
+   the frozen Task Actor's Key from Task runtime; do not pass `--key` or
+   `--grant`.
 7. Run `chassiss check`, then `chassiss submit`. Treat submit's new preflight as
-   authoritative.
+   authoritative. In parallel workflows, pass the Agent's explicit `--key` and
+   `--grant` to `submit` and other Transition-producing Task mutations.
 8. Refresh `chassiss context <TASK-ID> --json` after every mutation.
 
 `work diff` includes tracked and untracked files without changing the real Git
