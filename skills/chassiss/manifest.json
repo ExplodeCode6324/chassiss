@@ -4,30 +4,30 @@
       "goarch": "amd64",
       "goos": "darwin",
       "path": "bin/darwin-amd64/chassiss",
-      "sha256": "69b92166b47539cd1558ad66349aeb584684a0a38980046a57cd63538dfa50b7"
+      "sha256": "62904f5bd51ab2d91cc70c03c80975ef6530fd21536a4de1516671f71bc7ed77"
     },
     {
       "goarch": "arm64",
       "goos": "darwin",
       "path": "bin/darwin-arm64/chassiss",
-      "sha256": "0fc498cb125ebc418ef42556d41a7a006d8e7893e8ce5aa137f6777b7d37601b"
+      "sha256": "c7ef53636ce6f8600bcfc118cd80dd8357867e29edf468646db105568b504d70"
     },
     {
       "goarch": "amd64",
       "goos": "linux",
       "path": "bin/linux-amd64/chassiss",
-      "sha256": "7bfa5efe1c253c46873c6e4745a53806645214ca27e313762db38dd75e839f13"
+      "sha256": "0a31a52924e0cfafc30dfea316a7255e85c1599c9329a51013ced852495e3ff1"
     },
     {
       "goarch": "arm64",
       "goos": "linux",
       "path": "bin/linux-arm64/chassiss",
-      "sha256": "4d5a042ec2701ec0ff601e115020072dec478218a284695d29c9b1078ed9fc3d"
+      "sha256": "26ab26bb1c2032b47607a8912615736cdfb1aef750a8e8ca9a413501a5aeb4f3"
     }
   ],
   "protocol": "chassiss/v1",
   "release_identity": "skill-bundled",
   "schema": "chassiss.skill-bundle/v1",
-  "source_commit": "356eeca58a0d3e741a745283af39808cf9d2fb3f",
-  "version": "v1.0.0-rc.4"
+  "source_commit": "e6acc341c49485aeb1430c2e899a1f497edf2192",
+  "version": "v1.0.0-rc.5"
 }
