@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -94,22 +95,23 @@ func loadMutableProject(ctx context.Context) (*projectContext, error) {
 			return nil, err
 		}
 	}
-	if err := checkpointVerifiedProject(project, remote); err != nil {
+	if err := checkpointVerifiedProject(ctx, project, remote); err != nil {
 		return nil, err
 	}
 	return project, nil
 }
 
-func checkpointVerifiedProject(project *projectContext, verified *verifier.Result) error {
+func checkpointVerifiedProject(
+	ctx context.Context,
+	project *projectContext,
+	verified *verifier.Result,
+) error {
 	if err := project.Store.Update(func(local *localstate.State) error {
 		value := local.Projects[verified.State.Project.ID]
-		value.MinimumCheckpoint = localstate.Checkpoint{
-			Commit: verified.Head, StateDigest: verified.StateDigest,
-		}
-		for index := range value.RepoInstances {
-			if samePath(value.RepoInstances[index].RepoPath, project.RepoRoot) {
-				value.RepoInstances[index].LastVerifiedHead = verified.Head
-			}
+		if err := advanceCheckpoint(
+			ctx, project.Runner, &value, project.RepoRoot, verified,
+		); err != nil {
+			return err
 		}
 		local.Projects[verified.State.Project.ID] = value
 		return nil
@@ -235,13 +237,14 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 	evidenceDigest, _ := protocol.ObjectDigest("execution-evidence", plan.Evidence)
 	semanticBytes, _ := protocol.CanonicalJSON(plan.Operation)
 	evidenceBytes, _ := protocol.CanonicalJSON(plan.Evidence)
-	if err := savePending(project, localstate.PendingOperation{
+	pending := localstate.PendingOperation{
 		AuthorityKeyHandle: plan.Authority.Handle, CandidateCommit: nil,
 		CandidateEvidence: evidenceBytes, EvidenceDigest: evidenceDigest,
 		ExpectedMain: project.Verified.Head, OperationDigest: operationDigest,
 		OperationID: plan.Operation.OperationID, SemanticOperation: semanticBytes,
 		Status: "prepared", TargetRefs: map[string]string{"refs/heads/main": ""},
-	}); err != nil {
+	}
+	if err := savePending(project, pending); err != nil {
 		return Envelope{}, err
 	}
 	commit, err := project.Runner.CommitTree(ctx, treeOID, parents, message, plan.Authority.KeyPath, gitstore.CommitIdentity{})
@@ -251,6 +254,9 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 	if err := updatePendingCandidate(project, plan.Operation.OperationID, commit); err != nil {
 		return Envelope{}, err
 	}
+	pending.CandidateCommit = stringPointer(commit)
+	pending.Status = "signed"
+	pending.TargetRefs["refs/heads/main"] = commit
 	if plan.ArchiveRef == "" {
 		if _, err := verifier.Verify(ctx, project.Runner, commit, verifier.Options{
 			ExpectedProject:         project.Verified.State.Project.ID,
@@ -268,6 +274,55 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 				{Ref: plan.ArchiveRef, NewOID: plan.ArchiveHead, CreateOnly: true},
 				{Ref: "refs/heads/main", NewOID: commit, ExpectedOID: project.Verified.Head},
 			}, "CHASSISS "+plan.Operation.Action)
+		}
+		if err != nil {
+			reconciliation, reconcileErr := reconcileLocalCASFailure(
+				ctx, project, pending,
+			)
+			if reconciliation.Disposition == pendingPublished {
+				commit = reconciliation.Commit
+				plan.Evidence = reconciliation.Message.Evidence
+				operationDigest, _ = protocol.ObjectDigest(
+					"operation", reconciliation.Message.Operation,
+				)
+				evidenceDigest, _ = protocol.ObjectDigest(
+					"execution-evidence", reconciliation.Message.Evidence,
+				)
+				err = nil
+			} else {
+				if reconcileErr != nil {
+					var safetyFailure *protocol.Error
+					if errors.As(reconcileErr, &safetyFailure) {
+						if safetyFailure.Details == nil {
+							safetyFailure.Details = map[string]any{}
+						}
+						safetyFailure.OperationID = plan.Operation.OperationID
+						safetyFailure.Details["candidate_commit"] = commit
+						safetyFailure.Details["cas_error"] = err.Error()
+						safetyFailure.Details["pending_status"] = string(pendingUnresolved)
+						if current, resolveErr := project.Runner.Resolve(ctx, "refs/heads/main"); resolveErr == nil {
+							safetyFailure.CurrentHead = current
+						}
+						return Envelope{}, safetyFailure
+					}
+				}
+				failure := protocol.WrapError(
+					protocol.ErrCASRetryExhausted, protocol.CategoryConflict,
+					"Main changed before the Transition could be published.", err,
+				)
+				failure.OperationID = plan.Operation.OperationID
+				failure.Details = map[string]any{
+					"candidate_commit": commit,
+					"pending_status":   string(reconciliation.Disposition),
+				}
+				if current, resolveErr := project.Runner.Resolve(ctx, "refs/heads/main"); resolveErr == nil {
+					failure.CurrentHead = current
+				}
+				if reconcileErr != nil {
+					failure.Details["reconciliation_error"] = reconcileErr.Error()
+				}
+				return Envelope{}, failure
+			}
 		}
 	} else {
 		publishedHead := commit
@@ -393,7 +448,7 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 	if err != nil {
 		return Envelope{}, err
 	}
-	if err := finalizePending(project, plan.Operation.OperationID, verified); err != nil {
+	if err := finalizePending(ctx, project, pending, verified); err != nil {
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope(plan.Operation.Action, &projectContext{
@@ -444,7 +499,7 @@ func adoptVerifiedRemote(
 	if _, err := project.Runner.Run(ctx, "read-tree", "--reset", "-u", remote.Head); err != nil {
 		return nil, err
 	}
-	if err := checkpointVerifiedProject(project, remote); err != nil {
+	if err := checkpointVerifiedProject(ctx, project, remote); err != nil {
 		return nil, err
 	}
 	return loadProject(ctx, "", false)
@@ -883,17 +938,22 @@ func markPendingFailed(project *projectContext, operationID string) error {
 	})
 }
 
-func finalizePending(project *projectContext, operationID string, verified *verifier.Result) error {
+func finalizePending(
+	ctx context.Context,
+	project *projectContext,
+	expected localstate.PendingOperation,
+	verified *verifier.Result,
+) error {
 	return project.Store.Update(func(local *localstate.State) error {
 		value := local.Projects[verified.State.Project.ID]
-		delete(value.PendingOperations, operationID)
-		value.MinimumCheckpoint = localstate.Checkpoint{
-			Commit: verified.Head, StateDigest: verified.StateDigest,
+		if pending, exists := value.PendingOperations[expected.OperationID]; exists &&
+			samePendingAttempt(pending, expected) {
+			delete(value.PendingOperations, expected.OperationID)
 		}
-		for index := range value.RepoInstances {
-			if samePath(value.RepoInstances[index].RepoPath, project.RepoRoot) {
-				value.RepoInstances[index].LastVerifiedHead = verified.Head
-			}
+		if err := advanceCheckpoint(
+			ctx, project.Runner, &value, project.RepoRoot, verified,
+		); err != nil {
+			return err
 		}
 		local.Projects[verified.State.Project.ID] = value
 		return nil

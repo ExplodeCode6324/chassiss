@@ -207,6 +207,50 @@ func samePath(left, right string) bool {
 	return leftAbs == rightAbs
 }
 
+func advanceCheckpoint(
+	ctx context.Context,
+	runner gitstore.Runner,
+	project *localstate.Project,
+	repoRoot string,
+	verified *verifier.Result,
+) error {
+	current := project.MinimumCheckpoint
+	if current.Commit == verified.Head {
+		if current.StateDigest != verified.StateDigest {
+			return protocol.NewError(
+				protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+				"Local checkpoint digest does not match the verified commit.",
+			)
+		}
+	} else {
+		ancestor, err := runner.IsAncestor(ctx, current.Commit, verified.Head)
+		if err != nil {
+			return protocol.WrapError(
+				protocol.ErrMainlineRollback, protocol.CategoryTrust,
+				"Cannot prove that the verified checkpoint advances local trust.", err,
+			)
+		}
+		if !ancestor {
+			failure := protocol.NewError(
+				protocol.ErrMainlineRollback, protocol.CategoryTrust,
+				"Refusing to move the local minimum checkpoint backward or sideways.",
+			)
+			failure.CurrentHead = verified.Head
+			failure.Details["minimum_checkpoint"] = current.Commit
+			return failure
+		}
+		project.MinimumCheckpoint = localstate.Checkpoint{
+			Commit: verified.Head, StateDigest: verified.StateDigest,
+		}
+	}
+	for index := range project.RepoInstances {
+		if samePath(project.RepoInstances[index].RepoPath, repoRoot) {
+			project.RepoInstances[index].LastVerifiedHead = verified.Head
+		}
+	}
+	return nil
+}
+
 func stringTrimSpace(value []byte) string {
 	start, end := 0, len(value)
 	for start < end && (value[start] == ' ' || value[start] == '\n' || value[start] == '\r' || value[start] == '\t') {

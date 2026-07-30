@@ -37,3 +37,9 @@ exists. Do not use it to shortcut a Task Contract or Review.
 When the CLI rejects an action, preserve the structured error. Follow only
 relevant `remediation[].argv`; otherwise report the code, facts, and required
 decision to Master.
+
+An absent or ambiguous process response is not proof of failure. Before retrying
+any mutation, query verified `status` and `log`, then run `sync --json` to
+reconcile pending Operations. Never create a second Operation merely because a
+wrapper omitted stdout or exit metadata. If reconciliation remains
+`unresolved`, stop rather than guessing.

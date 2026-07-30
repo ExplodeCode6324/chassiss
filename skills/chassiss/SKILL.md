@@ -56,6 +56,13 @@ index.
 Do not run Git-mutating commands such as add, commit, branch, checkout, switch,
 worktree, merge, rebase, cherry-pick, reset, push, or config.
 
+If a mutation's process result is empty, detached, timed out, interrupted, or
+otherwise ambiguous, do not repeat it with a fresh Operation ID. Treat the
+outcome as unresolved and reconcile it with `status`, verified `log`, and
+`sync --json` before deciding whether any retry is allowed. `sync` also performs
+deterministic pending-operation reconciliation for Projects with no authoritative
+remote.
+
 ## Request focused context
 
 Use argv returned by Context. Typical public reads include:

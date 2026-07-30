@@ -29,10 +29,16 @@ Refresh Context:
 - after identity or Grant changes;
 - when switching Task or managed worktree;
 - after a stale-main or main-changed error;
+- after an empty, detached, timed-out, or otherwise ambiguous mutation result;
 - whenever the CLI's remediation requests it.
 
 Context never grants authority by itself. Mutation commands must sync and verify
 again internally. Offline Context is useful for inspection only, not mutation.
+
+For ambiguous mutation results, inspect `status` and verified `log`, then run
+`sync --json`. A no-remote Project still uses `sync` to verify local main,
+reconcile exact published, deterministically failed, and unresolved pending
+Operations, and advance its local checkpoint monotonically.
 
 If the directory is not registered, use the CLI-provided clone remediation or
 report it. Do not discover protocol state by parsing `.git`, State, refs, or

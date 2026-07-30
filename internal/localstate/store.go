@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
+
+var storeWriteMutex sync.Mutex
 
 type Store struct {
 	Paths Paths
@@ -22,6 +25,10 @@ func OpenDefault() (Store, error) {
 }
 
 func (store Store) Load() (*State, error) {
+	return store.loadUnlocked()
+}
+
+func (store Store) loadUnlocked() (*State, error) {
 	data, err := os.ReadFile(store.Paths.State)
 	if os.IsNotExist(err) {
 		return New(), nil
@@ -42,6 +49,12 @@ func (store Store) Load() (*State, error) {
 }
 
 func (store Store) Save(state *State) error {
+	return store.withExclusiveWriteLock(func() error {
+		return store.saveUnlocked(state)
+	})
+}
+
+func (store Store) saveUnlocked(state *State) error {
 	if err := state.Validate(); err != nil {
 		return err
 	}
@@ -94,12 +107,52 @@ func (store Store) Save(state *State) error {
 }
 
 func (store Store) Update(mutator func(*State) error) error {
-	state, err := store.Load()
+	return store.withExclusiveWriteLock(func() error {
+		state, err := store.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if err := mutator(state); err != nil {
+			return err
+		}
+		return store.saveUnlocked(state)
+	})
+}
+
+func (store Store) withExclusiveWriteLock(action func() error) error {
+	storeWriteMutex.Lock()
+	defer storeWriteMutex.Unlock()
+
+	if err := os.MkdirAll(store.Paths.Data, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(store.Paths.Data, 0o700); err != nil {
+		return err
+	}
+	lockPath := filepath.Join(store.Paths.Data, "local-state.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
-	if err := mutator(state); err != nil {
+	if err := lock.Chmod(0o600); err != nil {
+		_ = lock.Close()
 		return err
 	}
-	return store.Save(state)
+	if err := acquireStoreFileLock(lock); err != nil {
+		_ = lock.Close()
+		return fmt.Errorf("lock local State: %w", err)
+	}
+	actionErr := action()
+	unlockErr := releaseStoreFileLock(lock)
+	closeErr := lock.Close()
+	if actionErr != nil {
+		return actionErr
+	}
+	if unlockErr != nil {
+		return fmt.Errorf("unlock local State: %w", unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close local State lock: %w", closeErr)
+	}
+	return nil
 }

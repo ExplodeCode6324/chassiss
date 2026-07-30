@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +62,24 @@ func transitionCommand(ctx context.Context, invocation invocation) (Envelope, er
 	if len(status.Stdout) != 0 {
 		return Envelope{}, protocol.NewError(protocol.ErrWorktreeDirty, protocol.CategoryLocal, "Proposal publish requires a clean main worktree.")
 	}
+	expected, err := proposalPending(ctx, project, commit, candidate, message)
+	if err != nil {
+		return Envelope{}, err
+	}
+	publishedHead := commit
 	if project.LocalProject.Remote.URL == "" {
-		err = project.Runner.UpdateRefCAS(ctx, "refs/heads/main", commit, project.Verified.Head, "CHASSISS proposal publish")
+		err = project.Runner.UpdateRefCAS(
+			ctx, "refs/heads/main", commit, project.Verified.Head,
+			"CHASSISS proposal publish",
+		)
+		if err != nil {
+			verified, publishedHead, err = reconcileLocalProposalCAS(
+				ctx, project, expected, commit, err,
+			)
+			if err != nil {
+				return Envelope{}, err
+			}
+		}
 	} else {
 		_, pushErr := project.Runner.Run(ctx, "push", "--porcelain", "--atomic",
 			"--force-with-lease=refs/heads/main:"+project.Verified.Head,
@@ -95,16 +112,25 @@ func transitionCommand(ctx context.Context, invocation invocation) (Envelope, er
 				return Envelope{}, failure
 			}
 			verified = reconciliation.Verified
+			publishedHead = reconciliation.Verified.Head
 		}
-		err = project.Runner.UpdateRefCAS(ctx, "refs/heads/main", commit, project.Verified.Head, "CHASSISS proposal publish")
+		current, resolveErr := project.Runner.Resolve(ctx, "refs/heads/main")
+		if resolveErr != nil {
+			err = resolveErr
+		} else if current != publishedHead {
+			err = project.Runner.UpdateRefCAS(
+				ctx, "refs/heads/main", publishedHead, project.Verified.Head,
+				"CHASSISS proposal publish",
+			)
+		}
 	}
 	if err != nil {
 		return Envelope{}, protocol.WrapError(protocol.ErrCASRetryExhausted, protocol.CategoryConflict, "Proposal publish CAS failed.", err)
 	}
-	if _, err := project.Runner.Run(ctx, "read-tree", "--reset", "-u", commit); err != nil {
+	if _, err := project.Runner.Run(ctx, "read-tree", "--reset", "-u", publishedHead); err != nil {
 		return Envelope{}, err
 	}
-	if err := finalizePending(project, message.Operation.OperationID, verified); err != nil {
+	if err := finalizePending(ctx, project, expected, verified); err != nil {
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("transition publish", &projectContext{
@@ -114,6 +140,103 @@ func transitionCommand(ctx context.Context, invocation invocation) (Envelope, er
 	})
 	envelope.Result = map[string]any{"commit": commit, "operation_id": message.Operation.OperationID}
 	return envelope, nil
+}
+
+func reconcileLocalProposalCAS(
+	ctx context.Context,
+	project *projectContext,
+	expected localstate.PendingOperation,
+	commit string,
+	casErr error,
+) (*verifier.Result, string, error) {
+	reconciliation, reconcileErr := reconcileLocalCASFailure(ctx, project, expected)
+	if reconcileErr != nil {
+		var safetyFailure *protocol.Error
+		if errors.As(reconcileErr, &safetyFailure) {
+			if safetyFailure.Details == nil {
+				safetyFailure.Details = map[string]any{}
+			}
+			safetyFailure.OperationID = expected.OperationID
+			safetyFailure.Details["candidate_commit"] = commit
+			safetyFailure.Details["cas_error"] = casErr.Error()
+			safetyFailure.Details["pending_status"] = string(pendingUnresolved)
+			if current, resolveErr := project.Runner.Resolve(ctx, "refs/heads/main"); resolveErr == nil {
+				safetyFailure.CurrentHead = current
+			}
+			return nil, "", safetyFailure
+		}
+	}
+	if reconciliation.Disposition == pendingPublished &&
+		reconciliation.Commit == commit {
+		return reconciliation.Verified, reconciliation.Verified.Head, nil
+	}
+	failure := protocol.WrapError(
+		protocol.ErrCASRetryExhausted, protocol.CategoryConflict,
+		"Proposal publish CAS failed.", casErr,
+	)
+	failure.OperationID = expected.OperationID
+	failure.Details["candidate_commit"] = commit
+	failure.Details["pending_status"] = string(reconciliation.Disposition)
+	if reconcileErr != nil {
+		failure.Details["reconciliation_error"] = reconcileErr.Error()
+	}
+	if current, resolveErr := project.Runner.Resolve(ctx, "refs/heads/main"); resolveErr == nil {
+		failure.CurrentHead = current
+	}
+	return nil, "", failure
+}
+
+func proposalPending(
+	ctx context.Context,
+	project *projectContext,
+	commit string,
+	candidate gitstore.Commit,
+	message protocol.TransitionMessage,
+) (localstate.PendingOperation, error) {
+	if len(candidate.Parents) == 0 {
+		return localstate.PendingOperation{}, protocol.NewError(
+			protocol.ErrProposalStale, protocol.CategoryConflict,
+			"Proposal has no expected main parent.",
+		)
+	}
+	operationDigest, err := protocol.ObjectDigest("operation", message.Operation)
+	if err != nil {
+		return localstate.PendingOperation{}, err
+	}
+	evidenceDigest, err := protocol.ObjectDigest("execution-evidence", message.Evidence)
+	if err != nil {
+		return localstate.PendingOperation{}, err
+	}
+	local, err := project.Store.Load()
+	if err != nil {
+		return localstate.PendingOperation{}, err
+	}
+	if value, exists := local.Projects[project.Verified.State.Project.ID]; exists {
+		if pending, exists := value.PendingOperations[message.Operation.OperationID]; exists &&
+			pending.CandidateCommit != nil && *pending.CandidateCommit == commit &&
+			pending.ExpectedMain == candidate.Parents[0] &&
+			pending.OperationDigest == operationDigest &&
+			pending.EvidenceDigest == evidenceDigest {
+			return pending, nil
+		}
+	}
+	semanticBytes, err := protocol.CanonicalJSON(message.Operation)
+	if err != nil {
+		return localstate.PendingOperation{}, err
+	}
+	evidenceBytes, err := protocol.CanonicalJSON(message.Evidence)
+	if err != nil {
+		return localstate.PendingOperation{}, err
+	}
+	ref := "refs/heads/chassiss/transition/" +
+		message.Operation.Action + "/" + message.Operation.OperationID
+	return localstate.PendingOperation{
+		AuthorityKeyHandle: "", CandidateCommit: stringPointer(commit),
+		CandidateEvidence: evidenceBytes, EvidenceDigest: evidenceDigest,
+		ExpectedMain: candidate.Parents[0], OperationDigest: operationDigest,
+		OperationID: message.Operation.OperationID, SemanticOperation: semanticBytes,
+		Status: "signed", TargetRefs: map[string]string{ref: commit},
+	}, nil
 }
 
 func createProposal(
