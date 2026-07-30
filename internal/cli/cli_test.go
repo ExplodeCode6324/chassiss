@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ExplodeCode6324/chassiss/internal/cryptoutil"
+	"github.com/ExplodeCode6324/chassiss/internal/localstate"
 	"github.com/ExplodeCode6324/chassiss/internal/protocol"
 	"github.com/ExplodeCode6324/chassiss/internal/state"
 )
@@ -566,7 +567,55 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		projectAfterReview.Verified.State.Audit.Reviews[0].OperationID != reviewEnvelope.Operation.OperationID {
 		t.Fatalf("State lacks the compact Review index: %#v", projectAfterReview.Verified.State.Audit)
 	}
-	integrateEnvelope := runJSON(t, []string{"integrate", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
+	unprivilegedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if len(unprivilegedContext.AvailableActions) != 0 {
+		t.Fatalf("Context exposed Integration to the selected unprivileged identity: %#v", unprivilegedContext.AvailableActions)
+	}
+	selectAgent := runJSON(t, []string{
+		"identity", "select", "--key", "KEY-AGENT-01",
+	}, &stdout, &stderr)
+	if selectAgent.Identity == nil || selectAgent.Identity.Actor != "agent-one" {
+		t.Fatalf("Failed to restore the Integration identity: %#v", selectAgent)
+	}
+	approvedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	integrationAction := assertAvailableAction(t, approvedContext, AvailableAction{
+		Action: "integration.applied",
+		Argv: []string{
+			"chassiss", "integrate", "TASK-001",
+			"--key", "KEY-AGENT-01",
+			"--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "integration.apply",
+		Target:     "TASK-001",
+	})
+	offlineApprovedContext := runJSON(t, []string{
+		"context", "TASK-001", "--offline",
+	}, &stdout, &stderr)
+	if len(offlineApprovedContext.AvailableActions) != 0 {
+		t.Fatalf("offline Context exposed mutation actions: %#v", offlineApprovedContext.AvailableActions)
+	}
+	pendingProposalPath := filepath.Join(t.TempDir(), "pending-revoke.bundle")
+	pendingProposal := runJSON(t, []string{
+		"grant", "revoke", "GRT-EXTRA-01",
+		"--reason", "exercise pending Integration refusal",
+		"--root-key", "KEY-ROOT-01", "--proposal", pendingProposalPath,
+	}, &stdout, &stderr)
+	if pendingProposal.Operation == nil || pendingProposal.Operation.Status != "signed" {
+		t.Fatalf("pending proposal was not signed: %#v", pendingProposal)
+	}
+	pendingFailure, pendingExit := runAvailableActionResult(
+		t, integrationAction, &stdout, &stderr,
+	)
+	if pendingExit != 3 || pendingFailure.Error == nil ||
+		pendingFailure.Error.Code != protocol.ErrPendingUnresolved {
+		t.Fatalf("Integration did not refuse the pending Operation: exit=%d envelope=%#v", pendingExit, pendingFailure)
+	}
+	runJSON(t, []string{
+		"transition", "publish", pendingProposalPath,
+	}, &stdout, &stderr)
+	refreshedApprovedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	integrationAction = assertAvailableAction(t, refreshedApprovedContext, integrationAction)
+	integrateEnvelope := runAvailableAction(t, integrationAction, &stdout, &stderr)
 	if integrateEnvelope.Operation == nil {
 		t.Fatalf("Integration transition missing: %#v", integrateEnvelope)
 	}
@@ -822,4 +871,105 @@ func runJSON(t *testing.T, args []string, stdout, stderr *bytes.Buffer) Envelope
 		t.Fatal(err)
 	}
 	return envelope
+}
+
+func assertAvailableAction(t *testing.T, envelope Envelope, expected AvailableAction) AvailableAction {
+	t.Helper()
+	for _, action := range envelope.AvailableActions {
+		if action.Action == expected.Action &&
+			action.Capability == expected.Capability &&
+			action.Target == expected.Target &&
+			strings.Join(action.Argv, "\x00") == strings.Join(expected.Argv, "\x00") {
+			return action
+		}
+	}
+	t.Fatalf("available action missing\nexpected %#v\nactual %#v", expected, envelope.AvailableActions)
+	return AvailableAction{}
+}
+
+func runAvailableAction(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) Envelope {
+	t.Helper()
+	envelope, exit := runAvailableActionResult(t, action, stdout, stderr)
+	if exit != 0 {
+		t.Fatalf("%v exit %d\nstdout %s\nstderr %s", action.Argv, exit, stdout.String(), stderr.String())
+	}
+	return envelope
+}
+
+func runAvailableActionResult(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) (Envelope, int) {
+	t.Helper()
+	if len(action.Argv) < 2 || action.Argv[0] != "chassiss" ||
+		action.Argv[len(action.Argv)-1] != "--json" {
+		t.Fatalf("available action argv is not directly executable: %#v", action.Argv)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run(action.Argv[1:], bytes.NewReader(nil), stdout, stderr)
+	var envelope Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope, exit
+}
+
+func TestGrantAllowsTaskAction(t *testing.T) {
+	grant := state.Grant{
+		Capabilities: []string{"integration.apply"},
+		Scope: state.Scope{
+			Tasks:     []string{"TASK-001"},
+			Resources: []string{"module:core", "schema:*"},
+		},
+	}
+	if !grantAllowsTaskAction(
+		grant, "integration.apply", "TASK-001",
+		[]string{"module:core", "schema:state"},
+	) {
+		t.Fatal("exact capability and scope were rejected")
+	}
+	for name, test := range map[string]struct {
+		capability string
+		task       string
+		resources  []string
+	}{
+		"capability": {"review.attest", "TASK-001", []string{"module:core"}},
+		"task_scope": {"integration.apply", "TASK-002", []string{"module:core"}},
+		"resource_scope": {
+			"integration.apply", "TASK-001", []string{"module:other"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if grantAllowsTaskAction(grant, test.capability, test.task, test.resources) {
+				t.Fatal("unauthorized action was exposed")
+			}
+		})
+	}
+}
+
+func TestHasUnresolvedPending(t *testing.T) {
+	for _, status := range []string{
+		"prepared", "signed", "push-unknown", "published", "reconciled",
+	} {
+		t.Run(status, func(t *testing.T) {
+			project := &projectContext{LocalProject: localstate.Project{
+				PendingOperations: map[string]localstate.PendingOperation{
+					"OPR-TEST": {Status: status},
+				},
+			}}
+			if !hasUnresolvedPending(project) {
+				t.Fatal("unresolved pending operation was ignored")
+			}
+		})
+	}
+	for _, status := range []string{"failed"} {
+		t.Run(status, func(t *testing.T) {
+			project := &projectContext{LocalProject: localstate.Project{
+				PendingOperations: map[string]localstate.PendingOperation{
+					"OPR-TEST": {Status: status},
+				},
+			}}
+			if hasUnresolvedPending(project) {
+				t.Fatal("terminal pending record blocked action discovery")
+			}
+		})
+	}
 }

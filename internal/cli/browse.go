@@ -45,6 +45,7 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 	if err != nil {
 		return Envelope{}, err
 	}
+	offline := invocation.Flags["offline"]
 	result := map[string]any{
 		"architecture": project.Verified.Architecture,
 		"identity":     project.Identity,
@@ -94,9 +95,123 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 		result = map[string]any{"section": section, "value": value}
 	}
 	envelope := projectEnvelope("context", project)
-	envelope.Snapshot.Offline = invocation.Flags["offline"]
+	envelope.Snapshot.Offline = offline
+	if !offline {
+		if len(invocation.Positionals) == 1 {
+			envelope.AvailableActions = taskContextActions(ctx, project, invocation.Positionals[0])
+		} else {
+			taskIDs := make([]string, 0, len(project.Verified.State.Tasks))
+			for taskID := range project.Verified.State.Tasks {
+				taskIDs = append(taskIDs, taskID)
+			}
+			sort.Strings(taskIDs)
+			for _, taskID := range taskIDs {
+				envelope.AvailableActions = append(
+					envelope.AvailableActions,
+					taskContextActions(ctx, project, taskID)...,
+				)
+			}
+		}
+	}
 	envelope.Result = result
 	return envelope, nil
+}
+
+func taskContextActions(ctx context.Context, project *projectContext, taskID string) []AvailableAction {
+	actions := []AvailableAction{}
+	if project.Identity == nil || hasUnresolvedPending(project) {
+		return actions
+	}
+	grant, exists := project.Verified.State.Authority.Grants[project.Identity.GrantID]
+	if !exists || grant.KeyID != project.Identity.KeyID {
+		return actions
+	}
+	resources, contract, err := taskResources(project, taskID)
+	if err != nil {
+		return actions
+	}
+	allows := func(capability string) bool {
+		return grantAllowsTaskAction(grant, capability, taskID, resources)
+	}
+	action := func(name, capability string, argv ...string) AvailableAction {
+		argv = append(
+			argv,
+			"--key", project.Identity.KeyID,
+			"--grant", project.Identity.GrantID,
+			"--json",
+		)
+		return AvailableAction{
+			Action: name, Argv: append([]string{"chassiss"}, argv...),
+			Capability: capability, Target: taskID,
+		}
+	}
+	runtimeTask := project.Verified.State.Tasks[taskID]
+	if runtimeTask.Phase != "approved" || runtimeTask.Blocked != nil ||
+		runtimeTask.Attempt == nil || runtimeTask.Review == nil ||
+		runtimeTask.Contract == nil || !allows("integration.apply") {
+		return actions
+	}
+	status, err := project.Runner.Run(
+		ctx, "status", "--porcelain=v1", "-z", "--untracked-files=no",
+	)
+	if err != nil || len(status.Stdout) != 0 {
+		return actions
+	}
+	if _, _, err := integrationCandidate(ctx, project, taskID, runtimeTask, contract); err != nil {
+		return actions
+	}
+	actions = append(actions, action(
+		"integration.applied", "integration.apply", "integrate", taskID,
+	))
+	return actions
+}
+
+func grantAllowsTaskAction(grant state.Grant, capability, taskID string, resources []string) bool {
+	if !containsString(grant.Capabilities, capability) ||
+		!matchesTask(taskID, grant.Scope.Tasks) {
+		return false
+	}
+	for _, resource := range resources {
+		if !matchesResource(resource, grant.Scope.Resources) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasUnresolvedPending(project *projectContext) bool {
+	for _, pending := range project.LocalProject.PendingOperations {
+		if pending.Status != "failed" {
+			return true
+		}
+	}
+	return false
+}
+
+func requireNoUnresolvedPending(project *projectContext) error {
+	operations := make([]map[string]any, 0)
+	for operationID, pending := range project.LocalProject.PendingOperations {
+		if pending.Status == "failed" {
+			continue
+		}
+		operations = append(operations, map[string]any{
+			"operation_id": operationID,
+			"status":       pending.Status,
+		})
+	}
+	if len(operations) == 0 {
+		return nil
+	}
+	sort.Slice(operations, func(i, j int) bool {
+		return operations[i]["operation_id"].(string) < operations[j]["operation_id"].(string)
+	})
+	failure := protocol.NewError(
+		protocol.ErrPendingUnresolved, protocol.CategoryLocal,
+		"Resolve current pending Operations before starting another mutation.",
+	)
+	failure.Retryable = true
+	failure.Details["operations"] = operations
+	return failure
 }
 
 func logCommand(ctx context.Context, invocation invocation) (Envelope, error) {
