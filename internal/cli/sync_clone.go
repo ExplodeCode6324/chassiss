@@ -241,7 +241,8 @@ func syncCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("sync", &projectContext{
-		RepoRoot: project.RepoRoot, Runner: project.Runner, Store: project.Store,
+		InvocationRoot: project.InvocationRoot,
+		RepoRoot:       project.RepoRoot, Runner: project.Runner, Store: project.Store,
 		Local: project.Local, LocalProject: project.LocalProject, Verified: remote,
 		Identity: discoverIdentity(remote.State, project.LocalProject),
 	})

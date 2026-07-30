@@ -78,6 +78,20 @@ func grantRequestCommand(invocation invocation) (Envelope, error) {
 		return Envelope{}, err
 	}
 	output := invocation.Value("output")
+	local, err := store.Load()
+	if err != nil {
+		return Envelope{}, err
+	}
+	projectIDs := make([]string, 0, len(local.Projects))
+	for registeredProjectID := range local.Projects {
+		projectIDs = append(projectIDs, registeredProjectID)
+	}
+	sort.Strings(projectIDs)
+	for _, registeredProjectID := range projectIDs {
+		if err := requireOutsideRegisteredProject(local.Projects[registeredProjectID], output); err != nil {
+			return Envelope{}, err
+		}
+	}
 	if err := writeExternalFile(output, data); err != nil {
 		return Envelope{}, err
 	}

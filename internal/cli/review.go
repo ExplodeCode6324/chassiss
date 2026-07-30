@@ -41,6 +41,10 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 		if output == "" {
 			return Envelope{}, usageError("review --prepare requires --output")
 		}
+		reportOutput := invocation.Value("report-output")
+		if err := requireOutsideProject(project, output, reportOutput); err != nil {
+			return Envelope{}, err
+		}
 		data, err := protocol.CanonicalJSON(context)
 		if err != nil {
 			return Envelope{}, err
@@ -49,7 +53,6 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 			return Envelope{}, err
 		}
 		reportTemplate := workflow.NewReviewReportTemplate(contract.ReviewerAttention)
-		reportOutput := invocation.Value("report-output")
 		if reportOutput != "" {
 			templateData, err := protocol.CanonicalJSON(reportTemplate)
 			if err != nil {

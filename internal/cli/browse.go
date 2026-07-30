@@ -301,7 +301,7 @@ func fileShowCommand(ctx context.Context, invocation invocation) (Envelope, erro
 		encoding, content = "base64", base64.StdEncoding.EncodeToString(data)
 	}
 	if output := invocation.Value("output"); output != "" {
-		if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+		if err := requireOutsideProject(project, output); err != nil {
 			return Envelope{}, err
 		}
 		if err := writeExternalFile(output, data); err != nil {
@@ -483,22 +483,6 @@ func taskAvailable(project *projectContext, taskID string) bool {
 		}
 	}
 	return true
-}
-
-func requireOutsideProject(root, output string) error {
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	outputAbs, err := filepath.Abs(output)
-	if err != nil {
-		return err
-	}
-	relative, err := filepath.Rel(rootAbs, outputAbs)
-	if err != nil || relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-		return protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryLocal, "Output path must be outside the managed Project worktree.")
-	}
-	return nil
 }
 
 func textualDiff(oldPath string, oldData []byte, newPath string, newData []byte) (string, error) {

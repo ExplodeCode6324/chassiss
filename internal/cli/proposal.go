@@ -134,7 +134,8 @@ func transitionCommand(ctx context.Context, invocation invocation) (Envelope, er
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("transition publish", &projectContext{
-		RepoRoot: project.RepoRoot, Runner: project.Runner, Store: project.Store,
+		InvocationRoot: project.InvocationRoot,
+		RepoRoot:       project.RepoRoot, Runner: project.Runner, Store: project.Store,
 		Local: project.Local, LocalProject: project.LocalProject, Verified: verified,
 		Identity: discoverIdentity(verified.State, project.LocalProject),
 	})
@@ -245,6 +246,25 @@ func createProposal(
 	plan transitionPlan,
 	output string,
 ) (Envelope, error) {
+	bundleOutput := ""
+	if output != "" && !strings.HasPrefix(output, "refs/") {
+		if err := requireOutsideProject(project, output); err != nil {
+			return Envelope{}, err
+		}
+		absolute, err := filepath.Abs(output)
+		if err != nil {
+			return Envelope{}, err
+		}
+		if _, err := os.Stat(absolute); err == nil {
+			return Envelope{}, protocol.NewError(protocol.ErrUsageInvalid, protocol.CategoryLocal, "Proposal bundle output already exists.")
+		}
+		bundleOutput = absolute
+	} else if output != "" {
+		expectedRef := "refs/heads/chassiss/transition/" + plan.Operation.Action + "/" + plan.Operation.OperationID
+		if output != expectedRef {
+			return Envelope{}, usageError("proposal ref output must use the canonical Transition ref")
+		}
+	}
 	stateData, err := state.Encode(plan.NextState, project.Verified.ObjectFormat)
 	if err != nil {
 		return Envelope{}, err
@@ -303,26 +323,14 @@ func createProposal(
 		return Envelope{}, err
 	}
 	artifact := ref
-	if output != "" && !strings.HasPrefix(output, "refs/") {
-		if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+	if bundleOutput != "" {
+		if err := os.MkdirAll(filepath.Dir(bundleOutput), 0o700); err != nil {
 			return Envelope{}, err
 		}
-		absolute, err := filepath.Abs(output)
-		if err != nil {
+		if _, err := project.Runner.Run(ctx, "bundle", "create", bundleOutput, ref); err != nil {
 			return Envelope{}, err
 		}
-		if _, err := os.Stat(absolute); err == nil {
-			return Envelope{}, protocol.NewError(protocol.ErrUsageInvalid, protocol.CategoryLocal, "Proposal bundle output already exists.")
-		}
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o700); err != nil {
-			return Envelope{}, err
-		}
-		if _, err := project.Runner.Run(ctx, "bundle", "create", absolute, ref); err != nil {
-			return Envelope{}, err
-		}
-		artifact = absolute
-	} else if output != "" && output != ref {
-		return Envelope{}, usageError("proposal ref output must use the canonical Transition ref")
+		artifact = bundleOutput
 	}
 	envelope := projectEnvelope(commandForAction(plan.Operation.Action), project)
 	envelope.Identity = identityForAuthority(plan.Authority)

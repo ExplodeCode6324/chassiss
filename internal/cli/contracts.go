@@ -110,7 +110,8 @@ func taskbookDraftCommand(ctx context.Context, invocation invocation) (Envelope,
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Establish Architecture before creating a Taskbook.")
 	}
 	output := invocation.Value("output")
-	if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+	sidecar := output + ".chassiss.json"
+	if err := requireOutsideProject(project, output, sidecar); err != nil {
 		return Envelope{}, err
 	}
 	var data []byte
@@ -143,7 +144,6 @@ func taskbookDraftCommand(ctx context.Context, invocation invocation) (Envelope,
 	if err != nil {
 		return Envelope{}, err
 	}
-	sidecar := output + ".chassiss.json"
 	if err := writeExternalFile(sidecar, append(metadataData, '\n')); err != nil {
 		return Envelope{}, err
 	}
@@ -358,7 +358,8 @@ func architectureDraftCommand(ctx context.Context, invocation invocation) (Envel
 		return Envelope{}, err
 	}
 	output := invocation.Value("output")
-	if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+	sidecar := output + ".chassiss.json"
+	if err := requireOutsideProject(project, output, sidecar); err != nil {
 		return Envelope{}, err
 	}
 	base := ""
@@ -387,7 +388,6 @@ func architectureDraftCommand(ctx context.Context, invocation invocation) (Envel
 		Schema: draftMetadataSchema, TaskbookBlob: nil,
 	}
 	metadataData, _ := protocol.CanonicalJSON(metadata)
-	sidecar := output + ".chassiss.json"
 	if err := writeExternalFile(sidecar, append(metadataData, '\n')); err != nil {
 		return Envelope{}, err
 	}

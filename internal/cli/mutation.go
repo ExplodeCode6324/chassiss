@@ -452,7 +452,8 @@ func publishTransition(ctx context.Context, project *projectContext, plan transi
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope(plan.Operation.Action, &projectContext{
-		RepoRoot: project.RepoRoot, Runner: project.Runner, Store: project.Store,
+		InvocationRoot: project.InvocationRoot,
+		RepoRoot:       project.RepoRoot, Runner: project.Runner, Store: project.Store,
 		Local: project.Local, LocalProject: project.LocalProject, Verified: verified,
 		Identity: discoverIdentity(verified.State, project.LocalProject),
 	})

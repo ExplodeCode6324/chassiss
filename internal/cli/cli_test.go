@@ -367,6 +367,21 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if err := os.Chdir(workspace); err != nil {
 		t.Fatal(err)
 	}
+	for _, requestedProject := range []string{"PRJ-TEST", "PRJ-UNREGISTERED"} {
+		blockedRequestPath := filepath.Join(workspace, requestedProject+"-grant-request.json")
+		blockedRequest, _ := runJSONFailure(t, []string{
+			"grant", "request", "--project", requestedProject, "--key", "KEY-AGENT-01",
+			"--profile", "developer", "--task-scope", "TASK-*",
+			"--resource-scope", "module:*", "--resource-scope", "schema:*",
+			"--limits", "bounded", "--output", blockedRequestPath,
+		}, &stdout, &stderr)
+		if blockedRequest.Error == nil || blockedRequest.Error.Code != protocol.ErrScopeViolation {
+			t.Fatalf("cross-Project Grant Request output was not refused: %#v", blockedRequest)
+		}
+		if _, err := os.Stat(blockedRequestPath); !os.IsNotExist(err) {
+			t.Fatalf("refused Grant Request output was created: %v", err)
+		}
+	}
 	requestPath := filepath.Join(t.TempDir(), "grant-request.json")
 	requestEnvelope := runJSON(t, []string{
 		"grant", "request", "--project", "PRJ-TEST", "--key", "KEY-AGENT-01",
@@ -418,6 +433,24 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		"--resource-scope", "module:*", "--resource-scope", "schema:*",
 		"--limits", "bounded", "--output", extraRequestPath,
 	}, &stdout, &stderr)
+	blockedProposalPath := filepath.Join(workspace, "grant-proposal.bundle")
+	blockedProposal, _ := runJSONFailure(t, []string{
+		"grant", "add", "--request", extraRequestPath, "--grant-id", "GRT-EXTRA-01",
+		"--root-key", "KEY-ROOT-01", "--profile", "developer",
+		"--task-scope", "TASK-*", "--resource-scope", "module:*",
+		"--resource-scope", "schema:*", "--limits", "bounded",
+		"--proposal", blockedProposalPath,
+	}, &stdout, &stderr)
+	if blockedProposal.Error == nil || blockedProposal.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained proposal bundle was not refused: %#v", blockedProposal)
+	}
+	afterBlockedProposal, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterBlockedProposal.LocalProject.PendingOperations) != 0 {
+		t.Fatalf("refused proposal output left pending state: %#v", afterBlockedProposal.LocalProject.PendingOperations)
+	}
 	proposalPath := filepath.Join(t.TempDir(), "grant-proposal.bundle")
 	proposalEnvelope := runJSON(t, []string{
 		"grant", "add", "--request", extraRequestPath, "--grant-id", "GRT-EXTRA-01",
@@ -450,6 +483,86 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		t.Fatalf("Task start did not return a worktree: %#v", result)
 	}
 	worktree := result["worktree"].(string)
+	if err := os.Chdir(worktree); err != nil {
+		t.Fatal(err)
+	}
+	fromManagedWorktree, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatalf("managed worktree project discovery failed: %v", err)
+	}
+	if !samePath(fromManagedWorktree.InvocationRoot, worktree) ||
+		!samePath(fromManagedWorktree.RepoRoot, workspace) ||
+		!samePath(fromManagedWorktree.Runner.Repo, workspace) {
+		t.Fatalf(
+			"managed worktree did not resolve through its registered main instance: invocation=%q root=%q runner=%q",
+			fromManagedWorktree.InvocationRoot, fromManagedWorktree.RepoRoot,
+			fromManagedWorktree.Runner.Repo,
+		)
+	}
+	assertScopeRefusal := func(args ...string) {
+		t.Helper()
+		failure, exit := runJSONFailure(t, args, &stdout, &stderr)
+		if exit == 0 || failure.Error == nil || failure.Error.Code != protocol.ErrScopeViolation {
+			t.Fatalf("Project-contained output was not refused: exit=%d envelope=%#v", exit, failure)
+		}
+	}
+	directWorktreeOutput := filepath.Join(worktree, "generated", "README.md")
+	assertScopeRefusal("file", "show", "README.md", "--output", directWorktreeOutput)
+	if _, err := os.Stat(directWorktreeOutput); !os.IsNotExist(err) {
+		t.Fatalf("refused direct worktree output was created: %v", err)
+	}
+	externalOutputs := t.TempDir()
+	for label, target := range map[string]string{
+		"main": workspace, "worktree": worktree,
+	} {
+		alias := filepath.Join(externalOutputs, "alias-"+label)
+		if err := os.Symlink(target, alias); err != nil {
+			if goruntime.GOOS == "windows" {
+				continue
+			}
+			t.Fatal(err)
+		}
+		assertScopeRefusal(
+			"file", "show", "README.md", "--output",
+			filepath.Join(alias, "generated", "README.md"),
+		)
+	}
+	allowedOutput := filepath.Join(externalOutputs, "allowed", "README.md")
+	allowedFile := runJSON(t, []string{
+		"file", "show", "README.md", "--output", allowedOutput,
+	}, &stdout, &stderr)
+	if allowedFile.Result.(map[string]any)["content"] != "# test\n" {
+		t.Fatalf("legitimate external File Show output failed: %#v", allowedFile)
+	}
+	if data, err := os.ReadFile(allowedOutput); err != nil || string(data) != "# test\n" {
+		t.Fatalf("legitimate external output was not written exactly: data=%q err=%v", data, err)
+	}
+	managedStatus := runJSON(t, []string{"work", "status", "TASK-001"}, &stdout, &stderr)
+	if managedStatus.Result.(map[string]any)["worktree"] != worktree {
+		t.Fatalf("Work Status from managed worktree resolved the wrong worktree: %#v", managedStatus)
+	}
+	managedFile := runJSON(t, []string{"file", "show", "README.md"}, &stdout, &stderr)
+	if managedFile.Result.(map[string]any)["content"] != "# test\n" {
+		t.Fatalf("File Show from managed worktree did not read verified main: %#v", managedFile)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	exit = Run([]string{
+		"owner", "apply", "--reason", "managed worktree refusal regression",
+		"--summary", "must not publish", "--grant", "GRT-AGENT-01", "--yes", "--json",
+	}, bytes.NewReader(nil), &stdout, &stderr)
+	var ownerFailure Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &ownerFailure); err != nil {
+		t.Fatal(err)
+	}
+	if exit == 0 || ownerFailure.Error == nil ||
+		ownerFailure.Error.Code != protocol.ErrOwnerWorkflowActive ||
+		ownerFailure.Error.Message != "Owner Apply cannot run inside a managed Task worktree." {
+		t.Fatalf("Owner Apply was not refused inside managed worktree: exit=%d envelope=%#v", exit, ownerFailure)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(worktree, "src", "core", "reducer"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -482,6 +595,25 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	submitEnvelope := runJSON(t, []string{"submit", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
 	if submitEnvelope.Operation == nil {
 		t.Fatalf("Submit transition missing: %#v", submitEnvelope)
+	}
+	blockedReviewContext := filepath.Join(workspace, "review-context.json")
+	blockedReview, _ := runJSONFailure(t, []string{
+		"review", "TASK-001", "--prepare", "--output", blockedReviewContext,
+	}, &stdout, &stderr)
+	if blockedReview.Error == nil || blockedReview.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Review context was not refused: %#v", blockedReview)
+	}
+	preflightContext := filepath.Join(t.TempDir(), "review-context.json")
+	blockedReviewReport := filepath.Join(worktree, "review-template.json")
+	blockedReport, _ := runJSONFailure(t, []string{
+		"review", "TASK-001", "--prepare", "--output", preflightContext,
+		"--report-output", blockedReviewReport,
+	}, &stdout, &stderr)
+	if blockedReport.Error == nil || blockedReport.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Review report template was not refused: %#v", blockedReport)
+	}
+	if _, err := os.Stat(preflightContext); !os.IsNotExist(err) {
+		t.Fatalf("Review output preflight left a partial context file: %v", err)
 	}
 	reviewContextPath := filepath.Join(t.TempDir(), "review-context.json")
 	reviewTemplatePath := filepath.Join(t.TempDir(), "review-template.json")
@@ -638,6 +770,13 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		t.Fatalf("build check binary: %v\n%s", err, output)
 	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	blockedClosurePath := filepath.Join(workspace, "closure-template.json")
+	blockedClosure, _ := runJSONFailure(t, []string{
+		"taskbook", "archive", "--prepare", "--output", blockedClosurePath,
+	}, &stdout, &stderr)
+	if blockedClosure.Error == nil || blockedClosure.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Taskbook closure template was not refused: %#v", blockedClosure)
+	}
 	closureTemplatePath := filepath.Join(t.TempDir(), "closure-template.json")
 	prepareClosure := runJSON(t, []string{
 		"taskbook", "archive", "--prepare", "--output", closureTemplatePath,
@@ -871,6 +1010,26 @@ func runJSON(t *testing.T, args []string, stdout, stderr *bytes.Buffer) Envelope
 		t.Fatal(err)
 	}
 	return envelope
+}
+
+func runJSONFailure(
+	t *testing.T,
+	args []string,
+	stdout, stderr *bytes.Buffer,
+) (Envelope, int) {
+	t.Helper()
+	stdout.Reset()
+	stderr.Reset()
+	argv := append(append([]string(nil), args...), "--json")
+	exit := Run(argv, bytes.NewReader(nil), stdout, stderr)
+	if exit == 0 {
+		t.Fatalf("%v unexpectedly succeeded\nstdout %s\nstderr %s", argv, stdout.String(), stderr.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope, exit
 }
 
 func assertAvailableAction(t *testing.T, envelope Envelope, expected AvailableAction) AvailableAction {
