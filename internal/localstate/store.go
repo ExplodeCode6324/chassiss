@@ -25,27 +25,49 @@ func OpenDefault() (Store, error) {
 }
 
 func (store Store) Load() (*State, error) {
-	return store.loadUnlocked()
-}
-
-func (store Store) loadUnlocked() (*State, error) {
-	data, err := os.ReadFile(store.Paths.State)
-	if os.IsNotExist(err) {
-		return New(), nil
+	state, recovered, err := store.loadUnlocked()
+	if err != nil || !recovered {
+		return state, err
 	}
+	var result *State
+	err = store.withExclusiveWriteLock(func() error {
+		latest, latestRecovered, err := store.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if latestRecovered {
+			if err := store.saveUnlocked(latest); err != nil {
+				return err
+			}
+		}
+		result = latest
+		return nil
+	})
 	if err != nil {
 		return nil, err
+	}
+	return result, nil
+}
+
+func (store Store) loadUnlocked() (*State, bool, error) {
+	data, err := os.ReadFile(store.Paths.State)
+	if os.IsNotExist(err) {
+		return New(), false, nil
+	}
+	if err != nil {
+		return nil, false, err
 	}
 	var state State
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&state); err != nil {
-		return nil, fmt.Errorf("local State: %w", err)
+		return nil, false, fmt.Errorf("local State: %w", err)
 	}
+	recovered := canonicalizeLegacyPendingHTML(&state)
 	if err := state.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &state, nil
+	return &state, recovered, nil
 }
 
 func (store Store) Save(state *State) error {
@@ -64,13 +86,16 @@ func (store Store) saveUnlocked(state *State) error {
 	if err := os.Chmod(store.Paths.Data, 0o700); err != nil {
 		return err
 	}
-	// Marshal without indentation so the canonical JSON bytes held by
-	// PendingOperation RawMessages are not rewritten by encoding/json.
-	data, err := json.Marshal(state)
-	if err != nil {
+	// Encode compactly and without HTML escaping so protocol-canonical bytes held
+	// by PendingOperation RawMessages remain exact. encoding/json sorts map keys,
+	// and Encoder.Encode contributes the file's single trailing LF.
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(state); err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	data := encoded.Bytes()
 	file, err := os.CreateTemp(store.Paths.Data, "local-state-")
 	if err != nil {
 		return err
@@ -108,9 +133,14 @@ func (store Store) saveUnlocked(state *State) error {
 
 func (store Store) Update(mutator func(*State) error) error {
 	return store.withExclusiveWriteLock(func() error {
-		state, err := store.loadUnlocked()
+		state, recovered, err := store.loadUnlocked()
 		if err != nil {
 			return err
+		}
+		if recovered {
+			if err := store.saveUnlocked(state); err != nil {
+				return err
+			}
 		}
 		if err := mutator(state); err != nil {
 			return err

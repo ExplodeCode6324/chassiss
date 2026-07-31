@@ -42,6 +42,154 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStorePendingCanonicalHTMLCharactersRoundTrip(t *testing.T) {
+	data := t.TempDir()
+	store := Store{Paths: pathsFromData(data, filepath.Join(data, "cache"))}
+	pending := reviewPendingWithFinding(t, "bar_end <= available_at <= decision_time")
+	value := New()
+	project := testProject()
+	project.PendingOperations[pending.OperationID] = pending
+	value.Projects["PRJ-TEST"] = project
+	if err := store.Save(value); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(store.Paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(first, []byte(`\u003c`)) ||
+		!bytes.Contains(first, []byte("bar_end <= available_at <= decision_time")) {
+		t.Fatalf("Store rewrote canonical pending HTML characters: %s", first)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := loaded.Projects["PRJ-TEST"].PendingOperations[pending.OperationID]
+	if !bytes.Equal(actual.SemanticOperation, pending.SemanticOperation) ||
+		!bytes.Equal(actual.CandidateEvidence, pending.CandidateEvidence) {
+		t.Fatal("pending canonical bytes changed across Store restart")
+	}
+	if err := store.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(store.Paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) || len(second) == 0 || second[len(second)-1] != '\n' ||
+		bytes.HasSuffix(second, []byte("\n\n")) {
+		t.Fatal("Store output is not deterministic compact JSON with one trailing LF")
+	}
+}
+
+func TestStoreRecoversExactLegacyPendingHTMLEscaping(t *testing.T) {
+	for _, mode := range []string{"load", "update"} {
+		t.Run(mode, func(t *testing.T) {
+			data := t.TempDir()
+			store := Store{Paths: pathsFromData(data, filepath.Join(data, "cache"))}
+			pending := reviewPendingWithFinding(t, "bar_end <= available_at <= decision_time")
+			pending.CandidateCommit = nil
+			pending.Status = "prepared"
+			pending.TargetRefs["refs/heads/main"] = ""
+			value := New()
+			project := testProject()
+			project.PendingOperations[pending.OperationID] = pending
+			value.Projects["PRJ-TEST"] = project
+			writeLegacyHTMLState(t, store, value)
+
+			if mode == "load" {
+				if _, err := store.Load(); err != nil {
+					t.Fatalf("restart recovery failed: %v", err)
+				}
+			} else {
+				candidate := strings.Repeat("d", 40)
+				if err := store.Update(func(local *State) error {
+					project := local.Projects["PRJ-TEST"]
+					current := project.PendingOperations[pending.OperationID]
+					current.CandidateCommit = &candidate
+					current.Status = "signed"
+					current.TargetRefs["refs/heads/main"] = candidate
+					project.PendingOperations[pending.OperationID] = current
+					local.Projects["PRJ-TEST"] = project
+					return nil
+				}); err != nil {
+					t.Fatalf("mutation recovery failed: %v", err)
+				}
+			}
+			repaired, err := os.ReadFile(store.Paths.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(repaired, []byte(`\u003c`)) ||
+				!bytes.Contains(repaired, []byte("bar_end <= available_at <= decision_time")) {
+				t.Fatalf("legacy pending was not persisted canonically: %s", repaired)
+			}
+			loaded, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := loaded.Projects["PRJ-TEST"].PendingOperations[pending.OperationID]
+			if mode == "update" && (current.Status != "signed" || current.CandidateCommit == nil) {
+				t.Fatalf("recovered mutation was not persisted: %#v", current)
+			}
+		})
+	}
+}
+
+func TestStoreRejectsNonExactOrTamperedLegacyPending(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*State, PendingOperation)
+		raw    func([]byte) []byte
+	}{
+		{
+			name: "non_exact_escape",
+			raw: func(data []byte) []byte {
+				return bytes.Replace(data, []byte(`\u003c`), []byte(`\u003C`), 1)
+			},
+		},
+		{
+			name: "digest_mismatched_content",
+			mutate: func(value *State, pending PendingOperation) {
+				project := value.Projects["PRJ-TEST"]
+				current := project.PendingOperations[pending.OperationID]
+				current.SemanticOperation = bytes.Replace(
+					current.SemanticOperation,
+					[]byte("bar_end <= available_at <= decision_time"),
+					[]byte("bar_end != available_at != decision_time"), 1,
+				)
+				project.PendingOperations[pending.OperationID] = current
+				value.Projects["PRJ-TEST"] = project
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := t.TempDir()
+			store := Store{Paths: pathsFromData(data, filepath.Join(data, "cache"))}
+			pending := reviewPendingWithFinding(t, "bar_end <= available_at <= decision_time")
+			value := New()
+			project := testProject()
+			project.PendingOperations[pending.OperationID] = pending
+			value.Projects["PRJ-TEST"] = project
+			if test.mutate != nil {
+				test.mutate(value, pending)
+			}
+			raw := legacyHTMLStateBytes(t, value)
+			if test.raw != nil {
+				raw = test.raw(raw)
+			}
+			writeLocalStateBytes(t, store, raw)
+			if _, err := store.Load(); err == nil {
+				t.Fatal("unsafe legacy pending unexpectedly recovered")
+			} else if protocolError, ok := err.(*protocol.Error); !ok ||
+				protocolError.Code != protocol.ErrLocalStateCorrupt {
+				t.Fatalf("unexpected refusal: %T %v", err, err)
+			}
+		})
+	}
+}
+
 func TestUnknownGrantCacheFieldRejected(t *testing.T) {
 	data := t.TempDir()
 	store := Store{Paths: pathsFromData(data, filepath.Join(data, "cache"))}
@@ -360,5 +508,83 @@ func testPending(
 		ExpectedMain: parent, OperationDigest: operationDigest, OperationID: operationID,
 		SemanticOperation: json.RawMessage(operationBytes), Status: "signed",
 		TargetRefs: map[string]string{"refs/heads/main": candidate},
+	}
+}
+
+func reviewPendingWithFinding(t *testing.T, finding string) PendingOperation {
+	t.Helper()
+	attemptDigest := "sha256:" + strings.Repeat("1", 64)
+	operation := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "task.reviewed-indexed", Project: "PRJ-TEST",
+		Authority: "grant:GRT-REVIEW-01", Target: "TASK-REVIEW",
+		Preconditions: map[string]any{
+			"attempt_digest": attemptDigest, "phase": "submitted",
+		},
+		Payload: map[string]any{
+			"report": map[string]any{
+				"findings": []any{map[string]any{"summary": finding}},
+				"schema":   "chassiss.review-report/v1",
+				"summary":  "request changes", "verdict": "request_changes",
+			},
+			"verdict": "request_changes",
+		},
+	}
+	operationDigest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Repeat("a", 40)
+	evidence := protocol.ExecutionEvidence{
+		Schema: protocol.EvidenceSchema, OperationDigest: operationDigest,
+		Action: operation.Action, Attempt: 1, Parent: &parent,
+		Facts: map[string]any{
+			"attempt_digest": attemptDigest, "check_results": []any{},
+			"review_context": map[string]any{"reviewer_attention": []any{finding}},
+		},
+	}
+	evidenceDigest, err := protocol.ObjectDigest("execution-evidence", evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semantic, err := protocol.CanonicalJSON(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateEvidence, err := protocol.CanonicalJSON(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := strings.Repeat("c", 40)
+	return PendingOperation{
+		AuthorityKeyHandle: "file:/fixture/reviewer-key", CandidateCommit: &candidate,
+		CandidateEvidence: candidateEvidence, EvidenceDigest: evidenceDigest,
+		ExpectedMain: parent, OperationDigest: operationDigest,
+		OperationID: operation.OperationID, SemanticOperation: semantic,
+		Status: "signed", TargetRefs: map[string]string{"refs/heads/main": candidate},
+	}
+}
+
+func legacyHTMLStateBytes(t *testing.T, value *State) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func writeLegacyHTMLState(t *testing.T, store Store, value *State) {
+	t.Helper()
+	writeLocalStateBytes(t, store, legacyHTMLStateBytes(t, value))
+}
+
+func writeLocalStateBytes(t *testing.T, store Store, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(store.Paths.Data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.Paths.State, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

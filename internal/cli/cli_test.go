@@ -810,7 +810,13 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 			"requirements": "pass", "contract": "pass",
 			"architecture": "conformant", "integration": "pass",
 		},
-		"findings": []any{},
+		"findings": []any{
+			map[string]any{
+				"category": "integration", "paths": []any{}, "resources": []any{},
+				"severity": "advisory",
+				"summary":  "Preserve bar_end <= available_at <= decision_time.",
+			},
+		},
 		"reviewer_attention_responses": []any{
 			map[string]any{
 				"attention": "Reject extra fields in every sparse Task phase.",

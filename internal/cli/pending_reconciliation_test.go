@@ -461,6 +461,109 @@ func TestLocalSyncReconcilesLegacyStaleSignedPending(t *testing.T) {
 	}
 }
 
+func TestStatusRecoversRC8HTMLEscapedPending(t *testing.T) {
+	_, original, _ := newLocalPublishProject(t, "PRJ-LEGACY-PENDING-HTML")
+	projectID := original.Verified.State.Project.ID
+	operation := protocol.Operation{
+		Schema:      protocol.OperationSchema,
+		OperationID: "OPR-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action:      "task.blocked",
+		Project:     projectID,
+		Authority:   "grant:GRT-LEGACY-01",
+		Target:      "TASK-001",
+		Preconditions: map[string]any{
+			"blocked": false,
+			"phase":   "active",
+		},
+		Payload: map[string]any{
+			"reason": "bar_end <= available_at <= decision_time",
+		},
+	}
+	operationDigest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := protocol.ExecutionEvidence{
+		Schema:          protocol.EvidenceSchema,
+		OperationDigest: operationDigest,
+		Action:          operation.Action,
+		Attempt:         1,
+		Parent:          &original.Verified.Head,
+		Facts:           map[string]any{},
+	}
+	evidenceDigest, err := protocol.ObjectDigest("execution-evidence", evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semanticOperation, err := protocol.CanonicalJSON(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateEvidence, err := protocol.CanonicalJSON(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	local, err := original.Store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := local.Projects[projectID]
+	project.PendingOperations[operation.OperationID] = localstate.PendingOperation{
+		AuthorityKeyHandle: "file:/fixture/key",
+		CandidateCommit:    nil,
+		CandidateEvidence:  candidateEvidence,
+		EvidenceDigest:     evidenceDigest,
+		ExpectedMain:       original.Verified.Head,
+		OperationDigest:    operationDigest,
+		OperationID:        operation.OperationID,
+		SemanticOperation:  semanticOperation,
+		Status:             "prepared",
+		TargetRefs: map[string]string{
+			"refs/heads/main": "",
+		},
+	}
+	local.Projects[projectID] = project
+
+	// Reproduce the rc8 persistence path exactly: json.Marshal re-encodes the
+	// canonical RawMessage and HTML-escapes the comparison operators within it.
+	legacy, err := json.Marshal(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy = append(legacy, '\n')
+	if !bytes.Contains(legacy, []byte(`\u003c`)) {
+		t.Fatalf("fixture did not reproduce rc8 HTML escaping: %s", legacy)
+	}
+	if err := os.WriteFile(original.Store.Paths.State, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	envelope := runJSON(t, []string{"status"}, &stdout, &stderr)
+	result := envelope.Result.(map[string]any)
+	pending := result["pending_operations"].(map[string]any)
+	if _, exists := pending[operation.OperationID]; !exists {
+		t.Fatalf("status omitted recovered pending Operation: %#v", pending)
+	}
+	repaired, err := os.ReadFile(original.Store.Paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(repaired, []byte(`\u003c`)) || !bytes.Contains(repaired, []byte("<=")) {
+		t.Fatalf("status did not persist canonical pending JSON: %s", repaired)
+	}
+
+	// A second command performs a fresh load from the repaired file, matching a
+	// process restart rather than relying on the State instance recovered above.
+	envelope = runJSON(t, []string{"status"}, &stdout, &stderr)
+	result = envelope.Result.(map[string]any)
+	pending = result["pending_operations"].(map[string]any)
+	if _, exists := pending[operation.OperationID]; !exists {
+		t.Fatalf("restarted status omitted recovered pending Operation: %#v", pending)
+	}
+}
+
 func TestLocalSyncReconcilesPublishedCandidateWithoutFailingIt(t *testing.T) {
 	ctx, original, root := newLocalPublishProject(t, "PRJ-LOCAL-SYNC-PUBLISHED")
 	plan := newRootGrantPlan(
