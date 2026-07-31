@@ -146,15 +146,38 @@ func taskContextActions(ctx context.Context, project *projectContext, taskID str
 		}
 	}
 	runtimeTask := project.Verified.State.Tasks[taskID]
-	if runtimeTask.Phase != "approved" || runtimeTask.Blocked != nil ||
-		runtimeTask.Attempt == nil || runtimeTask.Review == nil ||
-		runtimeTask.Contract == nil || !allows("integration.apply") {
-		return actions
-	}
 	status, err := project.Runner.Run(
 		ctx, "status", "--porcelain=v1", "-z", "--untracked-files=no",
 	)
 	if err != nil || len(status.Stdout) != 0 {
+		return actions
+	}
+	if runtimeTask.Blocked != nil {
+		if *runtimeTask.Blocked && allows("task.resume") {
+			actions = append(actions, action(
+				"task.resumed", "task.resume", "task", "resume", taskID,
+			))
+		}
+		return actions
+	}
+	if runtimeTask.Phase == "ready" && taskAvailable(project, taskID) &&
+		allows("task.start") && grantWithinActiveTaskLimit(project, grant) {
+		actions = append(actions, action(
+			"task.started", "task.start", "task", "start", taskID,
+		))
+		return actions
+	}
+	if runtimeTask.Phase == "active" && grant.Actor == runtimeTask.Actor &&
+		allows("task.release") && verifyReleaseWorktree(ctx, project, taskID, runtimeTask) == nil {
+		actions = append(actions, action(
+			"task.released", "task.release", "task", "release", taskID,
+			"--reason", "release unchanged active work discovered by Context",
+		))
+		return actions
+	}
+	if runtimeTask.Phase != "approved" || runtimeTask.Blocked != nil ||
+		runtimeTask.Attempt == nil || runtimeTask.Review == nil ||
+		runtimeTask.Contract == nil || !allows("integration.apply") {
 		return actions
 	}
 	if _, _, err := integrationCandidate(ctx, project, taskID, runtimeTask, contract); err != nil {
@@ -164,6 +187,20 @@ func taskContextActions(ctx context.Context, project *projectContext, taskID str
 		"integration.applied", "integration.apply", "integrate", taskID,
 	))
 	return actions
+}
+
+func grantWithinActiveTaskLimit(project *projectContext, grant state.Grant) bool {
+	if grant.Limits.MaxActiveTasks == nil {
+		return true
+	}
+	var active int64
+	for _, task := range project.Verified.State.Tasks {
+		if task.Actor == grant.Actor &&
+			(task.Phase == "active" || task.Phase == "submitted" || task.Phase == "approved") {
+			active++
+		}
+	}
+	return active < *grant.Limits.MaxActiveTasks
 }
 
 func grantAllowsTaskAction(grant state.Grant, capability, taskID string, resources []string) bool {

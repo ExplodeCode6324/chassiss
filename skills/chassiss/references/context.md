@@ -32,6 +32,13 @@ Refresh Context:
 - after an empty, detached, timed-out, or otherwise ambiguous mutation result;
 - whenever the CLI's remediation requests it.
 
+A blocked Task must be resumed before any phase-changing action that requires an
+unblocked Task. In particular, execute the exact `task resume` argv returned by
+Context, refresh Context, and only then use `task release`. Context exposes
+`task release` only for the current Task Actor when its Grant authorizes release,
+the managed worktree is clean, and Work Head still equals the frozen base. The
+mutation command rechecks every condition before publishing.
+
 Context never grants authority by itself. Mutation commands must sync and verify
 again internally. Offline Context is useful for inspection only, not mutation.
 

@@ -474,13 +474,88 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if publishEnvelope.Result.(map[string]any)["commit"] == "" {
 		t.Fatalf("Proposal publish failed: %#v", publishEnvelope)
 	}
-	startEnvelope := runJSON(t, []string{"task", "start", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
+	startAction := assertAvailableAction(t, runJSON(t, []string{
+		"context", "TASK-001",
+	}, &stdout, &stderr), AvailableAction{
+		Action: "task.started",
+		Argv: []string{
+			"chassiss", "task", "start", "TASK-001",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.start",
+		Target:     "TASK-001",
+	})
+	startEnvelope := runAvailableAction(t, startAction, &stdout, &stderr)
 	if startEnvelope.Operation == nil {
 		t.Fatalf("Task start transition missing: %#v", startEnvelope)
 	}
 	result := startEnvelope.Result.(map[string]any)
 	if result["worktree"] == "" {
 		t.Fatalf("Task start did not return a worktree: %#v", result)
+	}
+	assertAvailableAction(t, runJSON(t, []string{
+		"context", "TASK-001",
+	}, &stdout, &stderr), AvailableAction{
+		Action: "task.released",
+		Argv: []string{
+			"chassiss", "task", "release", "TASK-001", "--reason",
+			"release unchanged active work discovered by Context",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.release",
+		Target:     "TASK-001",
+	})
+	runJSON(t, []string{
+		"task", "block", "TASK-001", "--reason", "exercise blocked release refusal",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	blockedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	resumeAction := assertAvailableAction(t, blockedContext, AvailableAction{
+		Action: "task.resumed",
+		Argv: []string{
+			"chassiss", "task", "resume", "TASK-001",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.resume",
+		Target:     "TASK-001",
+	})
+	assertNoAvailableAction(t, blockedContext, "task.released")
+	releaseFailure, releaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse while blocked",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if releaseExit != 6 || releaseFailure.Error == nil ||
+		releaseFailure.Error.Code != protocol.ErrTaskPhaseInvalid ||
+		releaseFailure.Operation != nil {
+		t.Fatalf("blocked release did not fail structurally: exit=%d envelope=%#v", releaseExit, releaseFailure)
+	}
+	afterRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if afterRefusal.Snapshot.MainCommit != blockedContext.Snapshot.MainCommit {
+		t.Fatalf("blocked release mutated main: before=%s after=%s", blockedContext.Snapshot.MainCommit, afterRefusal.Snapshot.MainCommit)
+	}
+	assertAvailableAction(t, afterRefusal, resumeAction)
+	runAvailableAction(t, resumeAction, &stdout, &stderr)
+	resumedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	releaseAction := assertAvailableAction(t, resumedContext, AvailableAction{
+		Action: "task.released",
+		Argv: []string{
+			"chassiss", "task", "release", "TASK-001", "--reason",
+			"release unchanged active work discovered by Context",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.release",
+		Target:     "TASK-001",
+	})
+	runAvailableAction(t, releaseAction, &stdout, &stderr)
+	startEnvelope = runJSON(t, []string{
+		"task", "start", "TASK-001", "--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if startEnvelope.Operation == nil {
+		t.Fatalf("Task restart after release transition missing: %#v", startEnvelope)
+	}
+	result = startEnvelope.Result.(map[string]any)
+	if result["worktree"] == "" {
+		t.Fatalf("Task restart did not return a worktree: %#v", result)
 	}
 	worktree := result["worktree"].(string)
 	if err := os.Chdir(worktree); err != nil {
@@ -586,11 +661,31 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if !strings.Contains(diffText, "func Apply") || !strings.Contains(diffText, "TestPlaceholder") {
 		t.Fatalf("Work diff omitted untracked source files: %q", diffText)
 	}
+	dirtyContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	assertNoAvailableAction(t, dirtyContext, "task.released")
+	dirtyRelease, dirtyReleaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse dirty work",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if dirtyReleaseExit != 3 || dirtyRelease.Error == nil ||
+		dirtyRelease.Error.Code != protocol.ErrWorktreeDirty {
+		t.Fatalf("dirty release was not refused: exit=%d envelope=%#v", dirtyReleaseExit, dirtyRelease)
+	}
 	commitEnvelope := runJSON(t, []string{
 		"work", "commit", "TASK-001", "--message", "implement reducer",
 	}, &stdout, &stderr)
 	if commitEnvelope.Result.(map[string]any)["commit"] == "" {
 		t.Fatalf("Work Commit missing: %#v", commitEnvelope)
+	}
+	changedHeadContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	assertNoAvailableAction(t, changedHeadContext, "task.released")
+	changedHeadRelease, changedHeadReleaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse changed Work Head",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if changedHeadReleaseExit != 6 || changedHeadRelease.Error == nil ||
+		changedHeadRelease.Error.Code != protocol.ErrReleaseHasChanges {
+		t.Fatalf("changed-head release was not refused: exit=%d envelope=%#v", changedHeadReleaseExit, changedHeadRelease)
 	}
 	submitEnvelope := runJSON(t, []string{"submit", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
 	if submitEnvelope.Operation == nil {
@@ -1044,6 +1139,15 @@ func assertAvailableAction(t *testing.T, envelope Envelope, expected AvailableAc
 	}
 	t.Fatalf("available action missing\nexpected %#v\nactual %#v", expected, envelope.AvailableActions)
 	return AvailableAction{}
+}
+
+func assertNoAvailableAction(t *testing.T, envelope Envelope, action string) {
+	t.Helper()
+	for _, available := range envelope.AvailableActions {
+		if available.Action == action {
+			t.Fatalf("unexpected available action %q: %#v", action, envelope.AvailableActions)
+		}
+	}
 }
 
 func runAvailableAction(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) Envelope {

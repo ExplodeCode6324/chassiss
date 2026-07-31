@@ -85,6 +85,9 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 			}
 		}
 	case "task.released":
+		if runtimeTask.Phase != "active" || runtimeTask.Blocked != nil {
+			return Envelope{}, protocol.NewError(protocol.ErrTaskPhaseInvalid, protocol.CategoryValidation, "Task release requires an unblocked active Task.")
+		}
 		if err := verifyReleaseWorktree(ctx, project, taskID, runtimeTask); err != nil {
 			return Envelope{}, err
 		}
