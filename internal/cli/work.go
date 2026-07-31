@@ -319,9 +319,7 @@ func workRemoveCommand(ctx context.Context, invocation invocation) (Envelope, er
 	if err != nil {
 		return Envelope{}, err
 	}
-	safe := head == task.Base || task.Phase == "closed" ||
-		task.Phase == "ready" && head == worktree.Base
-	if !safe && task.Phase != "cancelled" && task.Phase != "superseded" {
+	if !workRemovalSafe(task, worktree, head) {
 		return Envelope{}, protocol.NewError(protocol.ErrAttemptUnreachable, protocol.CategoryLocal, "Work Head is not retained by main/archive and cannot be removed.")
 	}
 	if invocation.Flags["discard-unreachable"] && !invocation.Flags["yes"] {
@@ -345,6 +343,12 @@ func workRemoveCommand(ctx context.Context, invocation invocation) (Envelope, er
 	envelope.Result = map[string]any{"removed": true, "task": invocation.Positionals[0]}
 	addManagedWorkCleanupResult(envelope.Result.(map[string]any), cleanup)
 	return envelope, nil
+}
+
+func workRemovalSafe(task state.TaskState, worktree localstate.Worktree, head string) bool {
+	return head == task.Base || task.Phase == "closed" ||
+		task.Phase == "ready" && head == worktree.Base ||
+		task.Phase == "cancelled" || task.Phase == "superseded"
 }
 
 func checkCommand(ctx context.Context, invocation invocation) (Envelope, error) {

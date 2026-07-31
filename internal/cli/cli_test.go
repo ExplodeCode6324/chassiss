@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ExplodeCode6324/chassiss/internal/cryptoutil"
+	"github.com/ExplodeCode6324/chassiss/internal/gitstore"
 	"github.com/ExplodeCode6324/chassiss/internal/localstate"
 	"github.com/ExplodeCode6324/chassiss/internal/protocol"
 	"github.com/ExplodeCode6324/chassiss/internal/state"
@@ -1154,50 +1155,6 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		failureRecords[0].(map[string]any)["failure"] == nil {
 		t.Fatalf("Attempt failure detail did not resolve signed history: %#v", failureShow)
 	}
-	terminalStart := runJSON(t, []string{
-		"task", "start", "TASK-FAILURE", "--grant", "GRT-AGENT-01",
-	}, &stdout, &stderr)
-	terminalWorktree := terminalStart.Result.(map[string]any)["worktree"].(string)
-	if err := os.MkdirAll(filepath.Join(terminalWorktree, "src", "core", "reducer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(terminalWorktree, "src", "core", "reducer", "terminal.go"),
-		[]byte("package reducer\n"), 0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	terminalCommit := runJSON(t, []string{
-		"work", "commit", "TASK-FAILURE", "--message", "exercise terminal cleanup",
-	}, &stdout, &stderr)
-	terminalHead := terminalCommit.Result.(map[string]any)["commit"].(string)
-	beforeCancel, err := loadProject(context.Background(), "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminalRecord := beforeCancel.LocalProject.Worktrees["TASK-FAILURE"]
-	if terminalHead == terminalRecord.Base {
-		t.Fatal("terminal cleanup fixture did not move Work Head beyond base")
-	}
-	runJSON(t, []string{
-		"task", "cancel", "TASK-FAILURE", "--reason", "exercise terminal changed-head cleanup",
-		"--grant", "GRT-AGENT-01",
-	}, &stdout, &stderr)
-	terminalRemove := runJSON(t, []string{"work", "remove", "TASK-FAILURE"}, &stdout, &stderr)
-	assertManagedWorkCleanup(t, terminalRemove, true)
-	if _, err := os.Stat(terminalWorktree); !os.IsNotExist(err) {
-		t.Fatalf("terminal work remove retained path: %v", err)
-	}
-	afterTerminalRemoval, err := loadProject(context.Background(), "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := afterTerminalRemoval.Runner.Resolve(context.Background(), terminalRecord.Branch); err == nil {
-		t.Fatalf("terminal work remove retained Work Ref %s", terminalRecord.Branch)
-	}
-	if _, exists := afterTerminalRemoval.LocalProject.Worktrees["TASK-FAILURE"]; exists {
-		t.Fatalf("terminal work remove retained registry: %#v", afterTerminalRemoval.LocalProject.Worktrees)
-	}
 	verifyEnvelope = runJSON(t, []string{"verify", "--full"}, &stdout, &stderr)
 	if verifyEnvelope.Snapshot == nil || verifyEnvelope.Snapshot.Trust != "verified" {
 		t.Fatalf("Full lifecycle history did not verify: %#v", verifyEnvelope)
@@ -1369,6 +1326,121 @@ func TestManagedWorkCleanupFailureIsExplicit(t *testing.T) {
 	if warning.Code != "CHS_WARN_LOCAL_CLEANUP" ||
 		warning.Details["artifact"] != "worktree" || warning.Details["error"] == "" {
 		t.Fatalf("cleanup warning omitted failure details: %#v", warning)
+	}
+}
+
+func TestTerminalChangedHeadManagedWorkCleanupIsIsolated(t *testing.T) {
+	ctx := context.Background()
+	repository := t.TempDir()
+	runner := gitstore.New(repository)
+	runGit := func(runner gitstore.Runner, args ...string) {
+		t.Helper()
+		if result, err := runner.Run(ctx, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, result.Stderr)
+		}
+	}
+	runGit(runner, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(repository, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(runner, "add", "base.txt")
+	runGit(
+		runner, "-c", "user.name=CHASSISS Test", "-c", "user.email=test@chassiss.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base",
+	)
+	base, err := runner.Resolve(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectFormat, err := runner.ObjectFormat(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	paths := localstate.Paths{
+		Data: data, Cache: filepath.Join(data, "cache"),
+		Runtime: filepath.Join(data, "runtime"), Keys: filepath.Join(data, "keys"),
+		State: filepath.Join(data, "local-state.json"),
+	}
+	store := localstate.Store{Paths: paths}
+	projectID := "PRJ-CLEANUP-TEST"
+	taskID := "TASK-TERMINAL-CLEANUP"
+	actor := "agent-cleanup"
+	branch := taskWorkRef(taskID, actor, base)
+	worktreePath := filepath.Join(data, "worktrees", projectID, taskID, base[:12], actor)
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.UpdateRefCAS(
+		ctx, branch, base, zeroOID(objectFormat), "create isolated managed Work Ref",
+	); err != nil {
+		t.Fatal(err)
+	}
+	runGit(runner, "worktree", "add", "--detach", worktreePath, base)
+	workRunner := gitstore.New(worktreePath)
+	runGit(workRunner, "symbolic-ref", "HEAD", branch)
+	if err := os.WriteFile(filepath.Join(worktreePath, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(workRunner, "add", "changed.txt")
+	runGit(
+		workRunner, "-c", "user.name=CHASSISS Test", "-c", "user.email=test@chassiss.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "changed head",
+	)
+	head, err := workRunner.Resolve(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head == base {
+		t.Fatal("isolated cleanup fixture did not move Work Head")
+	}
+	record := localstate.Worktree{
+		TaskID: taskID, Actor: actor, Path: worktreePath, Branch: branch,
+		Base: base, Head: head, Dirty: false,
+	}
+	localProject := localstate.Project{
+		GenesisCommit: base, Identity: localstate.Identity{Keys: map[string]localstate.Key{}},
+		MinimumCheckpoint: localstate.Checkpoint{
+			Commit: base, StateDigest: "sha256:" + strings.Repeat("b", 64),
+		},
+		PendingOperations: map[string]localstate.PendingOperation{}, Remote: localstate.Remote{},
+		RepoInstances: []localstate.RepoInstance{}, RootFingerprint: "SHA256:test",
+		Worktrees: map[string]localstate.Worktree{taskID: record},
+	}
+	local := localstate.New()
+	local.Projects[projectID] = localProject
+	if err := store.Save(local); err != nil {
+		t.Fatal(err)
+	}
+	project := &projectContext{
+		Runner: runner, Store: store, LocalProject: localProject,
+		Verified: &verifier.Result{
+			ObjectFormat: objectFormat,
+			State:        &state.State{Project: state.Project{ID: projectID}},
+		},
+	}
+	if workRemovalSafe(state.TaskState{Phase: "active", Base: base}, record, head) ||
+		workRemovalSafe(state.TaskState{Phase: "ready"}, record, head) ||
+		!workRemovalSafe(state.TaskState{Phase: "cancelled"}, record, head) {
+		t.Fatal("work remove safety did not distinguish unreachable active/ready work from terminal work")
+	}
+	cleanup := cleanupManagedWork(ctx, project, taskID, record, head)
+	if cleanup.Err != nil || !cleanup.WorktreeRemoved ||
+		!cleanup.LocalRefRemoved || !cleanup.RegistryRemoved {
+		t.Fatalf("terminal changed-head cleanup failed: %#v", cleanup)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("terminal cleanup retained worktree: %v", err)
+	}
+	if _, err := runner.Resolve(ctx, branch); err == nil {
+		t.Fatalf("terminal cleanup retained exact Work Ref %s", branch)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := loaded.Projects[projectID].Worktrees[taskID]; exists {
+		t.Fatalf("terminal cleanup retained registry: %#v", loaded.Projects[projectID].Worktrees)
 	}
 }
 
