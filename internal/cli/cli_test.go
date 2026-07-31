@@ -18,6 +18,7 @@ import (
 	"github.com/ExplodeCode6324/chassiss/internal/localstate"
 	"github.com/ExplodeCode6324/chassiss/internal/protocol"
 	"github.com/ExplodeCode6324/chassiss/internal/state"
+	"github.com/ExplodeCode6324/chassiss/internal/verifier"
 )
 
 func TestVersionJSONEnvelope(t *testing.T) {
@@ -546,7 +547,75 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		Capability: "task.release",
 		Target:     "TASK-001",
 	})
-	runAvailableAction(t, releaseAction, &stdout, &stderr)
+	beforeRelease, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasedWorktree := beforeRelease.LocalProject.Worktrees["TASK-001"]
+	releaseEnvelope := runAvailableAction(t, releaseAction, &stdout, &stderr)
+	assertManagedWorkCleanup(t, releaseEnvelope, true)
+	if len(releaseEnvelope.Warnings) != 0 {
+		t.Fatalf("clean release reported cleanup warnings: %#v", releaseEnvelope.Warnings)
+	}
+	afterRelease, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := afterRelease.LocalProject.Worktrees["TASK-001"]; exists {
+		t.Fatalf("release retained the managed Work registry: %#v", afterRelease.LocalProject.Worktrees)
+	}
+	if _, err := os.Stat(releasedWorktree.Path); !os.IsNotExist(err) {
+		t.Fatalf("release retained the managed worktree: %v", err)
+	}
+	if _, err := afterRelease.Runner.Resolve(context.Background(), releasedWorktree.Branch); err == nil {
+		t.Fatalf("release retained local Work Ref %s", releasedWorktree.Branch)
+	}
+	residuePath, err := createManagedWorktree(
+		context.Background(), afterRelease, "TASK-001", releasedWorktree.Actor, releasedWorktree.Base,
+	)
+	if err != nil {
+		t.Fatalf("construct released-ready residue: %v", err)
+	}
+	if !samePath(residuePath, releasedWorktree.Path) {
+		t.Fatalf("constructed residue at unexpected path: got=%s want=%s", residuePath, releasedWorktree.Path)
+	}
+	if err := afterRelease.Runner.UpdateRefCAS(
+		context.Background(), releasedWorktree.Branch, afterRelease.Verified.Head,
+		releasedWorktree.Base, "exercise moved residue ref",
+	); err != nil {
+		t.Fatalf("move residue Work Ref: %v", err)
+	}
+	movedRefCleanup := cleanupManagedWork(
+		context.Background(), afterRelease, "TASK-001", releasedWorktree, releasedWorktree.Base,
+	)
+	if movedRefCleanup.Err == nil || movedRefCleanup.Artifact != "local_ref" ||
+		movedRefCleanup.WorktreeRemoved {
+		t.Fatalf("moved Work Ref was not refused before path removal: %#v", movedRefCleanup)
+	}
+	if _, err := os.Stat(residuePath); err != nil {
+		t.Fatalf("moved-ref refusal removed residue path: %v", err)
+	}
+	if err := afterRelease.Runner.UpdateRefCAS(
+		context.Background(), releasedWorktree.Branch, releasedWorktree.Base,
+		afterRelease.Verified.Head, "restore moved residue ref",
+	); err != nil {
+		t.Fatalf("restore residue Work Ref: %v", err)
+	}
+	removeResidue := runJSON(t, []string{"work", "remove", "TASK-001"}, &stdout, &stderr)
+	assertManagedWorkCleanup(t, removeResidue, true)
+	afterResidueRemoval, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := afterResidueRemoval.LocalProject.Worktrees["TASK-001"]; exists {
+		t.Fatalf("work remove retained released-ready residue: %#v", afterResidueRemoval.LocalProject.Worktrees)
+	}
+	if _, err := os.Stat(residuePath); !os.IsNotExist(err) {
+		t.Fatalf("work remove retained released-ready path: %v", err)
+	}
+	if _, err := afterResidueRemoval.Runner.Resolve(context.Background(), releasedWorktree.Branch); err == nil {
+		t.Fatalf("work remove retained released-ready Work Ref %s", releasedWorktree.Branch)
+	}
 	startEnvelope = runJSON(t, []string{
 		"task", "start", "TASK-001", "--grant", "GRT-AGENT-01",
 	}, &stdout, &stderr)
@@ -1085,6 +1154,50 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		failureRecords[0].(map[string]any)["failure"] == nil {
 		t.Fatalf("Attempt failure detail did not resolve signed history: %#v", failureShow)
 	}
+	terminalStart := runJSON(t, []string{
+		"task", "start", "TASK-FAILURE", "--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	terminalWorktree := terminalStart.Result.(map[string]any)["worktree"].(string)
+	if err := os.MkdirAll(filepath.Join(terminalWorktree, "src", "core", "reducer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(terminalWorktree, "src", "core", "reducer", "terminal.go"),
+		[]byte("package reducer\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	terminalCommit := runJSON(t, []string{
+		"work", "commit", "TASK-FAILURE", "--message", "exercise terminal cleanup",
+	}, &stdout, &stderr)
+	terminalHead := terminalCommit.Result.(map[string]any)["commit"].(string)
+	beforeCancel, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalRecord := beforeCancel.LocalProject.Worktrees["TASK-FAILURE"]
+	if terminalHead == terminalRecord.Base {
+		t.Fatal("terminal cleanup fixture did not move Work Head beyond base")
+	}
+	runJSON(t, []string{
+		"task", "cancel", "TASK-FAILURE", "--reason", "exercise terminal changed-head cleanup",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	terminalRemove := runJSON(t, []string{"work", "remove", "TASK-FAILURE"}, &stdout, &stderr)
+	assertManagedWorkCleanup(t, terminalRemove, true)
+	if _, err := os.Stat(terminalWorktree); !os.IsNotExist(err) {
+		t.Fatalf("terminal work remove retained path: %v", err)
+	}
+	afterTerminalRemoval, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := afterTerminalRemoval.Runner.Resolve(context.Background(), terminalRecord.Branch); err == nil {
+		t.Fatalf("terminal work remove retained Work Ref %s", terminalRecord.Branch)
+	}
+	if _, exists := afterTerminalRemoval.LocalProject.Worktrees["TASK-FAILURE"]; exists {
+		t.Fatalf("terminal work remove retained registry: %#v", afterTerminalRemoval.LocalProject.Worktrees)
+	}
 	verifyEnvelope = runJSON(t, []string{"verify", "--full"}, &stdout, &stderr)
 	if verifyEnvelope.Snapshot == nil || verifyEnvelope.Snapshot.Trust != "verified" {
 		t.Fatalf("Full lifecycle history did not verify: %#v", verifyEnvelope)
@@ -1150,6 +1263,18 @@ func assertNoAvailableAction(t *testing.T, envelope Envelope, action string) {
 	}
 }
 
+func assertManagedWorkCleanup(t *testing.T, envelope Envelope, expected bool) {
+	t.Helper()
+	result := envelope.Result.(map[string]any)
+	for _, field := range []string{
+		"worktree_removed", "local_ref_removed", "worktree_registry_removed",
+	} {
+		if result[field] != expected {
+			t.Fatalf("managed Work cleanup field %s=%#v, want %t: %#v", field, result[field], expected, envelope)
+		}
+	}
+}
+
 func runAvailableAction(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) Envelope {
 	t.Helper()
 	envelope, exit := runAvailableActionResult(t, action, stdout, stderr)
@@ -1205,6 +1330,45 @@ func TestGrantAllowsTaskAction(t *testing.T) {
 				t.Fatal("unauthorized action was exposed")
 			}
 		})
+	}
+}
+
+func TestManagedWorkCleanupFailureIsExplicit(t *testing.T) {
+	base := strings.Repeat("a", 40)
+	project := &projectContext{
+		Store: localstate.Store{Paths: localstate.Paths{Data: t.TempDir()}},
+		Verified: &verifier.Result{State: &state.State{
+			Project: state.Project{ID: "PRJ-CLEANUP-TEST"},
+		}},
+	}
+	worktree := localstate.Worktree{
+		Actor: "agent-cleanup", Base: base,
+		Branch: taskWorkRef("TASK-CLEANUP", "agent-cleanup", base),
+		Path:   filepath.Join(t.TempDir(), "outside-managed-root"),
+		TaskID: "TASK-CLEANUP",
+	}
+	cleanup := cleanupManagedWork(
+		context.Background(), project, "TASK-CLEANUP", worktree, base,
+	)
+	if cleanup.Err == nil || cleanup.Artifact != "worktree" ||
+		cleanup.WorktreeRemoved || cleanup.LocalRefRemoved || cleanup.RegistryRemoved {
+		t.Fatalf("unsafe cleanup failure was not explicit: %#v", cleanup)
+	}
+	result := map[string]any{}
+	addManagedWorkCleanupResult(result, cleanup)
+	for _, field := range []string{
+		"worktree_removed", "local_ref_removed", "worktree_registry_removed",
+	} {
+		if result[field] != false {
+			t.Fatalf("failed cleanup reported %s=%#v", field, result[field])
+		}
+	}
+	warning := managedWorkCleanupWarning(
+		"TASK-CLEANUP", cleanup.Artifact, "release cleanup failed", cleanup.Err,
+	)
+	if warning.Code != "CHS_WARN_LOCAL_CLEANUP" ||
+		warning.Details["artifact"] != "worktree" || warning.Details["error"] == "" {
+		t.Fatalf("cleanup warning omitted failure details: %#v", warning)
 	}
 }
 

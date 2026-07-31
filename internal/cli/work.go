@@ -319,26 +319,31 @@ func workRemoveCommand(ctx context.Context, invocation invocation) (Envelope, er
 	if err != nil {
 		return Envelope{}, err
 	}
-	safe := head == task.Base || task.Phase == "closed"
+	safe := head == task.Base || task.Phase == "closed" ||
+		task.Phase == "ready" && head == worktree.Base
 	if !safe && task.Phase != "cancelled" && task.Phase != "superseded" {
 		return Envelope{}, protocol.NewError(protocol.ErrAttemptUnreachable, protocol.CategoryLocal, "Work Head is not retained by main/archive and cannot be removed.")
 	}
 	if invocation.Flags["discard-unreachable"] && !invocation.Flags["yes"] {
 		return Envelope{}, usageError("--discard-unreachable requires --yes")
 	}
-	if _, err := project.Runner.Run(ctx, "worktree", "remove", worktree.Path); err != nil {
-		return Envelope{}, err
-	}
-	if err := project.Store.Update(func(local *localstate.State) error {
-		value := local.Projects[project.Verified.State.Project.ID]
-		delete(value.Worktrees, invocation.Positionals[0])
-		local.Projects[project.Verified.State.Project.ID] = value
-		return nil
-	}); err != nil {
+	cleanup := cleanupManagedWork(ctx, project, invocation.Positionals[0], worktree, head)
+	if cleanup.Err != nil {
+		err := protocol.WrapError(
+			protocol.ErrWorktreeNotFound, protocol.CategoryLocal,
+			"Managed Work cleanup failed.", cleanup.Err,
+		)
+		err.Details = map[string]any{
+			"artifact": cleanup.Artifact, "task": invocation.Positionals[0],
+			"worktree_removed":          cleanup.WorktreeRemoved,
+			"local_ref_removed":         cleanup.LocalRefRemoved,
+			"worktree_registry_removed": cleanup.RegistryRemoved,
+		}
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("work remove", project)
 	envelope.Result = map[string]any{"removed": true, "task": invocation.Positionals[0]}
+	addManagedWorkCleanupResult(envelope.Result.(map[string]any), cleanup)
 	return envelope, nil
 }
 

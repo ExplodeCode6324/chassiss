@@ -350,6 +350,10 @@ chassiss task release <task-id> --reason <text>
 ```
 
 只允许 active、unblocked、clean 且 Work Head 恰好等于 frozen base。
+发布后以 non-force 方式删除 managed worktree、exact local Work Ref 和 registry
+record，并返回 `worktree_removed`、`local_ref_removed`、
+`worktree_registry_removed`。局部失败以 `CHS_WARN_LOCAL_CLEANUP` 标明 exact
+artifact；signed release 仍保持 published，由 `work remove` 对账恢复。
 
 ### 6.5 `attempt abandon` / `attempt failures`
 
@@ -486,6 +490,10 @@ chassiss work remove <task-id>
 默认只删除 clean 且 Work Head 已由 main/Archive Ref 保持可达，或 Head 恰好
 等于 frozen base 的非活跃 worktree。存在 dirty files 或不可达 local commits
 时拒绝。
+
+对 released-ready residue，State 已不再保存 active base；CLI 只在实际 Work
+Head 等于本地 managed-worktree registry 的 exact base 时允许清理，并在删除
+path 前校验 CLI-owned path、Work Ref 和 exact Ref OID。
 
 `--discard-unreachable --yes` 只允许 ready/terminal Task，必须先列出将丢失的
 commit OIDs 与 paths；它是 v1 唯一删除不可达本地 Work history 的入口。

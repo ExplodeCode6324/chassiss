@@ -39,6 +39,11 @@ Context, refresh Context, and only then use `task release`. Context exposes
 the managed worktree is clean, and Work Head still equals the frozen base. The
 mutation command rechecks every condition before publishing.
 
+A successful release also reports whether the managed worktree, exact local
+Work Ref, and registry record were removed. A cleanup warning does not undo the
+published release: refresh Context and use `work remove` only when the CLI
+recognizes a clean released-ready residue whose Head equals its registered base.
+
 Context never grants authority by itself. Mutation commands must sync and verify
 again internally. Offline Context is useful for inspection only, not mutation.
 
