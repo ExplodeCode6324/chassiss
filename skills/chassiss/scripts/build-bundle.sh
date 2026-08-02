@@ -5,7 +5,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 skill_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 repo_dir=$(CDPATH= cd -- "$skill_dir/../.." && pwd)
 
-bundle_version=${CHASSISS_BUNDLE_VERSION:-v1.0.0-rc.9}
+bundle_version=${CHASSISS_BUNDLE_VERSION:-v1.0.0-rc.10}
 source_commit=${CHASSISS_BUNDLE_SOURCE_COMMIT:-}
 if [ -z "$source_commit" ]; then
 	source_commit=$(git -C "$repo_dir" rev-parse HEAD)

@@ -48,7 +48,8 @@ func (op Operation) Validate() error {
 			return err
 		}
 	}
-	if op.Action == "architecture.established" || op.Action == "architecture.updated" {
+	if op.Action == "architecture.established" || op.Action == "architecture.updated" ||
+		op.Action == "architecture.updated-compatible" {
 		if err := ValidateID(IDArchitecture, op.Target); err != nil {
 			return err
 		}

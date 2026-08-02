@@ -80,6 +80,8 @@ func Reduce(parent *State, operation protocol.Operation, evidence protocol.Execu
 		err = reduceArchitectureEstablished(next, operation, evidence)
 	case "architecture.updated":
 		err = reduceArchitectureUpdated(next, operation, evidence)
+	case "architecture.updated-compatible":
+		err = reduceArchitectureUpdatedCompatible(next, operation, evidence)
 	case "taskbook.opened":
 		err = reduceTaskbookOpened(next, operation, evidence)
 	case "taskbook.updated":
@@ -326,6 +328,43 @@ func reduceArchitectureUpdated(next *State, operation protocol.Operation, eviden
 	if stringValue(operation.Preconditions, "architecture_blob") != next.Project.Architecture.BlobOID ||
 		stringValue(evidence.Facts, "old_blob") != next.Project.Architecture.BlobOID {
 		return fmt.Errorf("%s: Architecture blob precondition is stale", protocol.ErrArchitectureStale)
+	}
+	newBlob := stringValue(evidence.Facts, "new_blob")
+	if newBlob == "" || newBlob != stringValue(operation.Payload, "candidate_blob") {
+		return fmt.Errorf("%s: candidate Architecture blob mismatch", protocol.ErrArchitectureInvalid)
+	}
+	if strings.TrimSpace(stringValue(operation.Payload, "reason")) == "" {
+		return fmt.Errorf("%s: Architecture update reason is required", protocol.ErrOperationInvalid)
+	}
+	next.Project.Architecture.BlobOID = newBlob
+	return nil
+}
+
+func reduceArchitectureUpdatedCompatible(next *State, operation protocol.Operation, evidence protocol.ExecutionEvidence) error {
+	if next.Project.Architecture == nil {
+		return fmt.Errorf("%s: Architecture is not established", protocol.ErrArchitectureInvalid)
+	}
+	if next.Project.Taskbook == nil {
+		return fmt.Errorf("%s: compatible Architecture update requires an active Taskbook", protocol.ErrTaskbookNotActive)
+	}
+	if stringValue(operation.Preconditions, "architecture_blob") != next.Project.Architecture.BlobOID ||
+		stringValue(evidence.Facts, "old_blob") != next.Project.Architecture.BlobOID {
+		return fmt.Errorf("%s: Architecture blob precondition is stale", protocol.ErrArchitectureStale)
+	}
+	taskbookBlob := next.Project.Taskbook.BlobOID
+	if stringValue(operation.Preconditions, "taskbook_blob") != taskbookBlob ||
+		stringValue(evidence.Facts, "taskbook_blob") != taskbookBlob {
+		return fmt.Errorf("%s: Taskbook blob precondition is stale", protocol.ErrTaskbookStale)
+	}
+	if !boolValue(operation.Preconditions, "all_tasks_quiescent") {
+		return fmt.Errorf("%s: quiescence precondition is false", protocol.ErrTaskbookNotQuiescent)
+	}
+	for taskID, task := range next.Tasks {
+		switch task.Phase {
+		case "ready", "closed", "cancelled", "superseded":
+		default:
+			return fmt.Errorf("%s: Task %s is %s", protocol.ErrTaskbookNotQuiescent, taskID, task.Phase)
+		}
 	}
 	newBlob := stringValue(evidence.Facts, "new_blob")
 	if newBlob == "" || newBlob != stringValue(operation.Payload, "candidate_blob") {

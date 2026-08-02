@@ -108,6 +108,52 @@ func TestHelpSchemaUsesConcreteArraysAndErrors(t *testing.T) {
 	}
 }
 
+func TestCompatibleArchitectureActionHasExactAdditiveSchema(t *testing.T) {
+	operation := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-91ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.updated-compatible", Project: "PRJ-TEST",
+		Authority: "grant:GRT-ARCHITECT-01", Target: "ARCHITECTURE-001",
+		Preconditions: map[string]any{
+			"all_tasks_quiescent": true, "architecture_blob": strings.Repeat("a", 40),
+			"taskbook_blob": strings.Repeat("b", 40),
+		},
+		Payload: map[string]any{"candidate_blob": strings.Repeat("c", 40), "reason": "compatible"},
+	}
+	if err := operation.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Repeat("d", 40)
+	evidence := protocol.ExecutionEvidence{
+		Schema: protocol.EvidenceSchema, OperationDigest: digest,
+		Action: operation.Action, Attempt: 1, Parent: &parent,
+		Facts: map[string]any{
+			"new_blob": strings.Repeat("c", 40), "old_blob": strings.Repeat("a", 40),
+			"semantic_diff": map[string]any{}, "taskbook_blob": strings.Repeat("b", 40),
+		},
+	}
+	if err := evidence.Validate(operation, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	operation.Preconditions["taskbook"] = nil
+	if err := operation.Validate(); err == nil {
+		t.Fatal("compatible Architecture Operation accepted an extra precondition")
+	}
+	delete(operation.Preconditions, "taskbook")
+	operation.Target = "not-an-architecture-id"
+	if err := operation.Validate(); err == nil {
+		t.Fatal("compatible Architecture Operation accepted an invalid target")
+	}
+	operation.Target = "ARCHITECTURE-001"
+	evidence.Facts["phase_projection"] = map[string]any{}
+	if err := evidence.Validate(operation, "sha1"); err == nil {
+		t.Fatal("compatible Architecture Evidence accepted an extra fact")
+	}
+}
+
 func TestRemoteCASRetryRecomputesAuthorityTransition(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("Git for Windows daemon receive-pack is not a reliable loopback test transport")
@@ -617,6 +663,111 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if _, err := afterResidueRemoval.Runner.Resolve(context.Background(), releasedWorktree.Branch); err == nil {
 		t.Fatalf("work remove retained released-ready Work Ref %s", releasedWorktree.Branch)
 	}
+	activeArchitectureDraft := filepath.Join(t.TempDir(), "active-architecture.yaml")
+	runJSON(t, []string{
+		"architecture", "draft", "--output", activeArchitectureDraft,
+	}, &stdout, &stderr)
+	var activeDraftMetadata draftMetadata
+	if _, err := readClosedJSON(activeArchitectureDraft+".chassiss.json", &activeDraftMetadata); err != nil {
+		t.Fatal(err)
+	}
+	beforeActiveUpdate, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeDraftMetadata.TaskbookBlob == nil ||
+		*activeDraftMetadata.TaskbookBlob != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("Architecture draft did not bind the exact active Taskbook: %#v", activeDraftMetadata)
+	}
+	activeArchitectureData, err := os.ReadFile(activeArchitectureDraft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeArchitectureData = []byte(strings.Replace(
+		string(activeArchitectureData),
+		"Canonical encoding, verification, authorization, reducers, and state.",
+		"Canonical signed encoding, verification, authorization, reducers, and state.",
+		1,
+	))
+	if err := os.WriteFile(activeArchitectureDraft, activeArchitectureData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activeDiff := runJSON(t, []string{
+		"architecture", "diff", "--file", activeArchitectureDraft,
+	}, &stdout, &stderr)
+	preflight := activeDiff.Result.(map[string]any)["active_taskbook_preflight"].(map[string]any)
+	if preflight["compatible"] != true || preflight["quiescent"] != true ||
+		preflight["taskbook_blob"] != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("Architecture diff omitted exact active Taskbook preflight: %#v", preflight)
+	}
+	incompatibleDraft := filepath.Join(t.TempDir(), "incompatible-architecture.yaml")
+	incompatibleData := []byte(strings.Replace(string(activeArchitectureData), "- src/core/**", "- src/incompatible/**", 1))
+	if err := os.WriteFile(incompatibleDraft, incompatibleData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sidecarData, err := os.ReadFile(activeArchitectureDraft + ".chassiss.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(incompatibleDraft+".chassiss.json", sidecarData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	incompatibleFailure, incompatibleExit := runJSONFailure(t, []string{
+		"architecture", "update", "--file", incompatibleDraft,
+		"--reason", "Must reject a candidate that invalidates Task writes.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if incompatibleExit != 6 || incompatibleFailure.Error == nil ||
+		incompatibleFailure.Error.Code != protocol.ErrTaskbookInvalid || incompatibleFailure.Operation != nil {
+		t.Fatalf("incompatible active Taskbook update was not refused: exit=%d envelope=%#v", incompatibleExit, incompatibleFailure)
+	}
+	activeArchitectureUpdate := runJSON(t, []string{
+		"architecture", "update", "--file", activeArchitectureDraft,
+		"--reason", "Clarify the signed protocol core while all Tasks are quiescent.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if activeArchitectureUpdate.Operation == nil || activeArchitectureUpdate.Command != "architecture update" {
+		t.Fatalf("quiescent active Taskbook Architecture update failed: %#v", activeArchitectureUpdate)
+	}
+	afterActiveUpdate, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterActiveUpdate.Verified.State.Project.Taskbook.BlobOID != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID ||
+		afterActiveUpdate.Verified.State.Tasks["TASK-001"].Phase != "ready" {
+		t.Fatalf("compatible Architecture update mutated Taskbook/Task state: %#v", afterActiveUpdate.Verified.State)
+	}
+	activeCommit, err := afterActiveUpdate.Runner.ReadCommit(context.Background(), afterActiveUpdate.Verified.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMessage, err := protocol.ParseTransitionMessage(activeCommit.Message, afterActiveUpdate.Verified.ObjectFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeMessage.Operation.Action != "architecture.updated-compatible" ||
+		activeMessage.Evidence.Facts["taskbook_blob"] != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("active update did not publish the additive exact-binding Action: %#v", activeMessage)
+	}
+	verifyEnvelope = runJSON(t, []string{"verify", "--full"}, &stdout, &stderr)
+	if verifyEnvelope.Snapshot == nil || verifyEnvelope.Snapshot.Trust != "verified" {
+		t.Fatalf("compatible Architecture history did not replay: %#v", verifyEnvelope)
+	}
+	inFlightDraft := filepath.Join(t.TempDir(), "in-flight-architecture.yaml")
+	runJSON(t, []string{
+		"architecture", "draft", "--output", inFlightDraft,
+	}, &stdout, &stderr)
+	inFlightData, err := os.ReadFile(inFlightDraft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlightData = []byte(strings.Replace(
+		string(inFlightData), "Parent State determines authority.",
+		"Exact parent State determines authority.", 1,
+	))
+	if err := os.WriteFile(inFlightDraft, inFlightData, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	startEnvelope = runJSON(t, []string{
 		"task", "start", "TASK-001", "--grant", "GRT-AGENT-01",
 	}, &stdout, &stderr)
@@ -626,6 +777,24 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	result = startEnvelope.Result.(map[string]any)
 	if result["worktree"] == "" {
 		t.Fatalf("Task restart did not return a worktree: %#v", result)
+	}
+	beforeInFlightRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	inFlightFailure, inFlightExit := runJSONFailure(t, []string{
+		"architecture", "update", "--file", inFlightDraft,
+		"--reason", "Must refuse while a frozen Task Contract is in flight.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if inFlightExit != 6 || inFlightFailure.Error == nil ||
+		inFlightFailure.Error.Code != protocol.ErrTaskbookNotQuiescent ||
+		inFlightFailure.Operation != nil {
+		t.Fatalf("in-flight Architecture update was not refused structurally: exit=%d envelope=%#v", inFlightExit, inFlightFailure)
+	}
+	if tasks, ok := inFlightFailure.Error.Details["in_flight_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("quiescence refusal omitted canonical in-flight details: %#v", inFlightFailure.Error)
+	}
+	afterInFlightRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if afterInFlightRefusal.Snapshot.MainCommit != beforeInFlightRefusal.Snapshot.MainCommit {
+		t.Fatalf("quiescence refusal mutated main: before=%s after=%s", beforeInFlightRefusal.Snapshot.MainCommit, afterInFlightRefusal.Snapshot.MainCommit)
 	}
 	worktree := result["worktree"].(string)
 	if err := os.Chdir(worktree); err != nil {
@@ -1029,6 +1198,21 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	}, &stdout, &stderr)
 	if architectureEnvelope.Operation == nil {
 		t.Fatalf("Architecture update transition missing: %#v", architectureEnvelope)
+	}
+	legacyUpdateProject, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdateCommit, err := legacyUpdateProject.Runner.ReadCommit(context.Background(), legacyUpdateProject.Verified.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdateMessage, err := protocol.ParseTransitionMessage(legacyUpdateCommit.Message, legacyUpdateProject.Verified.ObjectFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyUpdateMessage.Operation.Action != "architecture.updated" {
+		t.Fatalf("no-Taskbook update did not retain the rc9 Action: %#v", legacyUpdateMessage.Operation)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "OWNER.txt"), []byte("owner snapshot\n"), 0o644); err != nil {
 		t.Fatal(err)

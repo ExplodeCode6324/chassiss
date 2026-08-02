@@ -38,9 +38,24 @@ chassiss taskbook diff --file /outside/taskbook.yaml --json
 chassiss taskbook update --file /outside/taskbook.yaml --reason "..." --json
 ```
 
-Architecture can change only without an active Taskbook. Taskbook updates may
-change only the protocol-permitted ready portions and cannot mutate a non-ready
-Task contract.
+An Architecture draft sidecar binds the exact current Architecture and, when
+present, the exact active Taskbook blob. Without an active Taskbook, update
+continues to emit the rc9 `architecture.updated` Action. With an active
+Taskbook, every Task must be `ready`, `closed`, `cancelled`, or `superseded`, and
+the exact Taskbook must validate under the candidate Architecture. That path
+emits additive `architecture.updated-compatible` under the same
+`architecture.update` capability. Any `active`, `submitted`, or `approved` Task
+returns `CHS_TASKBOOK_NOT_QUIESCENT`; changing a Key, Grant, or Operation ID
+cannot bypass it. A successful update leaves the Taskbook, Task states, and
+historical frozen Contracts unchanged. An incompatible candidate returns
+`CHS_TASKBOOK_INVALID`; Architecture and Taskbook cannot change in one
+Transition. Taskbook updates still may change only protocol-permitted ready
+portions and cannot mutate a non-ready Task contract.
+
+`architecture validate --file` validates only the Architecture itself. Use
+`architecture diff --file` for active Taskbook blob, quiescence, and
+compatibility preflight. The CLI, Reducer, and Verifier repeat the authoritative
+checks during `architecture update`.
 
 An existing-project Root-only bootstrap initially has no Architecture. Create
 an external candidate with `architecture draft --new`, then let an Agent with

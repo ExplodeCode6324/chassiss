@@ -42,6 +42,12 @@ var actionSpecs = map[string]ActionSpec{
 		PreconditionFields: []string{"architecture_blob", "taskbook"},
 		EvidenceFields:     []string{"new_blob", "old_blob", "semantic_diff"},
 	},
+	"architecture.updated-compatible": {
+		Name: "architecture.updated-compatible", Capability: "architecture.update", AllowedPathClass: "architecture",
+		PayloadFields:      []string{"candidate_blob", "reason"},
+		PreconditionFields: []string{"all_tasks_quiescent", "architecture_blob", "taskbook_blob"},
+		EvidenceFields:     []string{"new_blob", "old_blob", "semantic_diff", "taskbook_blob"},
+	},
 	"taskbook.opened": {
 		Name: "taskbook.opened", Capability: "taskbook.open", AllowedPathClass: "taskbook",
 		PayloadFields:      []string{"candidate_blob", "reason", "taskbook_id"},
@@ -139,6 +145,10 @@ var actionSpecs = map[string]ActionSpec{
 		EvidenceFields:     []string{"candidate_tree", "changed_paths", "changed_paths_digest", "source_base", "source_tree"},
 	},
 }
+
+// ErrTaskbookNotQuiescent is the stable refusal for governance mutations that
+// cannot preserve an in-flight Task's frozen contract.
+const ErrTaskbookNotQuiescent = "CHS_TASKBOOK_NOT_QUIESCENT"
 
 var validCapabilities = map[string]struct{}{
 	"taskbook.update": {}, "taskbook.open": {}, "taskbook.archive": {},

@@ -80,6 +80,17 @@ chassiss file show src/core/state/model.go --at main --json
 
 Do not replace these calls by scanning `.git`, State, or whole protocol documents.
 
+## Govern Architecture
+
+Refresh Context, then use only `architecture draft`, `diff`, `validate`, and
+`update`. A draft made while a Taskbook is active binds its exact blob. Treat
+`validate` as Architecture-only and rely on `diff`/`update` for Taskbook
+compatibility. The CLI permits an active Taskbook only when every Task is ready
+or terminal and the candidate preserves the exact Taskbook; never evade
+`CHS_TASKBOOK_NOT_QUIESCENT` by changing identity or Operation ID. Refresh
+Context after the update. Ready Tasks freeze the new Architecture when next
+started; historical frozen Contracts are never migrated.
+
 ## Review and integrate
 
 Prepare review material with:

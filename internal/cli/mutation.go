@@ -576,6 +576,36 @@ func rebaseTransitionPlan(
 		if err := rebuildClosureRetry(ctx, current, &plan); err != nil {
 			return transitionPlan{}, err
 		}
+	case "architecture.updated-compatible":
+		architectureBlob, _ := plan.Operation.Preconditions["architecture_blob"].(string)
+		taskbookBlob, _ := plan.Operation.Preconditions["taskbook_blob"].(string)
+		if current.Verified.State.Project.Architecture == nil ||
+			architectureBlob != current.Verified.State.Project.Architecture.BlobOID {
+			return transitionPlan{}, protocol.NewError(protocol.ErrArchitectureStale, protocol.CategoryConflict, "Architecture changed during CAS retry.")
+		}
+		if current.Verified.State.Project.Taskbook == nil ||
+			taskbookBlob != current.Verified.State.Project.Taskbook.BlobOID {
+			return transitionPlan{}, protocol.NewError(protocol.ErrTaskbookStale, protocol.CategoryConflict, "Taskbook changed during Architecture update CAS retry.")
+		}
+		if err := requireArchitectureQuiescence(current.Verified.State); err != nil {
+			return transitionPlan{}, err
+		}
+		candidateBlob, _ := plan.Evidence.Facts["new_blob"].(string)
+		candidateData, err := current.Runner.ReadBlob(ctx, candidateBlob)
+		if err != nil {
+			return transitionPlan{}, err
+		}
+		candidateArchitecture, err := contracts.ParseArchitecture(candidateData)
+		if err != nil {
+			return transitionPlan{}, protocol.WrapError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture candidate is invalid during CAS retry.", err)
+		}
+		taskbookData, err := current.Runner.ReadBlob(ctx, current.Verified.State.Project.Taskbook.BlobOID)
+		if err != nil {
+			return transitionPlan{}, err
+		}
+		if _, err := contracts.ParseTaskbook(taskbookData, candidateArchitecture); err != nil {
+			return transitionPlan{}, protocol.WrapError(protocol.ErrTaskbookInvalid, protocol.CategoryValidation, "Active Taskbook is incompatible with the candidate Architecture during CAS retry.", err)
+		}
 	case "owner.applied":
 		candidateTree, err := current.Runner.WriteTree(ctx, plan.Tree)
 		if err != nil {
@@ -1008,7 +1038,7 @@ func commandForAction(action string) string {
 		return "taskbook update"
 	case "taskbook.archived":
 		return "taskbook archive"
-	case "architecture.updated":
+	case "architecture.updated", "architecture.updated-compatible":
 		return "architecture update"
 	case "authority.grant-added":
 		return "grant add"

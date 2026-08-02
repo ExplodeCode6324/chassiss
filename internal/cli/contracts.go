@@ -385,7 +385,7 @@ func architectureDraftCommand(ctx context.Context, invocation invocation) (Envel
 	metadata := draftMetadata{
 		ArchitectureBlob: base,
 		Kind:             "architecture", Project: project.Verified.State.Project.ID,
-		Schema: draftMetadataSchema, TaskbookBlob: nil,
+		Schema: draftMetadataSchema, TaskbookBlob: activeTaskbookBlob(project.Verified.State),
 	}
 	metadataData, _ := protocol.CanonicalJSON(metadata)
 	if err := writeExternalFile(sidecar, append(metadataData, '\n')); err != nil {
@@ -428,8 +428,26 @@ func architectureDiffCommand(ctx context.Context, invocation invocation) (Envelo
 	if err != nil {
 		return Envelope{}, err
 	}
+	preflight := map[string]any{
+		"compatible": true, "in_flight_tasks": architectureInFlightTasks(project.Verified.State),
+		"quiescent":     len(architectureInFlightTasks(project.Verified.State)) == 0,
+		"taskbook_blob": nil,
+	}
+	if taskbook := project.Verified.State.Project.Taskbook; taskbook != nil {
+		preflight["taskbook_blob"] = taskbook.BlobOID
+		taskbookData, readErr := project.Runner.ReadBlob(ctx, taskbook.BlobOID)
+		if readErr != nil {
+			return Envelope{}, readErr
+		}
+		if _, parseErr := contracts.ParseTaskbook(taskbookData, candidate); parseErr != nil {
+			preflight["compatible"] = false
+			preflight["validation_error"] = parseErr.Error()
+		}
+	}
 	envelope := projectEnvelope("architecture diff", project)
-	envelope.Result = map[string]any{"semantic_diff": semantic, "text_diff": text}
+	envelope.Result = map[string]any{
+		"active_taskbook_preflight": preflight, "semantic_diff": semantic, "text_diff": text,
+	}
 	return envelope, nil
 }
 
@@ -500,9 +518,6 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	} else if project.Verified.State.Project.Architecture == nil || project.Verified.Architecture == nil {
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Use architecture establish for a source bootstrap.")
 	}
-	if project.Verified.State.Project.Taskbook != nil {
-		return Envelope{}, protocol.NewError(protocol.ErrTaskbookAlreadyActive, protocol.CategoryValidation, "Architecture update requires no active Taskbook.")
-	}
 	metadata, err := readDraftMetadata(invocation.Value("file"), "architecture")
 	if err != nil {
 		return Envelope{}, err
@@ -515,6 +530,19 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 		metadata.ArchitectureBlob != expectedBase {
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureStale, protocol.CategoryConflict, "Architecture draft base is stale.")
 	}
+	currentTaskbook := project.Verified.State.Project.Taskbook
+	if currentTaskbook == nil {
+		if metadata.TaskbookBlob != nil {
+			return Envelope{}, protocol.NewError(protocol.ErrTaskbookStale, protocol.CategoryConflict, "Architecture draft Taskbook base is stale.")
+		}
+	} else if metadata.TaskbookBlob == nil || *metadata.TaskbookBlob != currentTaskbook.BlobOID {
+		return Envelope{}, protocol.NewError(protocol.ErrTaskbookStale, protocol.CategoryConflict, "Architecture draft Taskbook base is stale.")
+	}
+	if !establish {
+		if err := requireArchitectureQuiescence(project.Verified.State); err != nil {
+			return Envelope{}, err
+		}
+	}
 	candidateData, err := os.ReadFile(invocation.Value("file"))
 	if err != nil {
 		return Envelope{}, err
@@ -525,6 +553,15 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	}
 	if !establish && candidate.ID != project.Verified.Architecture.ID {
 		return Envelope{}, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture ID cannot change.")
+	}
+	if !establish && currentTaskbook != nil {
+		taskbookData, readErr := project.Runner.ReadBlob(ctx, currentTaskbook.BlobOID)
+		if readErr != nil {
+			return Envelope{}, readErr
+		}
+		if _, parseErr := contracts.ParseTaskbook(taskbookData, candidate); parseErr != nil {
+			return Envelope{}, protocol.WrapError(protocol.ErrTaskbookInvalid, protocol.CategoryValidation, "Active Taskbook is incompatible with the candidate Architecture.", parseErr)
+		}
 	}
 	newBlob, err := project.Runner.HashBlob(ctx, candidateData)
 	if err != nil {
@@ -552,6 +589,8 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	if establish {
 		capability = "architecture.establish"
 		action = "architecture.established"
+	} else if currentTaskbook != nil {
+		action = "architecture.updated-compatible"
 	}
 	authority, err := selectGrant(project, invocation, capability, "", targets, requireGlobal)
 	if err != nil {
@@ -570,6 +609,11 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	}
 	if establish {
 		operation.Preconditions = map[string]any{"architecture": nil, "taskbook": nil}
+	} else if currentTaskbook != nil {
+		operation.Preconditions = map[string]any{
+			"all_tasks_quiescent": true, "architecture_blob": expectedBase,
+			"taskbook_blob": currentTaskbook.BlobOID,
+		}
 	} else {
 		operation.Preconditions = map[string]any{"architecture_blob": expectedBase, "taskbook": nil}
 	}
@@ -583,6 +627,9 @@ func architectureUpdateCommand(ctx context.Context, invocation invocation) (Enve
 	if !establish {
 		evidence.Facts["old_blob"] = expectedBase
 		evidence.Facts["semantic_diff"] = semanticObject
+		if currentTaskbook != nil {
+			evidence.Facts["taskbook_blob"] = currentTaskbook.BlobOID
+		}
 	}
 	reduceFacts := state.ReduceFacts{
 		ObjectFormat: project.Verified.ObjectFormat, ParentCommit: parent,
@@ -623,6 +670,42 @@ func taskPhases(shared *state.State) map[string]string {
 		result[id] = task.Phase
 	}
 	return result
+}
+
+func activeTaskbookBlob(shared *state.State) *string {
+	if shared.Project.Taskbook == nil {
+		return nil
+	}
+	value := shared.Project.Taskbook.BlobOID
+	return &value
+}
+
+func architectureInFlightTasks(shared *state.State) []map[string]any {
+	ids := make([]string, 0)
+	for id, task := range shared.Tasks {
+		if task.Phase == "active" || task.Phase == "submitted" || task.Phase == "approved" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	result := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		task := shared.Tasks[id]
+		result = append(result, map[string]any{"actor": task.Actor, "phase": task.Phase, "task": id})
+	}
+	return result
+}
+
+func requireArchitectureQuiescence(shared *state.State) error {
+	inFlight := architectureInFlightTasks(shared)
+	if len(inFlight) == 0 {
+		return nil
+	}
+	return &protocol.Error{
+		Code: protocol.ErrTaskbookNotQuiescent, Category: protocol.CategoryConflict,
+		Message: "Active Taskbook contains an in-flight Task.",
+		Details: map[string]any{"in_flight_tasks": inFlight},
+	}
 }
 
 func sortedTaskIDs(taskbook *contracts.Taskbook) []string {

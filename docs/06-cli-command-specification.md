@@ -658,8 +658,29 @@ chassiss architecture update --file <candidate> --reason <text>
 Source bootstrap 使用 `draft --new` 创建带 null base sidecar 的外部候选；
 `establish` 要求 Architecture/Taskbook 均为 null 和
 `architecture.establish` global Grant。Architecture 建立后，
-`draft/diff/validate` 可只读使用；`update` 只允许没有活动 Taskbook，候选 base
-Architecture blob 必须匹配 current State。
+`draft/diff/validate` 可只读使用。`validate` 只证明 Architecture 自身 schema/graph
+有效，不等于它与 active Taskbook 兼容；`diff` 额外返回 exact active Taskbook
+blob、`quiescent`、`compatible` 与按 Task ID 排序的 in-flight Tasks。
+
+`draft` sidecar 同时绑定 current Architecture blob；若 Taskbook active，还绑定
+exact Taskbook blob。`update` 接受两条互斥路径：
+
+- `project.taskbook=null`：产生保持 rc9 exact schema 的
+  `architecture.updated`；
+- Taskbook active 且所有 Task 处于 `ready/closed/cancelled/superseded`，并且 exact
+  Taskbook 能在 candidate Architecture 下重新解析验证：产生 additive
+  `architecture.updated-compatible`。
+
+新 Action 继续由 `architecture.update` 授权；Operation preconditions exact 包含
+`all_tasks_quiescent=true`、current `architecture_blob` 与 `taskbook_blob`，Evidence
+exact 包含 old/new blobs、semantic diff 与同一 `taskbook_blob`。任一
+`active/submitted/approved` Task 返回 non-retryable
+`CHS_TASKBOOK_NOT_QUIESCENT`，`details.in_flight_tasks` 使用 canonical Task-ID 顺序，
+且不创建 Operation/pending/commit。candidate 不兼容返回
+`CHS_TASKBOOK_INVALID`。Reducer、Verifier 与 CAS retry 都重新验证 blob、quiescence
+和兼容性；成功 Transition 只改变 `docs/architecture.yaml` 与 State 中的
+Architecture ref，不改 Taskbook、Task 状态或历史 frozen Contract。Architecture
+与 Taskbook 的复合 mutation 不属于该命令。
 
 ## 11. Key 与 Grant
 

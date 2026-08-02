@@ -67,7 +67,7 @@ func (engine verifier) verifyFacts(
 		}
 		sort.Strings(facts.TargetResources)
 		facts.RequireGlobalScope = true
-	case "architecture.updated":
+	case "architecture.updated", "architecture.updated-compatible":
 		if architecture == nil || parent.Project.Architecture == nil {
 			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture is not established.")
 		}
@@ -84,6 +84,33 @@ func (engine verifier) verifyFacts(
 			newArchitecture.ID != architecture.ID ||
 			(engine.architectureID != "" && newArchitecture.ID != engine.architectureID) {
 			return facts, nil, nil, protocol.NewError(protocol.ErrArchitectureInvalid, protocol.CategoryValidation, "Architecture ID cannot change.")
+		}
+		if action == "architecture.updated-compatible" {
+			if taskbook == nil || parent.Project.Taskbook == nil {
+				return facts, nil, nil, protocol.NewError(protocol.ErrTaskbookNotActive, protocol.CategoryValidation, "Compatible Architecture update requires an active Taskbook.")
+			}
+			taskbookBlob := parent.Project.Taskbook.BlobOID
+			if stringFact(message.Operation.Preconditions, "architecture_blob") != parent.Project.Architecture.BlobOID ||
+				stringFact(message.Operation.Preconditions, "taskbook_blob") != taskbookBlob ||
+				stringFact(message.Evidence.Facts, "old_blob") != parent.Project.Architecture.BlobOID ||
+				stringFact(message.Evidence.Facts, "taskbook_blob") != taskbookBlob ||
+				!boolFact(message.Operation.Preconditions, "all_tasks_quiescent") {
+				return facts, nil, nil, protocol.NewError(protocol.ErrEvidenceInvalid, protocol.CategoryProtocol, "Compatible Architecture update does not bind the exact parent contracts.")
+			}
+			if inFlight := verifierInFlightTasks(parent); len(inFlight) != 0 {
+				return facts, nil, nil, &protocol.Error{
+					Code: protocol.ErrTaskbookNotQuiescent, Category: protocol.CategoryConflict,
+					Message: "Active Taskbook contains an in-flight Task.",
+					Details: map[string]any{"in_flight_tasks": inFlight},
+				}
+			}
+			taskbookData, err := engine.runner.ReadBlob(ctx, taskbookBlob)
+			if err != nil {
+				return facts, nil, nil, err
+			}
+			if _, err := contracts.ParseTaskbook(taskbookData, newArchitecture); err != nil {
+				return facts, nil, nil, protocol.WrapError(protocol.ErrTaskbookInvalid, protocol.CategoryValidation, "Active Taskbook is incompatible with the candidate Architecture.", err)
+			}
 		}
 		diff := contracts.DiffArchitecture(architecture, newArchitecture, parent.Project.Architecture.BlobOID, newBlob)
 		if !canonicalEqual(diff, message.Evidence.Facts["semantic_diff"]) {
@@ -670,6 +697,22 @@ func (engine verifier) verifyOwner(ctx context.Context, parentTree gitstore.Tree
 func boolFact(object map[string]any, key string) bool {
 	value, _ := object[key].(bool)
 	return value
+}
+
+func verifierInFlightTasks(shared *state.State) []map[string]any {
+	ids := make([]string, 0)
+	for id, task := range shared.Tasks {
+		if task.Phase == "active" || task.Phase == "submitted" || task.Phase == "approved" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	result := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		task := shared.Tasks[id]
+		result = append(result, map[string]any{"actor": task.Actor, "phase": task.Phase, "task": id})
+	}
+	return result
 }
 
 func taskbookTargets(taskbook *contracts.Taskbook, taskIDs []string) ([]string, []string) {

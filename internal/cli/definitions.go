@@ -100,7 +100,7 @@ var commandDefinitions = []CommandDefinition{
 	{Path: "architecture impact", Summary: "Query Resource impact.", Arguments: []Argument{{Name: "resource-id", Required: true}}},
 	{Path: "architecture validate", Summary: "Validate current or candidate Architecture.", Options: []Option{{Name: "file"}}},
 	{Path: "architecture establish", Summary: "Establish the first Architecture for a source bootstrap.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("architecture.establish")},
-	{Path: "architecture update", Summary: "Update Architecture with no active Taskbook.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("architecture.update")},
+	{Path: "architecture update", Summary: "Update Architecture without a Taskbook or with an exact compatible quiescent Taskbook.", Mutating: true, Options: append(mutationOptions(), Option{Name: "file", Required: true}, Option{Name: "reason", Required: true}), RequiredCapability: capability("architecture.update")},
 	{Path: "key generate", Summary: "Generate a local Ed25519 key.", Mutating: true, Options: []Option{{Name: "id", Required: true}, {Name: "actor", Required: true}, {Name: "store"}}},
 	{Path: "key list", Summary: "List local key handles."},
 	{Path: "key show", Summary: "Show a local public key.", Arguments: []Argument{{Name: "key-id", Required: true}}},
@@ -190,6 +190,9 @@ func possibleErrorsFor(definition CommandDefinition) []string {
 	if strings.HasPrefix(definition.Path, "architecture ") ||
 		strings.HasPrefix(definition.Path, "taskbook ") {
 		errors = append(errors, protocol.ErrArchitectureNotEstablished)
+	}
+	if definition.Path == "architecture update" {
+		errors = append(errors, protocol.ErrTaskbookNotQuiescent, protocol.ErrTaskbookInvalid)
 	}
 	if definition.Mutating && definition.Path != "key generate" &&
 		definition.Path != "key remove" && definition.Path != "cache clean" {
