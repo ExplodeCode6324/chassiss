@@ -146,10 +146,6 @@ var actionSpecs = map[string]ActionSpec{
 	},
 }
 
-// ErrTaskbookNotQuiescent is the stable refusal for governance mutations that
-// cannot preserve an in-flight Task's frozen contract.
-const ErrTaskbookNotQuiescent = "CHS_TASKBOOK_NOT_QUIESCENT"
-
 var validCapabilities = map[string]struct{}{
 	"taskbook.update": {}, "taskbook.open": {}, "taskbook.archive": {},
 	"architecture.establish": {}, "architecture.update": {}, "task.start": {}, "task.release": {},

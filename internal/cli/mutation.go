@@ -587,6 +587,19 @@ func rebaseTransitionPlan(
 			taskbookBlob != current.Verified.State.Project.Taskbook.BlobOID {
 			return transitionPlan{}, protocol.NewError(protocol.ErrTaskbookStale, protocol.CategoryConflict, "Taskbook changed during Architecture update CAS retry.")
 		}
+		if !ordinaryTreeEqual(previousTree, currentTreeMap) {
+			paths := make([]string, 0)
+			for _, path := range gitstore.ChangedPaths(previousTree, currentTreeMap) {
+				if path != ".chassiss/state.json" {
+					paths = append(paths, path)
+				}
+			}
+			return transitionPlan{}, &protocol.Error{
+				Code: protocol.ErrCandidateConflict, Category: protocol.CategoryConflict,
+				Message: "Ordinary project content changed during compatible Architecture update CAS retry.",
+				Details: map[string]any{"paths": paths},
+			}
+		}
 		if err := requireArchitectureQuiescence(current.Verified.State); err != nil {
 			return transitionPlan{}, err
 		}

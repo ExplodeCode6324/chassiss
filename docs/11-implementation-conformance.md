@@ -232,7 +232,14 @@ expected Error code（失败向量）
 - missing/duplicate Resource；
 - requires cycle；
 - owner missing；
-- Architecture update only with no active Taskbook；
+- legacy `architecture.updated` 只在无活动 Taskbook 时通过，且历史 schema 保持不变；
+- `architecture.updated-compatible` 对 ready/closed/cancelled/superseded（包括
+  blocked-ready）通过，对 active/submitted/approved（包括 blocked-active）返回
+  exact `CHS_TASKBOOK_NOT_QUIESCENT` structured error；
+- compatible update 精确绑定 sidecar/Operation/Evidence 中的 Taskbook blob，重算
+  Architecture semantic diff，并用候选 Architecture 完整解析 active Taskbook；
+- compatible update whitelist 只允许 State 与 Architecture，拒绝 Taskbook、普通
+  project path 或其他 protected path 变化；
 - Architecture semantic diff and removed-ID non-reuse；
 - Taskbook open→all Tasks terminal→closure review→archive→next open；
 - archive exact blob relocation and State task clearing；
@@ -275,6 +282,9 @@ expected Error code（失败向量）
 - exact double-parent final tree；
 - zero-Work-Commit/no-op Attempt and Integration；
 - CAS failure 后重新计算 candidate。
+- compatible Architecture CAS 对纯 State/Authority drift 可重试；Task phase、
+  Taskbook、Architecture、普通 tree 或候选目标 path 漂移分别 fail closed，且失败
+  不改变 main、Operation ID 或 stable semantic preconditions。
 
 ## 12. Concurrency/recovery tests
 
@@ -387,6 +397,8 @@ CLI 必须声明支持的 exact protocol majors。
 12. Owner Apply 只在静默 workflow 条件下通过。
 13. existing source bootstrap→Grant→Architecture establish→Taskbook open
     端到端通过，旧 history 保持非权威。
+14. RC10 additive Action 不改变 `architecture.updated` 的历史验证；兼容更新的
+    sidecar、Reducer、verifier、whitelist 与 Action-specific CAS matrix 全部通过。
 
 ## 18. 锁版流程
 

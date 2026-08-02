@@ -84,7 +84,22 @@ anchor 绑定。旧 commits 不成为 CHASSISS Transition。Root 签发
 7. **协议未锁版。** `docs/` 状态仍是“待 Master 复核”，未生成正式锁版 manifest，
    也未冻结 fixture。实现不能先于规范被宣称为正式 v1。
 
-## 5. 关闭差距的验收证据
+## 5. RC10 Architecture 更新差异
+
+RC9 的“有活动 Taskbook 一律禁止 Architecture update”被确认是过度约束。RC10
+没有放宽或重定义既有 `architecture.updated`，而是新增
+`architecture.updated-compatible`：仅当全部 Task 为
+`ready|closed|cancelled|superseded`，且 exact active Taskbook 可以由候选
+Architecture 完整解析时成立。blocked-ready 可通过，blocked-active 与所有
+`active|submitted|approved` 一样返回 `CHS_TASKBOOK_NOT_QUIESCENT`。
+
+该 Action 精确绑定 Architecture/Taskbook blobs，文件白名单仍只有 State 与
+Architecture；它不是 Architecture+Taskbook compound update。历史
+`architecture.updated`、已经冻结的 Task Contract 与既有签名 Transition 均按原
+schema/reducer 解释。CAS retry 只容许经重新验证的纯 State/Authority drift；
+contract、Task phase 或 ordinary tree 漂移 fail closed。
+
+## 6. 关闭差距的验收证据
 
 正式 lock 前至少需要：
 

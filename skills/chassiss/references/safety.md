@@ -38,6 +38,13 @@ When the CLI rejects an action, preserve the structured error. Follow only
 relevant `remediation[].argv`; otherwise report the code, facts, and required
 decision to Master.
 
+An active Taskbook does not by itself authorize or forbid an Architecture
+update. Use only the public CLI. A compatible update is allowed only when every
+Task is quiescent (`ready`, `closed`, `cancelled`, or `superseded`) and the exact
+active Taskbook still validates against the candidate Architecture. Never resume,
+release, cancel, supersede, edit, or otherwise disturb a Task merely to bypass
+`CHS_TASKBOOK_NOT_QUIESCENT`; preserve the structured refusal for Master.
+
 An absent or ambiguous process response is not proof of failure. Before retrying
 any mutation, query verified `status` and `log`, then run `sync --json` to
 reconcile pending Operations. Never create a second Operation merely because a

@@ -32,6 +32,13 @@ Refresh Context:
 - after an empty, detached, timed-out, or otherwise ambiguous mutation result;
 - whenever the CLI's remediation requests it.
 
+For `architecture update`, keep the draft and its `.chassiss.json` sidecar
+together outside the Project. The sidecar binds the exact Architecture and
+Taskbook blobs observed at draft time. If an active Taskbook exists, Context may
+offer a compatible update only while every Task is quiescent; the mutation
+rechecks quiescence and full Taskbook compatibility. After any successful
+Architecture update, refresh Context before drafting or updating a Taskbook.
+
 A blocked Task must be resumed before any phase-changing action that requires an
 unblocked Task. In particular, execute the exact `task resume` argv returned by
 Context, refresh Context, and only then use `task release`. Context exposes

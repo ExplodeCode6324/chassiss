@@ -357,6 +357,7 @@ CHS_ARCHITECTURE_NOT_ESTABLISHED
 CHS_TASKBOOK_NOT_ACTIVE
 CHS_TASKBOOK_ALREADY_ACTIVE
 CHS_TASKBOOK_NOT_COMPLETE
+CHS_TASKBOOK_NOT_QUIESCENT
 CHS_TASKBOOK_CLOSURE_STALE
 CHS_REFERENCE_NOT_FOUND
 CHS_GRAPH_CYCLE
@@ -371,6 +372,14 @@ CHS_TASK_BLOCKED
 CHS_TASK_ACTOR_MISMATCH
 CHS_RELEASE_HAS_CHANGES
 ```
+
+`CHS_TASKBOOK_NOT_QUIESCENT` 的 category 是 `conflict`、`retryable=false`。
+它用于活动 Taskbook 中至少一个 Task 为 `active|submitted|approved` 时拒绝
+`architecture.updated-compatible`。`details.in_flight_tasks` 是按 Task ID byte
+order 排序的 array，每项 exact 字段为 `actor`、`phase`、`task`；blocked-active
+仍列入，blocked-ready 不列入。此拒绝发生在 Operation 创建/发布之前时，envelope
+的 `operation` 与 `error.operation_id` 都为 null，`remediation` 为空，不提供
+破坏性或绕过 Task lifecycle 的 argv。
 
 ### 10.5 Check/Review/Integration
 

@@ -124,6 +124,7 @@ Overlay 是 whole-file/tree-entry replacement，不执行 line merge。相关 ma
 | `project.genesis` | 新 Root 自签 | 创建 Project、Root、Architecture、Taskbook 与 ready Tasks |
 | `architecture.established` | `architecture.establish` | 为 source bootstrap 建立首份 Architecture |
 | `architecture.updated` | `architecture.update` | 无活动 Taskbook 时更新 Architecture blob |
+| `architecture.updated-compatible` | `architecture.update` | 活动 Taskbook 全部 Task 静默且仍可由候选 Architecture 完整解析时更新 Architecture blob |
 | `taskbook.opened` | `taskbook.open` | 创建下一轮活动 Taskbook 与 ready Tasks |
 | `taskbook.updated` | `taskbook.update` | 更新 Taskbook blob；增加/更新 ready Tasks |
 | `taskbook.archived` | `taskbook.archive` | 全部 Task terminal、整体验收及 Workflow Checks 通过后归档 Taskbook 并清空当前 Task 投影 |
@@ -159,6 +160,7 @@ Semantic Operation 只保存用户稳定选择，不保存会随 CAS parent 改�
 | `project.genesis` | `project_id`、`root_key_id`、`root_public_key`、`architecture_blob`、`taskbook_blob` |
 | `architecture.established` | `candidate_blob`、`reason` |
 | `architecture.updated` | `candidate_blob`、`reason` |
+| `architecture.updated-compatible` | `candidate_blob`、`reason` |
 | `taskbook.opened` | `taskbook_id`、`candidate_blob`、`reason` |
 | `taskbook.updated` | `candidate_blob`、`reason` |
 | `taskbook.archived` | `closure_report` |
@@ -190,6 +192,7 @@ Execution Evidence 保存本次 exact parent 下可重算或可签名证明的�
 | `project.genesis` | `architecture_blob`、`taskbook_blob`、`initial_tree` |
 | `architecture.established` | `new_blob` |
 | `architecture.updated` | `old_blob`、`new_blob`、`semantic_diff` |
+| `architecture.updated-compatible` | `old_blob`、`new_blob`、`semantic_diff`、`taskbook_blob` |
 | `taskbook.opened` | `architecture_blob`、`taskbook_blob`、`ready_tasks` |
 | `taskbook.updated` | `old_blob`、`new_blob`、`semantic_diff` |
 | `taskbook.archived` | `active_blob`、`architecture_blob`、`archive_path`、`archive_blob`、`terminal_tasks`、`closing_integrations`、`check_results` |
@@ -275,6 +278,7 @@ Action-specific `preconditions` 也是 closed object：
 | `project.genesis` / `project.bootstrap` | 空 object |
 | `architecture.established` | `architecture=null`、`taskbook=null` |
 | `architecture.updated` | `architecture_blob`、`taskbook`，后者必须为 null |
+| `architecture.updated-compatible` | `all_tasks_quiescent=true`、`architecture_blob`、`taskbook_blob` |
 | `taskbook.opened` | `architecture_blob`、`taskbook`，后者必须为 null |
 | `taskbook.updated` | `taskbook_blob` |
 | `taskbook.archived` | `taskbook_blob`、`all_tasks_terminal=true` |
@@ -358,7 +362,7 @@ Evidence，从而全部被同一个 Git SSH signature 绑定。
 | Action | 允许变化 |
 |---|---|
 | `project.genesis` / `project.bootstrap` | 初始完整 tree |
-| `architecture.established` / `architecture.updated` | `docs/architecture.yaml`、`.chassiss/state.json` |
+| `architecture.established` / `architecture.updated` / `architecture.updated-compatible` | `docs/architecture.yaml`、`.chassiss/state.json` |
 | `taskbook.opened` | `docs/taskbook.yaml`、`.chassiss/state.json` |
 | `taskbook.updated` | `docs/taskbook.yaml`、`.chassiss/state.json` |
 | `taskbook.archived` | 删除 `docs/taskbook.yaml`、新增唯一 archive path、`.chassiss/state.json` |
@@ -465,6 +469,17 @@ Transitions，且 ordinary project tree、Architecture/Taskbook blobs、terminal
 Task projection 与 closing Integrations 均未改变，才可在新 parent 重跑
 `workflow.checks` 并替换 Evidence。其他变化返回
 `CHS_TASKBOOK_CLOSURE_STALE`，要求 Reviewer 重新确认 Closure Report。
+
+`architecture.updated-compatible` 也使用 Action-specific retry。每次 retry 必须
+重新确认 exact `architecture_blob` 与 `taskbook_blob` preconditions、所有 Task
+仍是 `ready|closed|cancelled|superseded`，并用同一 Taskbook blob 对候选
+Architecture 重新做完整解析。只有普通 project tree 与两个 contract blobs 均未
+变化的纯 State/Authority drift 可以继续；Taskbook binding 漂移返回
+`CHS_TASKBOOK_STALE`，Task 进入 `active|submitted|approved` 返回
+`CHS_TASKBOOK_NOT_QUIESCENT`。Architecture 候选目标 path 或其他 ordinary path
+在 main 上有并发变化时返回 `CHS_CANDIDATE_CONFLICT`；未形成 path collision 的
+Architecture binding mismatch 仍返回 `CHS_ARCHITECTURE_STALE`。任何情况都不得
+自动合并。
 
 ## 12. Mainline 验证
 
