@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"github.com/ExplodeCode6324/chassiss/internal/cryptoutil"
+	"github.com/ExplodeCode6324/chassiss/internal/gitstore"
+	"github.com/ExplodeCode6324/chassiss/internal/localstate"
 	"github.com/ExplodeCode6324/chassiss/internal/protocol"
 	"github.com/ExplodeCode6324/chassiss/internal/state"
+	"github.com/ExplodeCode6324/chassiss/internal/verifier"
 )
 
 func TestVersionJSONEnvelope(t *testing.T) {
@@ -102,6 +105,52 @@ func TestHelpSchemaUsesConcreteArraysAndErrors(t *testing.T) {
 	if !containsString(definition.PossibleErrors, "CHS_CAPABILITY_DENIED") ||
 		!containsString(definition.PossibleErrors, "CHS_USAGE_INVALID") {
 		t.Fatalf("help schema omitted stable possible errors: %#v", definition.PossibleErrors)
+	}
+}
+
+func TestCompatibleArchitectureActionHasExactAdditiveSchema(t *testing.T) {
+	operation := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-91ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.updated-compatible", Project: "PRJ-TEST",
+		Authority: "grant:GRT-ARCHITECT-01", Target: "ARCHITECTURE-001",
+		Preconditions: map[string]any{
+			"all_tasks_quiescent": true, "architecture_blob": strings.Repeat("a", 40),
+			"taskbook_blob": strings.Repeat("b", 40),
+		},
+		Payload: map[string]any{"candidate_blob": strings.Repeat("c", 40), "reason": "compatible"},
+	}
+	if err := operation.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Repeat("d", 40)
+	evidence := protocol.ExecutionEvidence{
+		Schema: protocol.EvidenceSchema, OperationDigest: digest,
+		Action: operation.Action, Attempt: 1, Parent: &parent,
+		Facts: map[string]any{
+			"new_blob": strings.Repeat("c", 40), "old_blob": strings.Repeat("a", 40),
+			"semantic_diff": map[string]any{}, "taskbook_blob": strings.Repeat("b", 40),
+		},
+	}
+	if err := evidence.Validate(operation, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	operation.Preconditions["taskbook"] = nil
+	if err := operation.Validate(); err == nil {
+		t.Fatal("compatible Architecture Operation accepted an extra precondition")
+	}
+	delete(operation.Preconditions, "taskbook")
+	operation.Target = "not-an-architecture-id"
+	if err := operation.Validate(); err == nil {
+		t.Fatal("compatible Architecture Operation accepted an invalid target")
+	}
+	operation.Target = "ARCHITECTURE-001"
+	evidence.Facts["phase_projection"] = map[string]any{}
+	if err := evidence.Validate(operation, "sha1"); err == nil {
+		t.Fatal("compatible Architecture Evidence accepted an extra fact")
 	}
 }
 
@@ -366,6 +415,21 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if err := os.Chdir(workspace); err != nil {
 		t.Fatal(err)
 	}
+	for _, requestedProject := range []string{"PRJ-TEST", "PRJ-UNREGISTERED"} {
+		blockedRequestPath := filepath.Join(workspace, requestedProject+"-grant-request.json")
+		blockedRequest, _ := runJSONFailure(t, []string{
+			"grant", "request", "--project", requestedProject, "--key", "KEY-AGENT-01",
+			"--profile", "developer", "--task-scope", "TASK-*",
+			"--resource-scope", "module:*", "--resource-scope", "schema:*",
+			"--limits", "bounded", "--output", blockedRequestPath,
+		}, &stdout, &stderr)
+		if blockedRequest.Error == nil || blockedRequest.Error.Code != protocol.ErrScopeViolation {
+			t.Fatalf("cross-Project Grant Request output was not refused: %#v", blockedRequest)
+		}
+		if _, err := os.Stat(blockedRequestPath); !os.IsNotExist(err) {
+			t.Fatalf("refused Grant Request output was created: %v", err)
+		}
+	}
 	requestPath := filepath.Join(t.TempDir(), "grant-request.json")
 	requestEnvelope := runJSON(t, []string{
 		"grant", "request", "--project", "PRJ-TEST", "--key", "KEY-AGENT-01",
@@ -417,6 +481,24 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		"--resource-scope", "module:*", "--resource-scope", "schema:*",
 		"--limits", "bounded", "--output", extraRequestPath,
 	}, &stdout, &stderr)
+	blockedProposalPath := filepath.Join(workspace, "grant-proposal.bundle")
+	blockedProposal, _ := runJSONFailure(t, []string{
+		"grant", "add", "--request", extraRequestPath, "--grant-id", "GRT-EXTRA-01",
+		"--root-key", "KEY-ROOT-01", "--profile", "developer",
+		"--task-scope", "TASK-*", "--resource-scope", "module:*",
+		"--resource-scope", "schema:*", "--limits", "bounded",
+		"--proposal", blockedProposalPath,
+	}, &stdout, &stderr)
+	if blockedProposal.Error == nil || blockedProposal.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained proposal bundle was not refused: %#v", blockedProposal)
+	}
+	afterBlockedProposal, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterBlockedProposal.LocalProject.PendingOperations) != 0 {
+		t.Fatalf("refused proposal output left pending state: %#v", afterBlockedProposal.LocalProject.PendingOperations)
+	}
 	proposalPath := filepath.Join(t.TempDir(), "grant-proposal.bundle")
 	proposalEnvelope := runJSON(t, []string{
 		"grant", "add", "--request", extraRequestPath, "--grant-id", "GRT-EXTRA-01",
@@ -440,7 +522,18 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if publishEnvelope.Result.(map[string]any)["commit"] == "" {
 		t.Fatalf("Proposal publish failed: %#v", publishEnvelope)
 	}
-	startEnvelope := runJSON(t, []string{"task", "start", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
+	startAction := assertAvailableAction(t, runJSON(t, []string{
+		"context", "TASK-001",
+	}, &stdout, &stderr), AvailableAction{
+		Action: "task.started",
+		Argv: []string{
+			"chassiss", "task", "start", "TASK-001",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.start",
+		Target:     "TASK-001",
+	})
+	startEnvelope := runAvailableAction(t, startAction, &stdout, &stderr)
 	if startEnvelope.Operation == nil {
 		t.Fatalf("Task start transition missing: %#v", startEnvelope)
 	}
@@ -448,7 +541,342 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if result["worktree"] == "" {
 		t.Fatalf("Task start did not return a worktree: %#v", result)
 	}
+	assertAvailableAction(t, runJSON(t, []string{
+		"context", "TASK-001",
+	}, &stdout, &stderr), AvailableAction{
+		Action: "task.released",
+		Argv: []string{
+			"chassiss", "task", "release", "TASK-001", "--reason",
+			"release unchanged active work discovered by Context",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.release",
+		Target:     "TASK-001",
+	})
+	runJSON(t, []string{
+		"task", "block", "TASK-001", "--reason", "exercise blocked release refusal",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	blockedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	resumeAction := assertAvailableAction(t, blockedContext, AvailableAction{
+		Action: "task.resumed",
+		Argv: []string{
+			"chassiss", "task", "resume", "TASK-001",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.resume",
+		Target:     "TASK-001",
+	})
+	assertNoAvailableAction(t, blockedContext, "task.released")
+	releaseFailure, releaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse while blocked",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if releaseExit != 6 || releaseFailure.Error == nil ||
+		releaseFailure.Error.Code != protocol.ErrTaskPhaseInvalid ||
+		releaseFailure.Operation != nil {
+		t.Fatalf("blocked release did not fail structurally: exit=%d envelope=%#v", releaseExit, releaseFailure)
+	}
+	afterRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if afterRefusal.Snapshot.MainCommit != blockedContext.Snapshot.MainCommit {
+		t.Fatalf("blocked release mutated main: before=%s after=%s", blockedContext.Snapshot.MainCommit, afterRefusal.Snapshot.MainCommit)
+	}
+	assertAvailableAction(t, afterRefusal, resumeAction)
+	runAvailableAction(t, resumeAction, &stdout, &stderr)
+	resumedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	releaseAction := assertAvailableAction(t, resumedContext, AvailableAction{
+		Action: "task.released",
+		Argv: []string{
+			"chassiss", "task", "release", "TASK-001", "--reason",
+			"release unchanged active work discovered by Context",
+			"--key", "KEY-AGENT-01", "--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "task.release",
+		Target:     "TASK-001",
+	})
+	beforeRelease, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasedWorktree := beforeRelease.LocalProject.Worktrees["TASK-001"]
+	releaseEnvelope := runAvailableAction(t, releaseAction, &stdout, &stderr)
+	assertManagedWorkCleanup(t, releaseEnvelope, true)
+	if len(releaseEnvelope.Warnings) != 0 {
+		t.Fatalf("clean release reported cleanup warnings: %#v", releaseEnvelope.Warnings)
+	}
+	afterRelease, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := afterRelease.LocalProject.Worktrees["TASK-001"]; exists {
+		t.Fatalf("release retained the managed Work registry: %#v", afterRelease.LocalProject.Worktrees)
+	}
+	if _, err := os.Stat(releasedWorktree.Path); !os.IsNotExist(err) {
+		t.Fatalf("release retained the managed worktree: %v", err)
+	}
+	if _, err := afterRelease.Runner.Resolve(context.Background(), releasedWorktree.Branch); err == nil {
+		t.Fatalf("release retained local Work Ref %s", releasedWorktree.Branch)
+	}
+	residuePath, err := createManagedWorktree(
+		context.Background(), afterRelease, "TASK-001", releasedWorktree.Actor, releasedWorktree.Base,
+	)
+	if err != nil {
+		t.Fatalf("construct released-ready residue: %v", err)
+	}
+	if !samePath(residuePath, releasedWorktree.Path) {
+		t.Fatalf("constructed residue at unexpected path: got=%s want=%s", residuePath, releasedWorktree.Path)
+	}
+	if err := afterRelease.Runner.UpdateRefCAS(
+		context.Background(), releasedWorktree.Branch, afterRelease.Verified.Head,
+		releasedWorktree.Base, "exercise moved residue ref",
+	); err != nil {
+		t.Fatalf("move residue Work Ref: %v", err)
+	}
+	movedRefCleanup := cleanupManagedWork(
+		context.Background(), afterRelease, "TASK-001", releasedWorktree, releasedWorktree.Base,
+	)
+	if movedRefCleanup.Err == nil || movedRefCleanup.Artifact != "local_ref" ||
+		movedRefCleanup.WorktreeRemoved {
+		t.Fatalf("moved Work Ref was not refused before path removal: %#v", movedRefCleanup)
+	}
+	if _, err := os.Stat(residuePath); err != nil {
+		t.Fatalf("moved-ref refusal removed residue path: %v", err)
+	}
+	if err := afterRelease.Runner.UpdateRefCAS(
+		context.Background(), releasedWorktree.Branch, releasedWorktree.Base,
+		afterRelease.Verified.Head, "restore moved residue ref",
+	); err != nil {
+		t.Fatalf("restore residue Work Ref: %v", err)
+	}
+	removeResidue := runJSON(t, []string{"work", "remove", "TASK-001"}, &stdout, &stderr)
+	assertManagedWorkCleanup(t, removeResidue, true)
+	afterResidueRemoval, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := afterResidueRemoval.LocalProject.Worktrees["TASK-001"]; exists {
+		t.Fatalf("work remove retained released-ready residue: %#v", afterResidueRemoval.LocalProject.Worktrees)
+	}
+	if _, err := os.Stat(residuePath); !os.IsNotExist(err) {
+		t.Fatalf("work remove retained released-ready path: %v", err)
+	}
+	if _, err := afterResidueRemoval.Runner.Resolve(context.Background(), releasedWorktree.Branch); err == nil {
+		t.Fatalf("work remove retained released-ready Work Ref %s", releasedWorktree.Branch)
+	}
+	activeArchitectureDraft := filepath.Join(t.TempDir(), "active-architecture.yaml")
+	runJSON(t, []string{
+		"architecture", "draft", "--output", activeArchitectureDraft,
+	}, &stdout, &stderr)
+	var activeDraftMetadata draftMetadata
+	if _, err := readClosedJSON(activeArchitectureDraft+".chassiss.json", &activeDraftMetadata); err != nil {
+		t.Fatal(err)
+	}
+	beforeActiveUpdate, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeDraftMetadata.TaskbookBlob == nil ||
+		*activeDraftMetadata.TaskbookBlob != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("Architecture draft did not bind the exact active Taskbook: %#v", activeDraftMetadata)
+	}
+	activeArchitectureData, err := os.ReadFile(activeArchitectureDraft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeArchitectureData = []byte(strings.Replace(
+		string(activeArchitectureData),
+		"Canonical encoding, verification, authorization, reducers, and state.",
+		"Canonical signed encoding, verification, authorization, reducers, and state.",
+		1,
+	))
+	if err := os.WriteFile(activeArchitectureDraft, activeArchitectureData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activeDiff := runJSON(t, []string{
+		"architecture", "diff", "--file", activeArchitectureDraft,
+	}, &stdout, &stderr)
+	preflight := activeDiff.Result.(map[string]any)["active_taskbook_preflight"].(map[string]any)
+	if preflight["compatible"] != true || preflight["quiescent"] != true ||
+		preflight["taskbook_blob"] != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("Architecture diff omitted exact active Taskbook preflight: %#v", preflight)
+	}
+	incompatibleDraft := filepath.Join(t.TempDir(), "incompatible-architecture.yaml")
+	incompatibleData := []byte(strings.Replace(string(activeArchitectureData), "- src/core/**", "- src/incompatible/**", 1))
+	if err := os.WriteFile(incompatibleDraft, incompatibleData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sidecarData, err := os.ReadFile(activeArchitectureDraft + ".chassiss.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(incompatibleDraft+".chassiss.json", sidecarData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	incompatibleFailure, incompatibleExit := runJSONFailure(t, []string{
+		"architecture", "update", "--file", incompatibleDraft,
+		"--reason", "Must reject a candidate that invalidates Task writes.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if incompatibleExit != 6 || incompatibleFailure.Error == nil ||
+		incompatibleFailure.Error.Code != protocol.ErrTaskbookInvalid || incompatibleFailure.Operation != nil {
+		t.Fatalf("incompatible active Taskbook update was not refused: exit=%d envelope=%#v", incompatibleExit, incompatibleFailure)
+	}
+	activeArchitectureUpdate := runJSON(t, []string{
+		"architecture", "update", "--file", activeArchitectureDraft,
+		"--reason", "Clarify the signed protocol core while all Tasks are quiescent.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if activeArchitectureUpdate.Operation == nil || activeArchitectureUpdate.Command != "architecture update" {
+		t.Fatalf("quiescent active Taskbook Architecture update failed: %#v", activeArchitectureUpdate)
+	}
+	afterActiveUpdate, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterActiveUpdate.Verified.State.Project.Taskbook.BlobOID != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID ||
+		afterActiveUpdate.Verified.State.Tasks["TASK-001"].Phase != "ready" {
+		t.Fatalf("compatible Architecture update mutated Taskbook/Task state: %#v", afterActiveUpdate.Verified.State)
+	}
+	activeCommit, err := afterActiveUpdate.Runner.ReadCommit(context.Background(), afterActiveUpdate.Verified.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMessage, err := protocol.ParseTransitionMessage(activeCommit.Message, afterActiveUpdate.Verified.ObjectFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeMessage.Operation.Action != "architecture.updated-compatible" ||
+		activeMessage.Evidence.Facts["taskbook_blob"] != beforeActiveUpdate.Verified.State.Project.Taskbook.BlobOID {
+		t.Fatalf("active update did not publish the additive exact-binding Action: %#v", activeMessage)
+	}
+	verifyEnvelope = runJSON(t, []string{"verify", "--full"}, &stdout, &stderr)
+	if verifyEnvelope.Snapshot == nil || verifyEnvelope.Snapshot.Trust != "verified" {
+		t.Fatalf("compatible Architecture history did not replay: %#v", verifyEnvelope)
+	}
+	inFlightDraft := filepath.Join(t.TempDir(), "in-flight-architecture.yaml")
+	runJSON(t, []string{
+		"architecture", "draft", "--output", inFlightDraft,
+	}, &stdout, &stderr)
+	inFlightData, err := os.ReadFile(inFlightDraft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlightData = []byte(strings.Replace(
+		string(inFlightData), "Parent State determines authority.",
+		"Exact parent State determines authority.", 1,
+	))
+	if err := os.WriteFile(inFlightDraft, inFlightData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startEnvelope = runJSON(t, []string{
+		"task", "start", "TASK-001", "--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if startEnvelope.Operation == nil {
+		t.Fatalf("Task restart after release transition missing: %#v", startEnvelope)
+	}
+	result = startEnvelope.Result.(map[string]any)
+	if result["worktree"] == "" {
+		t.Fatalf("Task restart did not return a worktree: %#v", result)
+	}
+	beforeInFlightRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	inFlightFailure, inFlightExit := runJSONFailure(t, []string{
+		"architecture", "update", "--file", inFlightDraft,
+		"--reason", "Must refuse while a frozen Task Contract is in flight.",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if inFlightExit != 6 || inFlightFailure.Error == nil ||
+		inFlightFailure.Error.Code != protocol.ErrTaskbookNotQuiescent ||
+		inFlightFailure.Operation != nil {
+		t.Fatalf("in-flight Architecture update was not refused structurally: exit=%d envelope=%#v", inFlightExit, inFlightFailure)
+	}
+	if tasks, ok := inFlightFailure.Error.Details["in_flight_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("quiescence refusal omitted canonical in-flight details: %#v", inFlightFailure.Error)
+	}
+	afterInFlightRefusal := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if afterInFlightRefusal.Snapshot.MainCommit != beforeInFlightRefusal.Snapshot.MainCommit {
+		t.Fatalf("quiescence refusal mutated main: before=%s after=%s", beforeInFlightRefusal.Snapshot.MainCommit, afterInFlightRefusal.Snapshot.MainCommit)
+	}
 	worktree := result["worktree"].(string)
+	if err := os.Chdir(worktree); err != nil {
+		t.Fatal(err)
+	}
+	fromManagedWorktree, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatalf("managed worktree project discovery failed: %v", err)
+	}
+	if !samePath(fromManagedWorktree.InvocationRoot, worktree) ||
+		!samePath(fromManagedWorktree.RepoRoot, workspace) ||
+		!samePath(fromManagedWorktree.Runner.Repo, workspace) {
+		t.Fatalf(
+			"managed worktree did not resolve through its registered main instance: invocation=%q root=%q runner=%q",
+			fromManagedWorktree.InvocationRoot, fromManagedWorktree.RepoRoot,
+			fromManagedWorktree.Runner.Repo,
+		)
+	}
+	assertScopeRefusal := func(args ...string) {
+		t.Helper()
+		failure, exit := runJSONFailure(t, args, &stdout, &stderr)
+		if exit == 0 || failure.Error == nil || failure.Error.Code != protocol.ErrScopeViolation {
+			t.Fatalf("Project-contained output was not refused: exit=%d envelope=%#v", exit, failure)
+		}
+	}
+	directWorktreeOutput := filepath.Join(worktree, "generated", "README.md")
+	assertScopeRefusal("file", "show", "README.md", "--output", directWorktreeOutput)
+	if _, err := os.Stat(directWorktreeOutput); !os.IsNotExist(err) {
+		t.Fatalf("refused direct worktree output was created: %v", err)
+	}
+	externalOutputs := t.TempDir()
+	for label, target := range map[string]string{
+		"main": workspace, "worktree": worktree,
+	} {
+		alias := filepath.Join(externalOutputs, "alias-"+label)
+		if err := os.Symlink(target, alias); err != nil {
+			if goruntime.GOOS == "windows" {
+				continue
+			}
+			t.Fatal(err)
+		}
+		assertScopeRefusal(
+			"file", "show", "README.md", "--output",
+			filepath.Join(alias, "generated", "README.md"),
+		)
+	}
+	allowedOutput := filepath.Join(externalOutputs, "allowed", "README.md")
+	allowedFile := runJSON(t, []string{
+		"file", "show", "README.md", "--output", allowedOutput,
+	}, &stdout, &stderr)
+	if allowedFile.Result.(map[string]any)["content"] != "# test\n" {
+		t.Fatalf("legitimate external File Show output failed: %#v", allowedFile)
+	}
+	if data, err := os.ReadFile(allowedOutput); err != nil || string(data) != "# test\n" {
+		t.Fatalf("legitimate external output was not written exactly: data=%q err=%v", data, err)
+	}
+	managedStatus := runJSON(t, []string{"work", "status", "TASK-001"}, &stdout, &stderr)
+	if managedStatus.Result.(map[string]any)["worktree"] != worktree {
+		t.Fatalf("Work Status from managed worktree resolved the wrong worktree: %#v", managedStatus)
+	}
+	managedFile := runJSON(t, []string{"file", "show", "README.md"}, &stdout, &stderr)
+	if managedFile.Result.(map[string]any)["content"] != "# test\n" {
+		t.Fatalf("File Show from managed worktree did not read verified main: %#v", managedFile)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	exit = Run([]string{
+		"owner", "apply", "--reason", "managed worktree refusal regression",
+		"--summary", "must not publish", "--grant", "GRT-AGENT-01", "--yes", "--json",
+	}, bytes.NewReader(nil), &stdout, &stderr)
+	var ownerFailure Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &ownerFailure); err != nil {
+		t.Fatal(err)
+	}
+	if exit == 0 || ownerFailure.Error == nil ||
+		ownerFailure.Error.Code != protocol.ErrOwnerWorkflowActive ||
+		ownerFailure.Error.Message != "Owner Apply cannot run inside a managed Task worktree." {
+		t.Fatalf("Owner Apply was not refused inside managed worktree: exit=%d envelope=%#v", exit, ownerFailure)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(worktree, "src", "core", "reducer"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -472,15 +900,54 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	if !strings.Contains(diffText, "func Apply") || !strings.Contains(diffText, "TestPlaceholder") {
 		t.Fatalf("Work diff omitted untracked source files: %q", diffText)
 	}
+	dirtyContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	assertNoAvailableAction(t, dirtyContext, "task.released")
+	dirtyRelease, dirtyReleaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse dirty work",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if dirtyReleaseExit != 3 || dirtyRelease.Error == nil ||
+		dirtyRelease.Error.Code != protocol.ErrWorktreeDirty {
+		t.Fatalf("dirty release was not refused: exit=%d envelope=%#v", dirtyReleaseExit, dirtyRelease)
+	}
 	commitEnvelope := runJSON(t, []string{
 		"work", "commit", "TASK-001", "--message", "implement reducer",
 	}, &stdout, &stderr)
 	if commitEnvelope.Result.(map[string]any)["commit"] == "" {
 		t.Fatalf("Work Commit missing: %#v", commitEnvelope)
 	}
+	changedHeadContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	assertNoAvailableAction(t, changedHeadContext, "task.released")
+	changedHeadRelease, changedHeadReleaseExit := runJSONFailure(t, []string{
+		"task", "release", "TASK-001", "--reason", "must refuse changed Work Head",
+		"--grant", "GRT-AGENT-01",
+	}, &stdout, &stderr)
+	if changedHeadReleaseExit != 6 || changedHeadRelease.Error == nil ||
+		changedHeadRelease.Error.Code != protocol.ErrReleaseHasChanges {
+		t.Fatalf("changed-head release was not refused: exit=%d envelope=%#v", changedHeadReleaseExit, changedHeadRelease)
+	}
 	submitEnvelope := runJSON(t, []string{"submit", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
 	if submitEnvelope.Operation == nil {
 		t.Fatalf("Submit transition missing: %#v", submitEnvelope)
+	}
+	blockedReviewContext := filepath.Join(workspace, "review-context.json")
+	blockedReview, _ := runJSONFailure(t, []string{
+		"review", "TASK-001", "--prepare", "--output", blockedReviewContext,
+	}, &stdout, &stderr)
+	if blockedReview.Error == nil || blockedReview.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Review context was not refused: %#v", blockedReview)
+	}
+	preflightContext := filepath.Join(t.TempDir(), "review-context.json")
+	blockedReviewReport := filepath.Join(worktree, "review-template.json")
+	blockedReport, _ := runJSONFailure(t, []string{
+		"review", "TASK-001", "--prepare", "--output", preflightContext,
+		"--report-output", blockedReviewReport,
+	}, &stdout, &stderr)
+	if blockedReport.Error == nil || blockedReport.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Review report template was not refused: %#v", blockedReport)
+	}
+	if _, err := os.Stat(preflightContext); !os.IsNotExist(err) {
+		t.Fatalf("Review output preflight left a partial context file: %v", err)
 	}
 	reviewContextPath := filepath.Join(t.TempDir(), "review-context.json")
 	reviewTemplatePath := filepath.Join(t.TempDir(), "review-template.json")
@@ -512,7 +979,13 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 			"requirements": "pass", "contract": "pass",
 			"architecture": "conformant", "integration": "pass",
 		},
-		"findings": []any{},
+		"findings": []any{
+			map[string]any{
+				"category": "integration", "paths": []any{}, "resources": []any{},
+				"severity": "advisory",
+				"summary":  "Preserve bar_end <= available_at <= decision_time.",
+			},
+		},
 		"reviewer_attention_responses": []any{
 			map[string]any{
 				"attention": "Reject extra fields in every sparse Task phase.",
@@ -566,7 +1039,55 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		projectAfterReview.Verified.State.Audit.Reviews[0].OperationID != reviewEnvelope.Operation.OperationID {
 		t.Fatalf("State lacks the compact Review index: %#v", projectAfterReview.Verified.State.Audit)
 	}
-	integrateEnvelope := runJSON(t, []string{"integrate", "TASK-001", "--grant", "GRT-AGENT-01"}, &stdout, &stderr)
+	unprivilegedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	if len(unprivilegedContext.AvailableActions) != 0 {
+		t.Fatalf("Context exposed Integration to the selected unprivileged identity: %#v", unprivilegedContext.AvailableActions)
+	}
+	selectAgent := runJSON(t, []string{
+		"identity", "select", "--key", "KEY-AGENT-01",
+	}, &stdout, &stderr)
+	if selectAgent.Identity == nil || selectAgent.Identity.Actor != "agent-one" {
+		t.Fatalf("Failed to restore the Integration identity: %#v", selectAgent)
+	}
+	approvedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	integrationAction := assertAvailableAction(t, approvedContext, AvailableAction{
+		Action: "integration.applied",
+		Argv: []string{
+			"chassiss", "integrate", "TASK-001",
+			"--key", "KEY-AGENT-01",
+			"--grant", "GRT-AGENT-01", "--json",
+		},
+		Capability: "integration.apply",
+		Target:     "TASK-001",
+	})
+	offlineApprovedContext := runJSON(t, []string{
+		"context", "TASK-001", "--offline",
+	}, &stdout, &stderr)
+	if len(offlineApprovedContext.AvailableActions) != 0 {
+		t.Fatalf("offline Context exposed mutation actions: %#v", offlineApprovedContext.AvailableActions)
+	}
+	pendingProposalPath := filepath.Join(t.TempDir(), "pending-revoke.bundle")
+	pendingProposal := runJSON(t, []string{
+		"grant", "revoke", "GRT-EXTRA-01",
+		"--reason", "exercise pending Integration refusal",
+		"--root-key", "KEY-ROOT-01", "--proposal", pendingProposalPath,
+	}, &stdout, &stderr)
+	if pendingProposal.Operation == nil || pendingProposal.Operation.Status != "signed" {
+		t.Fatalf("pending proposal was not signed: %#v", pendingProposal)
+	}
+	pendingFailure, pendingExit := runAvailableActionResult(
+		t, integrationAction, &stdout, &stderr,
+	)
+	if pendingExit != 3 || pendingFailure.Error == nil ||
+		pendingFailure.Error.Code != protocol.ErrPendingUnresolved {
+		t.Fatalf("Integration did not refuse the pending Operation: exit=%d envelope=%#v", pendingExit, pendingFailure)
+	}
+	runJSON(t, []string{
+		"transition", "publish", pendingProposalPath,
+	}, &stdout, &stderr)
+	refreshedApprovedContext := runJSON(t, []string{"context", "TASK-001"}, &stdout, &stderr)
+	integrationAction = assertAvailableAction(t, refreshedApprovedContext, integrationAction)
+	integrateEnvelope := runAvailableAction(t, integrationAction, &stdout, &stderr)
 	if integrateEnvelope.Operation == nil {
 		t.Fatalf("Integration transition missing: %#v", integrateEnvelope)
 	}
@@ -589,6 +1110,13 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 		t.Fatalf("build check binary: %v\n%s", err, output)
 	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	blockedClosurePath := filepath.Join(workspace, "closure-template.json")
+	blockedClosure, _ := runJSONFailure(t, []string{
+		"taskbook", "archive", "--prepare", "--output", blockedClosurePath,
+	}, &stdout, &stderr)
+	if blockedClosure.Error == nil || blockedClosure.Error.Code != protocol.ErrScopeViolation {
+		t.Fatalf("Project-contained Taskbook closure template was not refused: %#v", blockedClosure)
+	}
 	closureTemplatePath := filepath.Join(t.TempDir(), "closure-template.json")
 	prepareClosure := runJSON(t, []string{
 		"taskbook", "archive", "--prepare", "--output", closureTemplatePath,
@@ -670,6 +1198,21 @@ func TestInitAndVerifyGenesis(t *testing.T) {
 	}, &stdout, &stderr)
 	if architectureEnvelope.Operation == nil {
 		t.Fatalf("Architecture update transition missing: %#v", architectureEnvelope)
+	}
+	legacyUpdateProject, err := loadProject(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdateCommit, err := legacyUpdateProject.Runner.ReadCommit(context.Background(), legacyUpdateProject.Verified.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdateMessage, err := protocol.ParseTransitionMessage(legacyUpdateCommit.Message, legacyUpdateProject.Verified.ObjectFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyUpdateMessage.Operation.Action != "architecture.updated" {
+		t.Fatalf("no-Taskbook update did not retain the rc9 Action: %#v", legacyUpdateMessage.Operation)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "OWNER.txt"), []byte("owner snapshot\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -822,4 +1365,300 @@ func runJSON(t *testing.T, args []string, stdout, stderr *bytes.Buffer) Envelope
 		t.Fatal(err)
 	}
 	return envelope
+}
+
+func runJSONFailure(
+	t *testing.T,
+	args []string,
+	stdout, stderr *bytes.Buffer,
+) (Envelope, int) {
+	t.Helper()
+	stdout.Reset()
+	stderr.Reset()
+	argv := append(append([]string(nil), args...), "--json")
+	exit := Run(argv, bytes.NewReader(nil), stdout, stderr)
+	if exit == 0 {
+		t.Fatalf("%v unexpectedly succeeded\nstdout %s\nstderr %s", argv, stdout.String(), stderr.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope, exit
+}
+
+func assertAvailableAction(t *testing.T, envelope Envelope, expected AvailableAction) AvailableAction {
+	t.Helper()
+	for _, action := range envelope.AvailableActions {
+		if action.Action == expected.Action &&
+			action.Capability == expected.Capability &&
+			action.Target == expected.Target &&
+			strings.Join(action.Argv, "\x00") == strings.Join(expected.Argv, "\x00") {
+			return action
+		}
+	}
+	t.Fatalf("available action missing\nexpected %#v\nactual %#v", expected, envelope.AvailableActions)
+	return AvailableAction{}
+}
+
+func assertNoAvailableAction(t *testing.T, envelope Envelope, action string) {
+	t.Helper()
+	for _, available := range envelope.AvailableActions {
+		if available.Action == action {
+			t.Fatalf("unexpected available action %q: %#v", action, envelope.AvailableActions)
+		}
+	}
+}
+
+func assertManagedWorkCleanup(t *testing.T, envelope Envelope, expected bool) {
+	t.Helper()
+	result := envelope.Result.(map[string]any)
+	for _, field := range []string{
+		"worktree_removed", "local_ref_removed", "worktree_registry_removed",
+	} {
+		if result[field] != expected {
+			t.Fatalf("managed Work cleanup field %s=%#v, want %t: %#v", field, result[field], expected, envelope)
+		}
+	}
+}
+
+func runAvailableAction(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) Envelope {
+	t.Helper()
+	envelope, exit := runAvailableActionResult(t, action, stdout, stderr)
+	if exit != 0 {
+		t.Fatalf("%v exit %d\nstdout %s\nstderr %s", action.Argv, exit, stdout.String(), stderr.String())
+	}
+	return envelope
+}
+
+func runAvailableActionResult(t *testing.T, action AvailableAction, stdout, stderr *bytes.Buffer) (Envelope, int) {
+	t.Helper()
+	if len(action.Argv) < 2 || action.Argv[0] != "chassiss" ||
+		action.Argv[len(action.Argv)-1] != "--json" {
+		t.Fatalf("available action argv is not directly executable: %#v", action.Argv)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run(action.Argv[1:], bytes.NewReader(nil), stdout, stderr)
+	var envelope Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope, exit
+}
+
+func TestGrantAllowsTaskAction(t *testing.T) {
+	grant := state.Grant{
+		Capabilities: []string{"integration.apply"},
+		Scope: state.Scope{
+			Tasks:     []string{"TASK-001"},
+			Resources: []string{"module:core", "schema:*"},
+		},
+	}
+	if !grantAllowsTaskAction(
+		grant, "integration.apply", "TASK-001",
+		[]string{"module:core", "schema:state"},
+	) {
+		t.Fatal("exact capability and scope were rejected")
+	}
+	for name, test := range map[string]struct {
+		capability string
+		task       string
+		resources  []string
+	}{
+		"capability": {"review.attest", "TASK-001", []string{"module:core"}},
+		"task_scope": {"integration.apply", "TASK-002", []string{"module:core"}},
+		"resource_scope": {
+			"integration.apply", "TASK-001", []string{"module:other"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if grantAllowsTaskAction(grant, test.capability, test.task, test.resources) {
+				t.Fatal("unauthorized action was exposed")
+			}
+		})
+	}
+}
+
+func TestManagedWorkCleanupFailureIsExplicit(t *testing.T) {
+	base := strings.Repeat("a", 40)
+	project := &projectContext{
+		Store: localstate.Store{Paths: localstate.Paths{Data: t.TempDir()}},
+		Verified: &verifier.Result{State: &state.State{
+			Project: state.Project{ID: "PRJ-CLEANUP-TEST"},
+		}},
+	}
+	worktree := localstate.Worktree{
+		Actor: "agent-cleanup", Base: base,
+		Branch: taskWorkRef("TASK-CLEANUP", "agent-cleanup", base),
+		Path:   filepath.Join(t.TempDir(), "outside-managed-root"),
+		TaskID: "TASK-CLEANUP",
+	}
+	cleanup := cleanupManagedWork(
+		context.Background(), project, "TASK-CLEANUP", worktree, base,
+	)
+	if cleanup.Err == nil || cleanup.Artifact != "worktree" ||
+		cleanup.WorktreeRemoved || cleanup.LocalRefRemoved || cleanup.RegistryRemoved {
+		t.Fatalf("unsafe cleanup failure was not explicit: %#v", cleanup)
+	}
+	result := map[string]any{}
+	addManagedWorkCleanupResult(result, cleanup)
+	for _, field := range []string{
+		"worktree_removed", "local_ref_removed", "worktree_registry_removed",
+	} {
+		if result[field] != false {
+			t.Fatalf("failed cleanup reported %s=%#v", field, result[field])
+		}
+	}
+	warning := managedWorkCleanupWarning(
+		"TASK-CLEANUP", cleanup.Artifact, "release cleanup failed", cleanup.Err,
+	)
+	if warning.Code != "CHS_WARN_LOCAL_CLEANUP" ||
+		warning.Details["artifact"] != "worktree" || warning.Details["error"] == "" {
+		t.Fatalf("cleanup warning omitted failure details: %#v", warning)
+	}
+}
+
+func TestTerminalChangedHeadManagedWorkCleanupIsIsolated(t *testing.T) {
+	ctx := context.Background()
+	repository := t.TempDir()
+	runner := gitstore.New(repository)
+	runGit := func(runner gitstore.Runner, args ...string) {
+		t.Helper()
+		if result, err := runner.Run(ctx, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, result.Stderr)
+		}
+	}
+	runGit(runner, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(repository, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(runner, "add", "base.txt")
+	runGit(
+		runner, "-c", "user.name=CHASSISS Test", "-c", "user.email=test@chassiss.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base",
+	)
+	base, err := runner.Resolve(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectFormat, err := runner.ObjectFormat(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	paths := localstate.Paths{
+		Data: data, Cache: filepath.Join(data, "cache"),
+		Runtime: filepath.Join(data, "runtime"), Keys: filepath.Join(data, "keys"),
+		State: filepath.Join(data, "local-state.json"),
+	}
+	store := localstate.Store{Paths: paths}
+	projectID := "PRJ-CLEANUP-TEST"
+	taskID := "TASK-TERMINAL-CLEANUP"
+	actor := "agent-cleanup"
+	branch := taskWorkRef(taskID, actor, base)
+	worktreePath := filepath.Join(data, "worktrees", projectID, taskID, base[:12], actor)
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.UpdateRefCAS(
+		ctx, branch, base, zeroOID(objectFormat), "create isolated managed Work Ref",
+	); err != nil {
+		t.Fatal(err)
+	}
+	runGit(runner, "worktree", "add", "--detach", worktreePath, base)
+	workRunner := gitstore.New(worktreePath)
+	runGit(workRunner, "symbolic-ref", "HEAD", branch)
+	if err := os.WriteFile(filepath.Join(worktreePath, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(workRunner, "add", "changed.txt")
+	runGit(
+		workRunner, "-c", "user.name=CHASSISS Test", "-c", "user.email=test@chassiss.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "changed head",
+	)
+	head, err := workRunner.Resolve(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head == base {
+		t.Fatal("isolated cleanup fixture did not move Work Head")
+	}
+	record := localstate.Worktree{
+		TaskID: taskID, Actor: actor, Path: worktreePath, Branch: branch,
+		Base: base, Head: head, Dirty: false,
+	}
+	localProject := localstate.Project{
+		GenesisCommit: base, Identity: localstate.Identity{Keys: map[string]localstate.Key{}},
+		MinimumCheckpoint: localstate.Checkpoint{
+			Commit: base, StateDigest: "sha256:" + strings.Repeat("b", 64),
+		},
+		PendingOperations: map[string]localstate.PendingOperation{}, Remote: localstate.Remote{},
+		RepoInstances: []localstate.RepoInstance{}, RootFingerprint: "SHA256:test",
+		Worktrees: map[string]localstate.Worktree{taskID: record},
+	}
+	local := localstate.New()
+	local.Projects[projectID] = localProject
+	if err := store.Save(local); err != nil {
+		t.Fatal(err)
+	}
+	project := &projectContext{
+		Runner: runner, Store: store, LocalProject: localProject,
+		Verified: &verifier.Result{
+			ObjectFormat: objectFormat,
+			State:        &state.State{Project: state.Project{ID: projectID}},
+		},
+	}
+	if workRemovalSafe(state.TaskState{Phase: "active", Base: base}, record, head) ||
+		workRemovalSafe(state.TaskState{Phase: "ready"}, record, head) ||
+		!workRemovalSafe(state.TaskState{Phase: "cancelled"}, record, head) {
+		t.Fatal("work remove safety did not distinguish unreachable active/ready work from terminal work")
+	}
+	cleanup := cleanupManagedWork(ctx, project, taskID, record, head)
+	if cleanup.Err != nil || !cleanup.WorktreeRemoved ||
+		!cleanup.LocalRefRemoved || !cleanup.RegistryRemoved {
+		t.Fatalf("terminal changed-head cleanup failed: %#v", cleanup)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("terminal cleanup retained worktree: %v", err)
+	}
+	if _, err := runner.Resolve(ctx, branch); err == nil {
+		t.Fatalf("terminal cleanup retained exact Work Ref %s", branch)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := loaded.Projects[projectID].Worktrees[taskID]; exists {
+		t.Fatalf("terminal cleanup retained registry: %#v", loaded.Projects[projectID].Worktrees)
+	}
+}
+
+func TestHasUnresolvedPending(t *testing.T) {
+	for _, status := range []string{
+		"prepared", "signed", "push-unknown", "published", "reconciled",
+	} {
+		t.Run(status, func(t *testing.T) {
+			project := &projectContext{LocalProject: localstate.Project{
+				PendingOperations: map[string]localstate.PendingOperation{
+					"OPR-TEST": {Status: status},
+				},
+			}}
+			if !hasUnresolvedPending(project) {
+				t.Fatal("unresolved pending operation was ignored")
+			}
+		})
+	}
+	for _, status := range []string{"failed"} {
+		t.Run(status, func(t *testing.T) {
+			project := &projectContext{LocalProject: localstate.Project{
+				PendingOperations: map[string]localstate.PendingOperation{
+					"OPR-TEST": {Status: status},
+				},
+			}}
+			if hasUnresolvedPending(project) {
+				t.Fatal("terminal pending record blocked action discovery")
+			}
+		})
+	}
 }

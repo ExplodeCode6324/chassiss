@@ -22,9 +22,13 @@
 | Role credential 分发 | Agent 本地生成 Ed25519 key 和 proof-of-possession Grant Request；Root 离线审批/签名 | Root 不接触 Agent private key，Grant 内容显式可审计 |
 | Reviewer/Owner 由 role 名称表达 | Review 由 capability 与签名 Report 表达；Owner Apply 是受限 Action | 协议身份不依赖 profile 名称，人工接管仍受 State 与 whitelist 约束 |
 
-这些变化是语义重写，不提供自动 import、dual-write 或 silent upgrade。旧项目应
-先做只读导出，再由 Master 为新 v1 Project 明确创建 Architecture、Taskbook、
-Root trust anchor 和 Genesis。
+这些变化是语义重写，不提供 dual-write 或 silent upgrade。已有 Git 项目可以
+使用显式 source bootstrap：Master 固定 full source commit，CLI 把 exact
+ordinary snapshot 导入新的零 parent Project，旧 commit/tree 和人工整理摘要
+写入 protected `docs/chassiss/onboarding/source-history.md` 并由 compact State
+anchor 绑定。旧 commits 不成为 CHASSISS Transition。Root 签发
+`architecture.establish` Grant 后，Agent 审计并建立首份 Architecture，再打开
+第一轮 Taskbook。
 
 ## 3. 当前实现选择
 
@@ -42,6 +46,9 @@ Root trust anchor 和 Genesis。
   checkout，使子进程 `chassiss verify` 看到正确上下文。
 - 通用 Skill 只调用公开 CLI，不解析 State/Git；捆绑 macOS/Linux
   arm64/amd64 静态 CLI，并由 launcher 校验 manifest digest。
+- `bootstrap` 只读导入 full source commit 的普通 blobs，拒绝 protected
+  collision、submodule 与逃逸 symlink；不复制 source `.git`、refs 或旧
+  Authority。
 
 ## 4. 已知 lock-candidate 差距
 
@@ -77,7 +84,22 @@ Root trust anchor 和 Genesis。
 7. **协议未锁版。** `docs/` 状态仍是“待 Master 复核”，未生成正式锁版 manifest，
    也未冻结 fixture。实现不能先于规范被宣称为正式 v1。
 
-## 5. 关闭差距的验收证据
+## 5. RC10 Architecture 更新差异
+
+RC9 的“有活动 Taskbook 一律禁止 Architecture update”被确认是过度约束。RC10
+没有放宽或重定义既有 `architecture.updated`，而是新增
+`architecture.updated-compatible`：仅当全部 Task 为
+`ready|closed|cancelled|superseded`，且 exact active Taskbook 可以由候选
+Architecture 完整解析时成立。blocked-ready 可通过，blocked-active 与所有
+`active|submitted|approved` 一样返回 `CHS_TASKBOOK_NOT_QUIESCENT`。
+
+该 Action 精确绑定 Architecture/Taskbook blobs，文件白名单仍只有 State 与
+Architecture；它不是 Architecture+Taskbook compound update。历史
+`architecture.updated`、已经冻结的 Task Contract 与既有签名 Transition 均按原
+schema/reducer 解释。CAS retry 只容许经重新验证的纯 State/Authority drift；
+contract、Task phase 或 ordinary tree 漂移 fail closed。
+
+## 6. 关闭差距的验收证据
 
 正式 lock 前至少需要：
 

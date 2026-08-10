@@ -44,14 +44,23 @@ type AttemptFailureIndex struct {
 }
 
 type Project struct {
-	Architecture BlobRef      `json:"architecture"`
+	Architecture *BlobRef     `json:"architecture"`
 	ID           string       `json:"id"`
+	Source       *SourceRef   `json:"source,omitempty"`
 	Taskbook     *TaskbookRef `json:"taskbook"`
 }
 
 type BlobRef struct {
 	BlobOID string `json:"blob_oid"`
 	Path    string `json:"path"`
+}
+
+type SourceRef struct {
+	Commit       string `json:"commit"`
+	HistoryBlob  string `json:"history_blob"`
+	HistoryPath  string `json:"history_path"`
+	ObjectFormat string `json:"object_format"`
+	Tree         string `json:"tree"`
 }
 
 type TaskbookRef struct {

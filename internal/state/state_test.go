@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -67,6 +68,215 @@ func TestSparseTaskValidation(t *testing.T) {
 		if err := value.Validate("sha1"); err == nil {
 			t.Errorf("fixture %d unexpectedly passed", index)
 		}
+	}
+}
+
+func compatibleArchitectureFixture(
+	t *testing.T,
+	tasks map[string]TaskState,
+) (*State, protocol.Operation, protocol.ExecutionEvidence, ReduceFacts) {
+	t.Helper()
+	architectureBlob := strings.Repeat("a", 40)
+	taskbookBlob := strings.Repeat("b", 40)
+	parentOID := strings.Repeat("8", 40)
+	parent := &State{
+		Schema: protocol.StateSchema, Protocol: protocol.ProtocolID,
+		Project: Project{
+			ID:           "PRJ-COMPATIBLE",
+			Architecture: &BlobRef{Path: "docs/architecture.yaml", BlobOID: architectureBlob},
+			Taskbook:     &TaskbookRef{Path: "docs/taskbook.yaml", BlobOID: taskbookBlob, ID: "TASKBOOK-001"},
+		},
+		Authority: Authority{
+			Root: Root{KeyID: "KEY-ROOT-01", PublicKey: publicKey(t)},
+			Grants: map[string]Grant{"GRT-ARCHITECT-01": {
+				Actor: "architect", KeyID: "KEY-ARCHITECT-01", PublicKey: publicKey(t),
+				Capabilities: []string{"architecture.update"},
+				Scope:        Scope{Tasks: []string{"*"}, Resources: []string{"*"}},
+				Limits:       Limits{Mode: "unbounded"},
+			}},
+		},
+		Tasks: tasks,
+	}
+	operation := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-91ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.updated-compatible", Project: parent.Project.ID,
+		Authority: "grant:GRT-ARCHITECT-01", Target: "ARCHITECTURE-001",
+		Preconditions: map[string]any{
+			"all_tasks_quiescent": true, "architecture_blob": architectureBlob,
+			"taskbook_blob": taskbookBlob,
+		},
+		Payload: map[string]any{"candidate_blob": strings.Repeat("c", 40), "reason": "compatible update"},
+	}
+	digest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := protocol.ExecutionEvidence{
+		Schema: protocol.EvidenceSchema, OperationDigest: digest,
+		Action: operation.Action, Attempt: 1, Parent: &parentOID,
+		Facts: map[string]any{
+			"new_blob": strings.Repeat("c", 40), "old_blob": architectureBlob,
+			"semantic_diff": map[string]any{}, "taskbook_blob": taskbookBlob,
+		},
+	}
+	return parent, operation, evidence, ReduceFacts{
+		ObjectFormat: "sha1", ParentCommit: parentOID,
+		TargetResources: []string{"module:core"},
+	}
+}
+
+func inFlightTaskFixture(phase string, blocked bool) TaskState {
+	task := TaskState{
+		Phase: phase, Actor: "builder", Base: strings.Repeat("d", 40),
+		Contract: &Contract{
+			ArchitectureBlob: strings.Repeat("a", 40),
+			TaskbookBlob:     strings.Repeat("b", 40),
+		},
+	}
+	if blocked {
+		value := true
+		task.Blocked = &value
+	}
+	if phase == "submitted" || phase == "approved" {
+		task.Attempt = &Attempt{
+			Head: strings.Repeat("e", 40), EvidenceDigest: "sha256:" + strings.Repeat("1", 64),
+			SubmitterKeyFingerprint: "SHA256:submitter",
+		}
+	}
+	if phase == "approved" {
+		task.Review = &Review{
+			CandidateTree: strings.Repeat("f", 40), ContextDigest: "sha256:" + strings.Repeat("2", 64),
+			KeyFingerprint: "SHA256:reviewer", KeyID: "KEY-REVIEWER-01",
+			ReportDigest: "sha256:" + strings.Repeat("3", 64), ReviewMain: strings.Repeat("9", 40),
+			Reviewer: "reviewer",
+		}
+	}
+	return task
+}
+
+func TestCompatibleArchitectureReducerQuiescenceAndBinding(t *testing.T) {
+	blocked := true
+	quiescent := map[string]TaskState{
+		"TASK-001": {Phase: "ready", Blocked: &blocked},
+		"TASK-002": {Phase: "closed"},
+		"TASK-003": {Phase: "cancelled"},
+		"TASK-004": {Phase: "superseded"},
+	}
+	parent, operation, evidence, facts := compatibleArchitectureFixture(t, quiescent)
+	next, err := Reduce(parent, operation, evidence, facts)
+	if err != nil {
+		t.Fatalf("quiescent compatible update rejected: %v", err)
+	}
+	if next.Project.Architecture.BlobOID != strings.Repeat("c", 40) ||
+		next.Project.Taskbook.BlobOID != parent.Project.Taskbook.BlobOID ||
+		!reflect.DeepEqual(next.Tasks, parent.Tasks) {
+		t.Fatalf("compatible update changed more than Architecture: %#v", next)
+	}
+
+	for _, test := range []struct {
+		name    string
+		phase   string
+		blocked bool
+	}{
+		{name: "active", phase: "active"},
+		{name: "submitted", phase: "submitted"},
+		{name: "approved", phase: "approved"},
+		{name: "blocked-active", phase: "active", blocked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent, operation, evidence, facts := compatibleArchitectureFixture(t, map[string]TaskState{
+				"TASK-001": inFlightTaskFixture(test.phase, test.blocked),
+			})
+			if _, err := Reduce(parent, operation, evidence, facts); err == nil ||
+				!strings.Contains(err.Error(), protocol.ErrTaskbookNotQuiescent) {
+				t.Fatalf("phase %s was not rejected uniformly: %v", test.phase, err)
+			}
+		})
+	}
+
+	parent, operation, evidence, facts = compatibleArchitectureFixture(t, map[string]TaskState{
+		"TASK-001": {Phase: "ready"},
+	})
+	operation.Preconditions["taskbook_blob"] = strings.Repeat("7", 40)
+	digest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.OperationDigest = digest
+	if _, err := Reduce(parent, operation, evidence, facts); err == nil ||
+		!strings.Contains(err.Error(), protocol.ErrTaskbookStale) {
+		t.Fatalf("stale Taskbook precondition was not rejected: %v", err)
+	}
+
+	parent, operation, evidence, facts = compatibleArchitectureFixture(t, map[string]TaskState{
+		"TASK-001": {Phase: "ready"},
+	})
+	evidence.Facts["taskbook_blob"] = strings.Repeat("7", 40)
+	if _, err := Reduce(parent, operation, evidence, facts); err == nil ||
+		!strings.Contains(err.Error(), protocol.ErrTaskbookStale) {
+		t.Fatalf("stale Taskbook evidence was not rejected: %v", err)
+	}
+}
+
+func TestBootstrapReducerEstablishesFirstArchitecture(t *testing.T) {
+	rootPublic := publicKey(t)
+	agentPublic := publicKey(t)
+	sourceCommit := strings.Repeat("1", 40)
+	sourceTree := strings.Repeat("2", 40)
+	historyBlob := strings.Repeat("3", 40)
+	bootstrap := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-01BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "project.bootstrap", Project: "PRJ-BOOTSTRAP",
+		Authority: "root:KEY-ROOT-BOOTSTRAP", Target: "PRJ-BOOTSTRAP",
+		Preconditions: map[string]any{},
+		Payload: map[string]any{
+			"project_id": "PRJ-BOOTSTRAP", "root_key_id": "KEY-ROOT-BOOTSTRAP",
+			"root_public_key": rootPublic, "source_commit": sourceCommit,
+			"source_history_blob": historyBlob, "source_object_format": "sha1",
+			"source_tree": sourceTree,
+		},
+	}
+	current, err := Reduce(nil, bootstrap, evidenceFor(t, bootstrap, nil, map[string]any{
+		"initial_tree": strings.Repeat("4", 40), "source_commit": sourceCommit,
+		"source_history_blob": historyBlob, "source_tree": sourceTree,
+	}), ReduceFacts{ObjectFormat: "sha1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Project.Architecture != nil || current.Project.Source == nil ||
+		current.Project.Source.Commit != sourceCommit {
+		t.Fatalf("unexpected bootstrap projection: %#v", current.Project)
+	}
+	grant := Grant{
+		Actor: "architect", Capabilities: []string{"architecture.establish"},
+		KeyID: "KEY-ARCHITECT-01", Limits: Limits{Mode: "unbounded"},
+		PublicKey: agentPublic, Scope: Scope{Tasks: []string{"*"}, Resources: []string{"*"}},
+	}
+	current = reduceStep(t, current, protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-11BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "authority.grant-added", Project: "PRJ-BOOTSTRAP",
+		Authority: "root:KEY-ROOT-BOOTSTRAP", Target: "GRT-ARCHITECT-01",
+		Preconditions: map[string]any{"grant_absent": true, "root_key_id": "KEY-ROOT-BOOTSTRAP"},
+		Payload: map[string]any{
+			"grant": toMap(t, grant), "grant_id": "GRT-ARCHITECT-01", "request_digest": nil,
+		},
+	}, map[string]any{}, ReduceFacts{})
+	architectureBlob := strings.Repeat("5", 40)
+	current = reduceStep(t, current, protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-21BRZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.established", Project: "PRJ-BOOTSTRAP",
+		Authority: "grant:GRT-ARCHITECT-01", Target: "ARCHITECTURE-001",
+		Preconditions: map[string]any{"architecture": nil, "taskbook": nil},
+		Payload: map[string]any{
+			"candidate_blob": architectureBlob, "reason": "audited source",
+		},
+	}, map[string]any{"new_blob": architectureBlob}, ReduceFacts{
+		TargetResources: []string{"module:root"}, RequireGlobalScope: true,
+	})
+	if current.Project.Architecture == nil ||
+		current.Project.Architecture.BlobOID != architectureBlob ||
+		current.Project.Source == nil || current.Project.Source.Commit != sourceCommit {
+		t.Fatalf("Architecture establish lost bootstrap facts: %#v", current.Project)
 	}
 }
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,21 +16,29 @@ import (
 )
 
 type projectContext struct {
-	RepoRoot     string
-	Runner       gitstore.Runner
-	Store        localstate.Store
-	Local        *localstate.State
-	LocalProject localstate.Project
-	Verified     *verifier.Result
-	Identity     *IdentityBody
+	InvocationRoot string
+	RepoRoot       string
+	Runner         gitstore.Runner
+	Store          localstate.Store
+	Local          *localstate.State
+	LocalProject   localstate.Project
+	Verified       *verifier.Result
+	Identity       *IdentityBody
+}
+
+type projectLocation struct {
+	owner        string
+	projectID    string
+	localProject localstate.Project
+	repoRoot     string
+	managed      bool
 }
 
 func loadProject(ctx context.Context, target string, full bool) (*projectContext, error) {
-	repoRoot, err := repositoryRoot(ctx)
+	invocationRoot, err := repositoryRoot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	runner := gitstore.New(repoRoot)
 	store, err := localstate.OpenDefault()
 	if err != nil {
 		return nil, err
@@ -38,19 +47,14 @@ func loadProject(ctx context.Context, target string, full bool) (*projectContext
 	if err != nil {
 		return nil, err
 	}
-	var localProject localstate.Project
-	var projectID string
-	for id, candidate := range local.Projects {
-		for _, instance := range candidate.RepoInstances {
-			if samePath(instance.RepoPath, repoRoot) {
-				projectID, localProject = id, candidate
-				break
-			}
-		}
+	projectID, localProject, repoRoot, err := resolveProjectLocation(ctx, local, invocationRoot)
+	if err != nil {
+		return nil, err
 	}
 	if projectID == "" {
 		return nil, protocol.NewError(protocol.ErrProjectNotFound, protocol.CategoryLocal, "Current repository is not a registered CHASSISS Project.")
 	}
+	runner := gitstore.New(repoRoot)
 	if target == "" {
 		target = "refs/heads/main"
 	}
@@ -62,11 +66,86 @@ func loadProject(ctx context.Context, target string, full bool) (*projectContext
 		return nil, err
 	}
 	context := &projectContext{
-		RepoRoot: repoRoot, Runner: runner, Store: store, Local: local,
+		InvocationRoot: invocationRoot,
+		RepoRoot:       repoRoot, Runner: runner, Store: store, Local: local,
 		LocalProject: localProject, Verified: verified,
 	}
 	context.Identity = discoverIdentity(verified.State, localProject)
 	return context, nil
+}
+
+func resolveProjectLocation(
+	ctx context.Context,
+	local *localstate.State,
+	invocationRoot string,
+) (string, localstate.Project, string, error) {
+	matches := make([]projectLocation, 0)
+	for id, candidate := range local.Projects {
+		for _, instance := range candidate.RepoInstances {
+			if samePath(instance.RepoPath, invocationRoot) {
+				matches = append(matches, projectLocation{
+					owner:     id + ":repo:" + filepath.Clean(instance.RepoPath),
+					projectID: id, localProject: candidate, repoRoot: instance.RepoPath,
+				})
+			}
+		}
+		for taskID, worktree := range candidate.Worktrees {
+			if samePath(worktree.Path, invocationRoot) {
+				matches = append(matches, projectLocation{
+					owner:     id + ":worktree:" + taskID + ":" + filepath.Clean(worktree.Path),
+					projectID: id, localProject: candidate, managed: true,
+				})
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return "", localstate.Project{}, "", nil
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].owner < matches[j].owner })
+	if len(matches) != 1 {
+		owners := make([]string, len(matches))
+		for index := range matches {
+			owners[index] = matches[index].owner
+		}
+		failure := protocol.NewError(
+			protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+			"Current repository path has multiple registered Project owners.",
+		)
+		failure.Details["owners"] = owners
+		return "", localstate.Project{}, "", failure
+	}
+	selected := matches[0]
+	if !selected.managed {
+		return selected.projectID, selected.localProject, selected.repoRoot, nil
+	}
+	commonDir, err := repositoryCommonDir(ctx, invocationRoot)
+	if err != nil {
+		return "", localstate.Project{}, "", protocol.WrapError(
+			protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+			"Managed worktree Git ownership cannot be resolved.", err,
+		)
+	}
+	owners := make([]localstate.RepoInstance, 0)
+	for _, instance := range selected.localProject.RepoInstances {
+		if samePath(instance.GitDir, commonDir) {
+			owners = append(owners, instance)
+		}
+	}
+	if len(owners) != 1 {
+		paths := make([]string, len(owners))
+		for index := range owners {
+			paths[index] = filepath.Clean(owners[index].RepoPath)
+		}
+		sort.Strings(paths)
+		failure := protocol.NewError(
+			protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+			"Managed worktree does not have exactly one registered repository owner.",
+		)
+		failure.Details["git_common_dir"] = commonDir
+		failure.Details["owners"] = paths
+		return "", localstate.Project{}, "", failure
+	}
+	return selected.projectID, selected.localProject, owners[0].RepoPath, nil
 }
 
 func repositoryRoot(ctx context.Context) (string, error) {
@@ -77,6 +156,133 @@ func repositoryRoot(ctx context.Context) (string, error) {
 	}
 	root := filepath.Clean(stringTrimSpace(result.Stdout))
 	return root, nil
+}
+
+func repositoryCommonDir(ctx context.Context, repoRoot string) (string, error) {
+	result, err := gitstore.New(repoRoot).Run(ctx, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	commonDir := filepath.Clean(stringTrimSpace(result.Stdout))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repoRoot, commonDir)
+	}
+	return filepath.Abs(commonDir)
+}
+
+func requireOutsideProject(project *projectContext, outputs ...string) error {
+	roots := projectBoundaryRoots(project.LocalProject)
+	if project.InvocationRoot != "" {
+		roots = append(roots, project.InvocationRoot)
+	}
+	return requireOutsideRoots(roots, outputs...)
+}
+
+func requireOutsideRegisteredProject(project localstate.Project, outputs ...string) error {
+	return requireOutsideRoots(projectBoundaryRoots(project), outputs...)
+}
+
+func projectBoundaryRoots(project localstate.Project) []string {
+	roots := make([]string, 0, len(project.RepoInstances)+len(project.Worktrees))
+	for _, instance := range project.RepoInstances {
+		roots = append(roots, instance.RepoPath)
+	}
+	for _, worktree := range project.Worktrees {
+		roots = append(roots, worktree.Path)
+	}
+	return roots
+}
+
+func requireOutsideRoots(roots []string, outputs ...string) error {
+	canonicalRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		canonical, err := canonicalPath(root)
+		if err != nil {
+			return protocol.WrapError(
+				protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+				"Registered Project boundary cannot be safely resolved.", err,
+			)
+		}
+		canonicalRoots = append(canonicalRoots, canonical)
+	}
+	for _, output := range outputs {
+		if output == "" {
+			continue
+		}
+		canonicalOutput, err := canonicalPath(output)
+		if err != nil {
+			return protocol.WrapError(
+				protocol.ErrScopeViolation, protocol.CategoryLocal,
+				"Output path cannot be safely resolved outside the Project.", err,
+			)
+		}
+		for _, root := range canonicalRoots {
+			contained, err := pathContainedBy(root, canonicalOutput)
+			if err != nil {
+				return protocol.WrapError(
+					protocol.ErrScopeViolation, protocol.CategoryLocal,
+					"Output path cannot be safely compared with the Project boundary.", err,
+				)
+			}
+			if contained {
+				failure := protocol.NewError(
+					protocol.ErrScopeViolation, protocol.CategoryLocal,
+					"Output path must be outside every registered Project and managed Task worktree.",
+				)
+				failure.Details["output"] = canonicalOutput
+				failure.Details["project_boundary"] = root
+				return failure
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := filepath.Clean(absolute)
+	suffix := make([]string, 0)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(resolved) {
+				resolved, err = filepath.Abs(resolved)
+				if err != nil {
+					return "", err
+				}
+			}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", os.ErrNotExist
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathContainedBy(root, target string) (bool, error) {
+	if !strings.EqualFold(filepath.VolumeName(root), filepath.VolumeName(target)) {
+		return false, nil
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false, err
+	}
+	return relative == "." ||
+		(relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func discoverIdentity(shared *state.State, local localstate.Project) *IdentityBody {
@@ -171,13 +377,18 @@ func projectEnvelope(command string, context *projectContext) Envelope {
 		ID: verified.State.Project.ID, Protocol: protocol.ProtocolID,
 		RootFingerprint: verified.RootFingerprint,
 	}
+	var architectureBlob *string
+	if verified.State.Project.Architecture != nil {
+		value := verified.State.Project.Architecture.BlobOID
+		architectureBlob = &value
+	}
 	var taskbookBlob *string
 	if verified.State.Project.Taskbook != nil {
 		value := verified.State.Project.Taskbook.BlobOID
 		taskbookBlob = &value
 	}
 	envelope.Snapshot = &SnapshotBody{
-		ArchitectureBlob: verified.State.Project.Architecture.BlobOID,
+		ArchitectureBlob: architectureBlob,
 		MainCommit:       verified.Head, Offline: false, StateDigest: verified.StateDigest,
 		TaskbookBlob: taskbookBlob, Trust: "verified",
 	}
@@ -200,6 +411,50 @@ func samePath(left, right string) bool {
 		rightAbs = rightEval
 	}
 	return leftAbs == rightAbs
+}
+
+func advanceCheckpoint(
+	ctx context.Context,
+	runner gitstore.Runner,
+	project *localstate.Project,
+	repoRoot string,
+	verified *verifier.Result,
+) error {
+	current := project.MinimumCheckpoint
+	if current.Commit == verified.Head {
+		if current.StateDigest != verified.StateDigest {
+			return protocol.NewError(
+				protocol.ErrLocalStateCorrupt, protocol.CategoryLocal,
+				"Local checkpoint digest does not match the verified commit.",
+			)
+		}
+	} else {
+		ancestor, err := runner.IsAncestor(ctx, current.Commit, verified.Head)
+		if err != nil {
+			return protocol.WrapError(
+				protocol.ErrMainlineRollback, protocol.CategoryTrust,
+				"Cannot prove that the verified checkpoint advances local trust.", err,
+			)
+		}
+		if !ancestor {
+			failure := protocol.NewError(
+				protocol.ErrMainlineRollback, protocol.CategoryTrust,
+				"Refusing to move the local minimum checkpoint backward or sideways.",
+			)
+			failure.CurrentHead = verified.Head
+			failure.Details["minimum_checkpoint"] = current.Commit
+			return failure
+		}
+		project.MinimumCheckpoint = localstate.Checkpoint{
+			Commit: verified.Head, StateDigest: verified.StateDigest,
+		}
+	}
+	for index := range project.RepoInstances {
+		if samePath(project.RepoInstances[index].RepoPath, repoRoot) {
+			project.RepoInstances[index].LastVerifiedHead = verified.Head
+		}
+	}
+	return nil
 }
 
 func stringTrimSpace(value []byte) string {

@@ -225,8 +225,9 @@ config:<key>
 ```
 
 Resource key 使用小写 ASCII 字母、数字和单个 `-` 分隔。Resource ID 在
-Project history 中不复用。`architecture.updated` 可以增加、修改或删除当前
-Resource；旧语义由历史 Architecture blob 保留，删除的 ID 后续不得复用。
+Project history 中不复用。`architecture.updated` 与
+`architecture.updated-compatible` 可以增加、修改或删除当前 Resource；旧语义
+由历史 Architecture blob 保留，删除的 ID 后续不得复用。
 
 ### 7.2 Module View
 
@@ -522,18 +523,64 @@ R(A) intersects W(B)
 active/submitted/approved Task 即使 blocked 也继续占用资源。ready（包括
 blocked ready）、closed、cancelled、superseded 不占用。
 
-## 15. Architecture update
+## 15. Initial Architecture establish
 
-`architecture.updated` 必须：
+已有项目的 `project.bootstrap` 可以暂时令 Architecture 为 null。Root 审核
+并发布 `architecture.establish` Grant 后，Architecture Agent 从项目外候选执行
+`architecture.established`：
 
-1. 当前没有活动 Taskbook；
-2. 接受 source repo 外候选 `architecture.yaml`；
-3. 验证 YAML subset、closed schema、Resource Graph、paths 和 stable IDs；
-4. 计算 canonical Architecture Semantic Diff；
-5. 确认调用 Grant 具有 `architecture.update`，且所有 added/updated/removed
+1. parent 必须是 source bootstrap，Architecture/Taskbook 均为 null；
+2. 候选必须通过完整 YAML、closed schema、Resource Graph 与 path 校验；
+3. Operation target 必须等于候选的 Architecture ID；
+4. Grant 必须包含 `architecture.establish`、全局 Task scope 和全局 Resource
+   scope；
+5. exact candidate blob 写入 `docs/architecture.yaml` 和 State；
+6. Source anchor 与 `docs/chassiss/onboarding/source-history.md` 保持不变；
+7. Transition 完成后才允许 `taskbook.opened`。
+
+CLI 的机械校验不证明 Module/API/Schema/Dependency/Config 描述在语义上准确；
+首次 Architecture 必须由人类或独立 Reviewer 对照 adopted source snapshot
+复核。
+
+## 16. Architecture update
+
+Architecture 更新保留两个不可互换的历史 Action：
+
+- `architecture.updated` 是既有合同，只允许 `project.taskbook=null`；其
+  Preconditions exact 字段为 `architecture_blob`、`taskbook=null`，Evidence
+  facts exact 字段为 `old_blob`、`new_blob`、`semantic_diff`。
+- `architecture.updated-compatible` 是 additive RC10 Action，只允许活动
+  Taskbook 存在；其 Preconditions exact 字段为
+  `all_tasks_quiescent=true`、`architecture_blob`、`taskbook_blob`，Evidence facts
+  exact 字段为 `old_blob`、`new_blob`、`semantic_diff`、`taskbook_blob`。
+
+两种 Action 都必须：
+
+1. 接受 source repo 外候选 `architecture.yaml`；
+2. 验证 YAML subset、closed schema、Resource Graph、paths 和 stable IDs；
+3. 计算 canonical Architecture Semantic Diff；
+4. 确认调用 Grant 具有 `architecture.update`，且所有 added/updated/removed
    Resources 都匹配 `scope.resources`；
-6. 同时写入新 Architecture blob 与 State projection；
+5. 同时写入新 Architecture blob 与 State projection；
+6. 只允许 `docs/architecture.yaml` 与 `.chassiss/state.json` 变化；
 7. 生成签名 Transition 并 CAS push。
+
+兼容更新还必须满足以下全部条件：
+
+1. 每个 Task phase 都是 `ready|closed|cancelled|superseded`；blocked-ready 仍是
+   静默，blocked-active 仍是 in-flight；
+2. candidate Architecture 能完整解析 exact active Taskbook blob，包括所有
+   Resource references、path coverage、Task DAG、Workflow 与 Check 合同；
+3. Taskbook blob、Taskbook ID、Task projection 和普通项目文件保持 exact；只有
+   Architecture blob 与 State 中对应投影改变；
+4. 已开始、提交或批准的 Task 继续由它在 start 时冻结的
+   Architecture/Taskbook blobs 验证，历史 Transition 继续按其原 Action schema
+   验证，不被 RC10 重新解释。
+
+Architecture candidate 文件与 `.chassiss.json` sidecar 写在项目外。sidecar 必须
+同时绑定 draft 时的 Project、Architecture blob 和 Taskbook blob（无活动
+Taskbook 时为 null）；任一 binding stale 都在选择 Authority 或创建 Operation
+之前拒绝，错误响应 `operation=null`，main 保持不变。
 
 Architecture Semantic Diff exact object：
 
@@ -554,7 +601,16 @@ Architecture Semantic Diff exact object：
 所有 Resource arrays 规范排序、去重。调用者修改 overview/principles 时，
 Grant `scope.resources` 必须包含 `*`。删除的 Resource ID 永不复用。
 
-## 16. Taskbook open/update
+兼容更新的 CAS retry 不是复合 Architecture+Taskbook 事务。若 latest main 仅有
+纯 State/Authority drift，CLI 可以在重验 quiescence 与 Taskbook compatibility
+后，用同一 Semantic Operation 生成下一 Evidence attempt。若 Architecture、
+Taskbook 或普通项目 tree 已变化，或者任何 Task 进入
+`active|submitted|approved`，必须分别以 stale、candidate conflict 或
+`CHS_TASKBOOK_NOT_QUIESCENT` fail closed；不得覆盖、合并、顺带更新 Taskbook，
+也不得更换 Operation ID。Architecture Transition 发布后才形成新的共享边界，
+因此调用方必须重新读取 Context，再单独起草任何 Taskbook update。
+
+## 17. Taskbook open/update
 
 `taskbook.opened` 只允许 `project.taskbook=null`。它接受一个 source repo 外
 候选，要求全新 Taskbook/Requirement/Constraint/Task IDs，使用 current
@@ -607,7 +663,7 @@ Taskbook Action scope：
 stale candidate 不自动 merge。CLI 必须返回 current Taskbook/Architecture blob
 和差异，由 Planner 重新生成候选。
 
-## 17. Taskbook completion 与 archive
+## 18. Taskbook completion 与 archive
 
 `taskbook.archived` 必须：
 
@@ -686,7 +742,7 @@ Report 当成对新成果的批准。`push-unknown` 仍必须先对账，不能�
 Workflow Check 的 fail/error 在签名或 push archive Transition 前终止命令，
 不改变 main、Taskbook 或 State。
 
-## 18. Frozen Contract
+## 19. Frozen Contract
 
 `task.started` 同时冻结当前 Taskbook 与 Architecture blob：
 
@@ -706,7 +762,7 @@ parse(frozen_architecture_blob)
 没有活动 Taskbook 时更新，因此正常工作流不会跨 Architecture version；双
 blob freeze 仍用于完整历史验证。
 
-## 19. Context retrieval
+## 20. Context retrieval
 
 普通 Task Context 只返回：
 

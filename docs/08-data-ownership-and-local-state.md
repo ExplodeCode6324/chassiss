@@ -51,7 +51,8 @@
 | 数据 | 位置/身份 |
 |---|---|
 | 当前状态 | `.chassiss/state.json` |
-| 当前 Architecture | `docs/architecture.yaml` |
+| 当前 Architecture | `docs/architecture.yaml`；source bootstrap 阶段可暂时不存在 |
+| 已有项目来源锚点 | State `project.source` + protected `docs/chassiss/onboarding/source-history.md` |
 | 当前工作流合同 | `docs/taskbook.yaml` |
 | 已验收工作流 | immutable Taskbook archive path |
 | Genesis 与 Action history | main first-parent commits |
@@ -63,6 +64,11 @@
 | Integration | signed double-parent main commit |
 | 被终止 Attempt | create-only Archive Ref + continuous exact-OID verification |
 | 项目成果 | normal Git tree |
+
+Source history document 可以包含 Master 整理的旧版本、架构决策、迁移和已知债务，
+但不得包含本地路径、credential 或 secret。旧 `.git`、旧 refs 和旧 commit
+objects 不复制到新 Project；source commit/tree 仅作为 Root 签名的非权威来源
+标识。
 
 ## 4. Git refs
 
@@ -387,7 +393,8 @@ environment secret
 可直接恢复 Authority 的 Credential
 ```
 
-Export 不是 State、Genesis、Operation/Evidence、Grant 或自动 import 包。
+Export 不是 State、Genesis、Operation/Evidence 或 Grant。`bootstrap` 必须直接
+读取 Master 指定的 exact source Git commit，不把 export 当成 Authority。
 
 ## 14. Backup
 

@@ -114,11 +114,13 @@ func cloneCommand(ctx context.Context, invocation invocation) (Envelope, error) 
 			if selected != "" {
 				current.Identity.SelectedKeyID = selected
 			}
+			if err := advanceCheckpoint(ctx, runner, &current, directory, verified); err != nil {
+				return err
+			}
 			current.RepoInstances = append(current.RepoInstances, localstate.RepoInstance{
 				CreatedByCLI: true, GitDir: stringTrimSpace(gitDir.Stdout),
 				LastVerifiedHead: verified.Head, RepoPath: directory,
 			})
-			current.MinimumCheckpoint = localstate.Checkpoint{Commit: verified.Head, StateDigest: verified.StateDigest}
 			current.Remote = localstate.Remote{URL: remoteURL, URLFingerprint: protocol.DigestBytes([]byte(remoteURL))}
 			local.Projects[verified.State.Project.ID] = current
 			return nil
@@ -156,7 +158,35 @@ func syncCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 		return Envelope{}, err
 	}
 	if project.LocalProject.Remote.URL == "" {
-		return Envelope{}, protocol.NewError(protocol.ErrRemoteUnreachable, protocol.CategoryNetwork, "Project has no authoritative upstream.")
+		if invocation.Flags["all-work"] {
+			project.Verified, err = verifier.Verify(ctx, project.Runner, "refs/heads/main", verifier.Options{
+				ExpectedProject:         project.Verified.State.Project.ID,
+				ExpectedRootFingerprint: project.LocalProject.RootFingerprint,
+				MinimumCheckpoint:       project.LocalProject.MinimumCheckpoint.Commit,
+				Full:                    true,
+			})
+			if err != nil {
+				return Envelope{}, err
+			}
+		}
+		pruned := []string{}
+		if invocation.Flags["prune"] {
+			pruned, err = pruneTransitionRefs(ctx, project.Runner, project.Verified.Head)
+			if err != nil {
+				return Envelope{}, err
+			}
+		}
+		reconciliation, err := reconcileAndCheckpointPending(ctx, project, project.Verified)
+		if err != nil {
+			return Envelope{}, err
+		}
+		envelope := projectEnvelope("sync", project)
+		envelope.Result = map[string]any{
+			"advanced": false, "head": project.Verified.Head,
+			"pending_reconciliation": reconciliation, "pruned": pruned,
+			"remote": false,
+		}
+		return envelope, nil
 	}
 	if _, err := project.Runner.Run(ctx, "fetch", "--no-tags", "origin",
 		"+refs/heads/main:refs/remotes/origin/main",
@@ -206,34 +236,19 @@ func syncCommand(ctx context.Context, invocation invocation) (Envelope, error) {
 			return Envelope{}, err
 		}
 	}
-	if err := project.Store.Update(func(local *localstate.State) error {
-		value := local.Projects[remote.State.Project.ID]
-		value.MinimumCheckpoint = localstate.Checkpoint{Commit: remote.Head, StateDigest: remote.StateDigest}
-		for operationID, pending := range value.PendingOperations {
-			if pending.CandidateCommit == nil {
-				continue
-			}
-			if ancestor, _ := project.Runner.IsAncestor(ctx, *pending.CandidateCommit, remote.Head); ancestor {
-				delete(value.PendingOperations, operationID)
-			}
-		}
-		for index := range value.RepoInstances {
-			if samePath(value.RepoInstances[index].RepoPath, project.RepoRoot) {
-				value.RepoInstances[index].LastVerifiedHead = remote.Head
-			}
-		}
-		local.Projects[remote.State.Project.ID] = value
-		return nil
-	}); err != nil {
+	reconciliation, err := reconcileAndCheckpointPending(ctx, project, remote)
+	if err != nil {
 		return Envelope{}, err
 	}
 	envelope := projectEnvelope("sync", &projectContext{
-		RepoRoot: project.RepoRoot, Runner: project.Runner, Store: project.Store,
+		InvocationRoot: project.InvocationRoot,
+		RepoRoot:       project.RepoRoot, Runner: project.Runner, Store: project.Store,
 		Local: project.Local, LocalProject: project.LocalProject, Verified: remote,
 		Identity: discoverIdentity(remote.State, project.LocalProject),
 	})
 	envelope.Result = map[string]any{
-		"advanced": remote.Head != project.Verified.Head, "head": remote.Head, "pruned": pruned,
+		"advanced": remote.Head != project.Verified.Head, "head": remote.Head,
+		"pending_reconciliation": reconciliation, "pruned": pruned, "remote": true,
 	}
 	return envelope, nil
 }

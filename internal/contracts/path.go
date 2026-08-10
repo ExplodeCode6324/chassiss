@@ -10,9 +10,10 @@ import (
 )
 
 var protectedExact = map[string]struct{}{
-	".chassiss/state.json":   {},
-	"docs/architecture.yaml": {},
-	"docs/taskbook.yaml":     {},
+	".chassiss/state.json":                       {},
+	"docs/architecture.yaml":                     {},
+	"docs/chassiss/onboarding/source-history.md": {},
+	"docs/taskbook.yaml":                         {},
 }
 
 type PathScope struct {

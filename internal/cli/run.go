@@ -49,6 +49,8 @@ func dispatch(ctx context.Context, rt runtime, invocation invocation) (Envelope,
 		return helpCommand(invocation)
 	case "init":
 		return initCommand(ctx, invocation)
+	case "bootstrap":
+		return bootstrapCommand(ctx, invocation)
 	case "clone":
 		return cloneCommand(ctx, invocation)
 	case "sync":
@@ -67,7 +69,7 @@ func dispatch(ctx context.Context, rt runtime, invocation invocation) (Envelope,
 		return taskbookValidateCommand(ctx, invocation)
 	case "taskbook show", "taskbook draft", "taskbook diff", "taskbook open", "taskbook update", "taskbook archive",
 		"architecture show", "architecture draft", "architecture diff", "architecture requires",
-		"architecture required-by", "architecture impact", "architecture update":
+		"architecture required-by", "architecture impact", "architecture establish", "architecture update":
 		return contractCommand(ctx, invocation)
 	case "key generate", "key list", "key show", "key attach", "identity select", "key remove":
 		return keyCommand(ctx, invocation)

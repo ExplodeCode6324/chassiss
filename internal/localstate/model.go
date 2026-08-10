@@ -289,6 +289,49 @@ func decodeCanonical(data []byte, target any) error {
 	return decoder.Decode(target)
 }
 
+// canonicalizeLegacyPendingHTML recovers only the exact representation emitted
+// when encoding/json re-encoded an otherwise canonical RawMessage with its
+// historical default HTML escaping. State.Validate subsequently rechecks the
+// typed Operation/Evidence bindings and both recorded digests before the State
+// can be returned or persisted.
+func canonicalizeLegacyPendingHTML(state *State) bool {
+	recovered := false
+	for projectID, project := range state.Projects {
+		for operationID, pending := range project.PendingOperations {
+			semantic, semanticRecovered := canonicalizeLegacyHTMLRaw(pending.SemanticOperation)
+			evidence, evidenceRecovered := canonicalizeLegacyHTMLRaw(pending.CandidateEvidence)
+			if semanticRecovered {
+				pending.SemanticOperation = semantic
+			}
+			if evidenceRecovered {
+				pending.CandidateEvidence = evidence
+			}
+			if semanticRecovered || evidenceRecovered {
+				project.PendingOperations[operationID] = pending
+				recovered = true
+			}
+		}
+		state.Projects[projectID] = project
+	}
+	return recovered
+}
+
+func canonicalizeLegacyHTMLRaw(data json.RawMessage) (json.RawMessage, bool) {
+	value, err := protocol.ParseCanonicalInput(data)
+	if err != nil {
+		return data, false
+	}
+	canonical, err := protocol.CanonicalJSON(value)
+	if err != nil || bytes.Equal(canonical, data) {
+		return data, false
+	}
+	legacy, err := json.Marshal(json.RawMessage(canonical))
+	if err != nil || !bytes.Equal(legacy, data) {
+		return data, false
+	}
+	return json.RawMessage(append([]byte(nil), canonical...)), true
+}
+
 func corrupt(message string, cause error) *protocol.Error {
 	if cause == nil {
 		return protocol.NewError(protocol.ErrLocalStateCorrupt, protocol.CategoryLocal, message)

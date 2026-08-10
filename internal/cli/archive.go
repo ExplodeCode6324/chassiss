@@ -43,6 +43,9 @@ func taskbookArchiveCommand(ctx context.Context, invocation invocation) (Envelop
 		if output == "" {
 			return Envelope{}, usageError("taskbook archive --prepare requires --output")
 		}
+		if err := requireOutsideProject(project, output); err != nil {
+			return Envelope{}, err
+		}
 		template := workflow.NewClosureReportTemplate(project.Verified.Taskbook, phases)
 		data, err := protocol.CanonicalJSON(template)
 		if err != nil {

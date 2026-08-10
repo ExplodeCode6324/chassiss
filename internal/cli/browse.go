@@ -45,6 +45,7 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 	if err != nil {
 		return Envelope{}, err
 	}
+	offline := invocation.Flags["offline"]
 	result := map[string]any{
 		"architecture": project.Verified.Architecture,
 		"identity":     project.Identity,
@@ -77,6 +78,9 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 		}
 	}
 	if resourceID := invocation.Value("resource"); resourceID != "" {
+		if project.Verified.Architecture == nil {
+			return Envelope{}, protocol.NewError(protocol.ErrArchitectureNotEstablished, protocol.CategoryValidation, "Architecture is not established.")
+		}
 		resource, exists := project.Verified.Architecture.Resources()[resourceID]
 		if !exists {
 			return Envelope{}, protocol.NewError(protocol.ErrReferenceNotFound, protocol.CategoryValidation, "Architecture Resource does not exist.")
@@ -91,9 +95,160 @@ func contextCommand(ctx context.Context, invocation invocation) (Envelope, error
 		result = map[string]any{"section": section, "value": value}
 	}
 	envelope := projectEnvelope("context", project)
-	envelope.Snapshot.Offline = invocation.Flags["offline"]
+	envelope.Snapshot.Offline = offline
+	if !offline {
+		if len(invocation.Positionals) == 1 {
+			envelope.AvailableActions = taskContextActions(ctx, project, invocation.Positionals[0])
+		} else {
+			taskIDs := make([]string, 0, len(project.Verified.State.Tasks))
+			for taskID := range project.Verified.State.Tasks {
+				taskIDs = append(taskIDs, taskID)
+			}
+			sort.Strings(taskIDs)
+			for _, taskID := range taskIDs {
+				envelope.AvailableActions = append(
+					envelope.AvailableActions,
+					taskContextActions(ctx, project, taskID)...,
+				)
+			}
+		}
+	}
 	envelope.Result = result
 	return envelope, nil
+}
+
+func taskContextActions(ctx context.Context, project *projectContext, taskID string) []AvailableAction {
+	actions := []AvailableAction{}
+	if project.Identity == nil || hasUnresolvedPending(project) {
+		return actions
+	}
+	grant, exists := project.Verified.State.Authority.Grants[project.Identity.GrantID]
+	if !exists || grant.KeyID != project.Identity.KeyID {
+		return actions
+	}
+	resources, contract, err := taskResources(project, taskID)
+	if err != nil {
+		return actions
+	}
+	allows := func(capability string) bool {
+		return grantAllowsTaskAction(grant, capability, taskID, resources)
+	}
+	action := func(name, capability string, argv ...string) AvailableAction {
+		argv = append(
+			argv,
+			"--key", project.Identity.KeyID,
+			"--grant", project.Identity.GrantID,
+			"--json",
+		)
+		return AvailableAction{
+			Action: name, Argv: append([]string{"chassiss"}, argv...),
+			Capability: capability, Target: taskID,
+		}
+	}
+	runtimeTask := project.Verified.State.Tasks[taskID]
+	status, err := project.Runner.Run(
+		ctx, "status", "--porcelain=v1", "-z", "--untracked-files=no",
+	)
+	if err != nil || len(status.Stdout) != 0 {
+		return actions
+	}
+	if runtimeTask.Blocked != nil {
+		if *runtimeTask.Blocked && allows("task.resume") {
+			actions = append(actions, action(
+				"task.resumed", "task.resume", "task", "resume", taskID,
+			))
+		}
+		return actions
+	}
+	if runtimeTask.Phase == "ready" && taskAvailable(project, taskID) &&
+		allows("task.start") && grantWithinActiveTaskLimit(project, grant) {
+		actions = append(actions, action(
+			"task.started", "task.start", "task", "start", taskID,
+		))
+		return actions
+	}
+	if runtimeTask.Phase == "active" && grant.Actor == runtimeTask.Actor &&
+		allows("task.release") && verifyReleaseWorktree(ctx, project, taskID, runtimeTask) == nil {
+		actions = append(actions, action(
+			"task.released", "task.release", "task", "release", taskID,
+			"--reason", "release unchanged active work discovered by Context",
+		))
+		return actions
+	}
+	if runtimeTask.Phase != "approved" || runtimeTask.Blocked != nil ||
+		runtimeTask.Attempt == nil || runtimeTask.Review == nil ||
+		runtimeTask.Contract == nil || !allows("integration.apply") {
+		return actions
+	}
+	if _, _, err := integrationCandidate(ctx, project, taskID, runtimeTask, contract); err != nil {
+		return actions
+	}
+	actions = append(actions, action(
+		"integration.applied", "integration.apply", "integrate", taskID,
+	))
+	return actions
+}
+
+func grantWithinActiveTaskLimit(project *projectContext, grant state.Grant) bool {
+	if grant.Limits.MaxActiveTasks == nil {
+		return true
+	}
+	var active int64
+	for _, task := range project.Verified.State.Tasks {
+		if task.Actor == grant.Actor &&
+			(task.Phase == "active" || task.Phase == "submitted" || task.Phase == "approved") {
+			active++
+		}
+	}
+	return active < *grant.Limits.MaxActiveTasks
+}
+
+func grantAllowsTaskAction(grant state.Grant, capability, taskID string, resources []string) bool {
+	if !containsString(grant.Capabilities, capability) ||
+		!matchesTask(taskID, grant.Scope.Tasks) {
+		return false
+	}
+	for _, resource := range resources {
+		if !matchesResource(resource, grant.Scope.Resources) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasUnresolvedPending(project *projectContext) bool {
+	for _, pending := range project.LocalProject.PendingOperations {
+		if pending.Status != "failed" {
+			return true
+		}
+	}
+	return false
+}
+
+func requireNoUnresolvedPending(project *projectContext) error {
+	operations := make([]map[string]any, 0)
+	for operationID, pending := range project.LocalProject.PendingOperations {
+		if pending.Status == "failed" {
+			continue
+		}
+		operations = append(operations, map[string]any{
+			"operation_id": operationID,
+			"status":       pending.Status,
+		})
+	}
+	if len(operations) == 0 {
+		return nil
+	}
+	sort.Slice(operations, func(i, j int) bool {
+		return operations[i]["operation_id"].(string) < operations[j]["operation_id"].(string)
+	})
+	failure := protocol.NewError(
+		protocol.ErrPendingUnresolved, protocol.CategoryLocal,
+		"Resolve current pending Operations before starting another mutation.",
+	)
+	failure.Retryable = true
+	failure.Details["operations"] = operations
+	return failure
 }
 
 func logCommand(ctx context.Context, invocation invocation) (Envelope, error) {
@@ -183,7 +338,7 @@ func fileShowCommand(ctx context.Context, invocation invocation) (Envelope, erro
 		encoding, content = "base64", base64.StdEncoding.EncodeToString(data)
 	}
 	if output := invocation.Value("output"); output != "" {
-		if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+		if err := requireOutsideProject(project, output); err != nil {
 			return Envelope{}, err
 		}
 		if err := writeExternalFile(output, data); err != nil {
@@ -365,22 +520,6 @@ func taskAvailable(project *projectContext, taskID string) bool {
 		}
 	}
 	return true
-}
-
-func requireOutsideProject(root, output string) error {
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	outputAbs, err := filepath.Abs(output)
-	if err != nil {
-		return err
-	}
-	relative, err := filepath.Rel(rootAbs, outputAbs)
-	if err != nil || relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-		return protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryLocal, "Output path must be outside the managed Project worktree.")
-	}
-	return nil
 }
 
 func textualDiff(oldPath string, oldData []byte, newPath string, newData []byte) (string, error) {

@@ -123,6 +123,12 @@ cherry-pick 或 force-push。
 它删除 actor/base/contract，使 Task 回到 ready。存在实际工作时必须继续
 submit，或由授权者 cancel/supersede，不能用 release 隐藏工作。
 
+Transition 发布后，CLI 必须以 non-force 方式清理对应 managed worktree、
+exact local Work Ref 和本地 registry record，并逐项返回清理结果。本地清理
+失败不回滚已发布的 `task.released`；CLI 返回 `CHS_WARN_LOCAL_CLEANUP`，保留
+可核对 residue。对于旧版本留下的 released-ready residue，`work remove` 只在
+worktree clean 且实际 Head 等于本地 registry 冻结的 base 时允许恢复清理。
+
 Master 调度的临时 Agent 失败时不得先删除 worktree。Root 使用
 `attempt abandon` 把 `chassiss.attempt-failure/v1` 正文和 observed Work
 Head/tree 写入签名 Transition，只把轻量索引追加到 State，然后将 Task

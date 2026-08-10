@@ -1,7 +1,8 @@
 # Legacy migration and differences
 
-Legacy v0.x and current v1 are different protocols. There is no automatic
-migration, dual write, or silent upgrade. Major changes include:
+Legacy v0.x and current v1 are different protocols. There is no dual write,
+silent upgrade, or reinterpretation of old commits as Transitions. Major
+changes include:
 
 - `.chassis/` control data becomes signed Git Transitions plus minimal
   `.chassiss/state.json`;
@@ -14,17 +15,24 @@ migration, dual write, or silent upgrade. Major changes include:
 
 Recommended migration:
 
-1. freeze the legacy project and create a read-only export;
-2. have Master confirm the new Project ID, Root trust anchor, and initial
-   checkpoint;
-3. re-express durable structure as v1 Architecture;
-4. re-express the current round as a Taskbook, including `writes`, `affects`,
-   and Checks;
-5. create Genesis in a new directory with no history;
-6. have every Agent generate a new key and Grant Request;
-7. never copy legacy credentials, control events, or private/local State into
-   the new Git history.
+1. freeze the legacy project, pin a full source commit OID, and optionally
+   curate a history summary;
+2. have Master confirm the new Project ID and Root trust anchor;
+3. run `bootstrap --source ... --ref <full-oid>` in an empty directory to
+   import the exact ordinary snapshot;
+4. confirm that `docs/chassiss/onboarding/source-history.md` labels the old
+   commit/tree as non-authoritative;
+5. have every Agent generate a key and proof-of-possession Grant Request;
+6. have Root publish a global `architecture.establish` Grant;
+7. let the Architecture Agent audit, validate, and establish the first
+   Architecture;
+8. create the first Taskbook for new requirements, including `writes`,
+   `affects`, and Checks;
+9. never copy legacy credentials, control events, `.git`, or private/local
+   State into the new Git history.
+
+See [Existing project onboarding](13-existing-project-onboarding.md) for the
+complete workflow.
 
 See the [formal implementation-differences register](../12-implementation-differences.md)
 for the architecture mapping, implementation choices, and open gaps.
-

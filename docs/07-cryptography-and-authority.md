@@ -55,7 +55,7 @@ Root 是 Project trust anchor。Root private key：
 
 - 只在 Master 控制的 secret store、硬件设备或离线签发环境；
 - 不写入 repo、State、Grant Request 或回执；
-- 只用于 Genesis、Grant add/revoke 和紧急 supersede；
+- 只用于 Genesis/source bootstrap、Grant add/revoke 和紧急 supersede；
 - 不为普通 Agent Action 逐次签名。
 
 ### 3.2 Agent key
@@ -192,12 +192,14 @@ Grant 有效期判断。
 
 v1 不增加第二层 Transition signature。
 
-## 7. Genesis 与 trust bootstrap
+## 7. Genesis、source bootstrap 与 trust bootstrap
 
-Genesis 是零 parent commit，由其 State 声明的 Root public key 对应 private
-key 自签。
+`project.genesis` 和 `project.bootstrap` 都是零 parent commit，由其 State
+声明的 Root public key 对应 private key 自签。前者直接建立
+Architecture/Taskbook；后者只建立 exact source snapshot、compact source
+anchor 与 protected history document。
 
-自签只能证明 Genesis 内部一致，不能证明它是 Master 预期的 Project。首次
+自签只能证明初始 commit 内部一致，不能证明它是 Master 预期的 Project。首次
 clone 必须从受信渠道获得：
 
 ```text
@@ -211,6 +213,10 @@ CLI 只有同时验证 Project ID、Root fingerprint、checkpoint ancestry 和
 signature 后才建立可 mutation 的本地 trust anchor。
 
 缺少任一 out-of-band anchor 时只能使用显式 untrusted read-only 模式。
+
+Source bootstrap 的旧 commit/tree 标识由 Root 签名，但旧 commit 本身不获得
+CHASSISS Authority。bootstrap 阶段允许 Root 签发/撤销 Grant；首次
+Architecture 必须由 `architecture.establish` global Grant 签名建立。
 
 ## 8. Grant Request
 

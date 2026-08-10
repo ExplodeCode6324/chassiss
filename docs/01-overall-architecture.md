@@ -18,6 +18,7 @@ Git repository
 新 Agent 必须能独立验证：
 
 - Project Genesis 与 Root；
+- source bootstrap 及其非权威旧历史锚点（若 Project 由已有仓库接入）；
 - main first-parent Transition chain；
 - 当前 State；
 - 当前 Grant 与 Capability；
@@ -88,6 +89,17 @@ docs/architecture.yaml
 docs/taskbook.yaml
 docs/taskbooks/archive/<taskbook-id>.yaml
 ```
+
+由已有 Git 项目接入时，Root-only bootstrap 还生成：
+
+```text
+docs/chassiss/onboarding/source-history.md
+```
+
+该文件保存 source commit/tree 和人工整理的旧历史摘要，但旧 commits 不是
+CHASSISS Transition，也不进入权威 first-parent chain。文件由 bootstrap
+initial tree 与 State 中的 compact source anchor 绑定，后续作为 protected
+只读参考。
 
 `.chassiss/state.json` 是动态当前投影。`docs/architecture.yaml` 是跨工作流
 持续演进的当前架构合同。`docs/taskbook.yaml` 只表示当前一轮需求的活动
@@ -274,4 +286,5 @@ worktree registry 都是本地数据。
 - 不提供常驻调度器、Dashboard 或数据库；
 - 不提供多 Reviewer、Waiver、Root recovery 或 delegation；
 - 不对 token、费用、模型或 Provider receipt 形成共识；
-- 不自动迁移、导入、裁剪或重写历史。
+- 不静默迁移、裁剪或重写历史；显式 source bootstrap 只导入 exact ordinary
+  snapshot，旧 commits 始终是非权威参考。

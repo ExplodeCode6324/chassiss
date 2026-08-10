@@ -34,9 +34,11 @@ chassiss check TASK-001 --json
 chassiss submit TASK-001 --json
 ```
 
-Work Commit 使用 Task Actor 的 Ed25519 key 签名。CLI 只 stage 指定路径，检查
-symlink、protected path、frozen `writes`、linear parent chain 和 effective
-`max_changed_paths`。
+Work Commit 使用 frozen Task runtime 确定性解析出的 Task Actor Ed25519 key
+签名，不接受 `--key/--grant`，也不依赖全局 selected identity。CLI 只 stage
+指定路径，检查 symlink、protected path、frozen `writes`、linear parent chain
+和 effective `max_changed_paths`。并行 Agent 在后续 `submit` Transition 上显式
+传自己的 `--key/--grant`。
 
 `work diff` 把 untracked file 作为新增内容显示，并使用 disposable index
 计算，不改变 worktree 的真实 index。

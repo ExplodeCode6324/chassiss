@@ -48,6 +48,12 @@ func (op Operation) Validate() error {
 			return err
 		}
 	}
+	if op.Action == "architecture.established" || op.Action == "architecture.updated" ||
+		op.Action == "architecture.updated-compatible" {
+		if err := ValidateID(IDArchitecture, op.Target); err != nil {
+			return err
+		}
+	}
 	if err := exactObjectKeys(op.Payload, spec.PayloadFields); err != nil {
 		return fmt.Errorf("payload: %w", err)
 	}
@@ -67,9 +73,9 @@ func (evidence ExecutionEvidence) Validate(operation Operation, objectFormat str
 	if evidence.Attempt < 1 || evidence.Attempt > 3 {
 		return fmt.Errorf("evidence attempt must be in [1,3]")
 	}
-	if operation.Action == "project.genesis" {
+	if operation.Action == "project.genesis" || operation.Action == "project.bootstrap" {
 		if evidence.Parent != nil {
-			return fmt.Errorf("Genesis evidence parent must be null")
+			return fmt.Errorf("Project bootstrap evidence parent must be null")
 		}
 	} else {
 		if evidence.Parent == nil || ValidateOID(*evidence.Parent, objectFormat) != nil {

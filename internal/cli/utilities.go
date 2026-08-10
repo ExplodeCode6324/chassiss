@@ -35,7 +35,7 @@ func ownerApplyCommand(ctx context.Context, invocation invocation) (Envelope, er
 		return Envelope{}, err
 	}
 	for _, worktree := range project.LocalProject.Worktrees {
-		if samePath(worktree.Path, project.RepoRoot) {
+		if samePath(worktree.Path, project.InvocationRoot) {
 			return Envelope{}, protocol.NewError(protocol.ErrOwnerWorkflowActive, protocol.CategoryLocal, "Owner Apply cannot run inside a managed Task worktree.")
 		}
 	}
@@ -225,7 +225,7 @@ func exportCommand(ctx context.Context, invocation invocation) (Envelope, error)
 	}
 	output := invocation.Value("output")
 	if output != "" {
-		if err := requireOutsideProject(project.RepoRoot, output); err != nil {
+		if err := requireOutsideProject(project, output); err != nil {
 			return Envelope{}, err
 		}
 		if err := writeExternalFile(output, data); err != nil {

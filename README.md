@@ -16,12 +16,12 @@ credential 或 Mission 模型。旧仓库只作为只读的文档组织参考。
 下面按人类组织一次多 Agent 项目的顺序说明。命令中的 `chassiss` 指可信 Skill
 内经 manifest digest 校验的 CLI；私钥、申请文件和文档草稿都应放在项目目录外。
 
-> **现行 v1 的一次性引导约束：** Agent 可以先提交公钥和 Grant Request，但
-> Grant 必须在 Genesis 之后才能写入项目账本；而 Genesis 又必须同时包含第一版
-> Architecture 和 Taskbook。因此，首次启动时先完成第 0–4 步的人类决策，再按
-> 第 4 步给出的顺序一次性执行 `init` 和 `grant add`。如果要求“先把 Grant
-> 写入账本，再让 Architecture Agent 参与讨论”，需要新增只含 Root 的 bootstrap
-> 协议状态，不能只靠调整命令顺序实现。
+> **新项目的一次性引导约束：** 标准 `init` 的 Genesis 同时包含第一版
+> Architecture 和 Taskbook，因此首次启动时先完成第 0–4 步的人类决策，再按
+> 第 4 步顺序执行 `init` 和 `grant add`。已有 Git 项目使用 Root-only
+> `bootstrap`：先锚定 exact source snapshot、签发 Architecture Grant，再由
+> Agent 审计并建立首份 Architecture；详见
+> [已有项目接入](docs/cn/13-已有项目接入.md)。
 
 ### 0. 准备项目
 
@@ -162,6 +162,7 @@ arm64/amd64 CLI。
 - [中文使用指南](docs/cn/README.md)
 - [English guides](docs/en/README.md)
 - [实现与旧项目差异](docs/12-implementation-differences.md)
+- [已有项目接入](docs/cn/13-已有项目接入.md)
 - [跨实现 fixtures](fixtures/README.md)
 
 机器可读的完整命令树以 `chassiss help --json` 为准；稳定 Error code、退出码和

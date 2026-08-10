@@ -1,6 +1,6 @@
 ---
 name: chassiss
-description: Operate a CHASSISS v1 signed project safely through its trusted public CLI. Use when entering a registered CHASSISS project, selecting or executing a Task, inspecting verified context, managing a CLI-owned worktree, submitting work, reviewing or integrating a candidate, maintaining Architecture or Taskbooks, or responding to a structured CHASSISS refusal.
+description: Adopt an existing Git project into CHASSISS or operate a CHASSISS v1 signed project safely through its trusted public CLI. Use when bootstrapping source history, establishing Architecture, entering a registered project, executing a Task, managing a CLI-owned worktree, reviewing or integrating a candidate, maintaining Taskbooks, or responding to a structured refusal.
 ---
 
 # CHASSISS
@@ -9,6 +9,10 @@ Use this Skill's `scripts/chassiss` launcher as the only protocol and Git workfl
 interface. The launcher selects the bundled macOS/Linux binary for the current
 platform and verifies its digest before execution. Do not parse protocol files,
 infer authority, or manipulate repository state yourself.
+
+For an existing Git repository that is not yet a CHASSISS Project, read and
+follow [references/onboarding.md](references/onboarding.md). The old commits
+remain non-authoritative source history; never reinterpret them as Transitions.
 
 ## Enter a project
 
@@ -41,9 +45,12 @@ before creating an Agent identity or starting a Task.
 5. Inspect with `chassiss work status`, `chassiss work diff`, and
    `chassiss work log`.
 6. Record changes with `chassiss work commit`; use `work restore` or `work remove`
-   only when the requested outcome requires them.
+   only when the requested outcome requires them. `work commit` always resolves
+   the frozen Task Actor's Key from Task runtime; do not pass `--key` or
+   `--grant`.
 7. Run `chassiss check`, then `chassiss submit`. Treat submit's new preflight as
-   authoritative.
+   authoritative. In parallel workflows, pass the Agent's explicit `--key` and
+   `--grant` to `submit` and other Transition-producing Task mutations.
 8. Refresh `chassiss context <TASK-ID> --json` after every mutation.
 
 `work diff` includes tracked and untracked files without changing the real Git
@@ -51,6 +58,13 @@ index.
 
 Do not run Git-mutating commands such as add, commit, branch, checkout, switch,
 worktree, merge, rebase, cherry-pick, reset, push, or config.
+
+If a mutation's process result is empty, detached, timed out, interrupted, or
+otherwise ambiguous, do not repeat it with a fresh Operation ID. Treat the
+outcome as unresolved and reconcile it with `status`, verified `log`, and
+`sync --json` before deciding whether any retry is allowed. `sync` also performs
+deterministic pending-operation reconciliation for Projects with no authoritative
+remote.
 
 ## Request focused context
 
@@ -65,6 +79,17 @@ chassiss file show src/core/state/model.go --at main --json
 ```
 
 Do not replace these calls by scanning `.git`, State, or whole protocol documents.
+
+## Govern Architecture
+
+Refresh Context, then use only `architecture draft`, `diff`, `validate`, and
+`update`. A draft made while a Taskbook is active binds its exact blob. Treat
+`validate` as Architecture-only and rely on `diff`/`update` for Taskbook
+compatibility. The CLI permits an active Taskbook only when every Task is ready
+or terminal and the candidate preserves the exact Taskbook; never evade
+`CHS_TASKBOOK_NOT_QUIESCENT` by changing identity or Operation ID. Refresh
+Context after the update. Ready Tasks freeze the new Architecture when next
+started; historical frozen Contracts are never migrated.
 
 ## Review and integrate
 

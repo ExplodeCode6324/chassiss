@@ -16,11 +16,38 @@ func (state *State) Validate(objectFormat string) error {
 	if err := protocol.ValidateID(protocol.IDProject, state.Project.ID); err != nil {
 		return err
 	}
-	if state.Project.Architecture.Path != "docs/architecture.yaml" {
-		return fmt.Errorf("Architecture path must be docs/architecture.yaml")
+	if state.Project.Architecture == nil {
+		if state.Project.Source == nil {
+			return fmt.Errorf("Architecture may be null only for a source bootstrap")
+		}
+		if state.Project.Taskbook != nil || len(state.Tasks) != 0 {
+			return fmt.Errorf("bootstrap State cannot contain a Taskbook or Tasks")
+		}
+	} else {
+		if state.Project.Architecture.Path != "docs/architecture.yaml" {
+			return fmt.Errorf("Architecture path must be docs/architecture.yaml")
+		}
+		if err := protocol.ValidateOID(state.Project.Architecture.BlobOID, objectFormat); err != nil {
+			return fmt.Errorf("Architecture blob: %w", err)
+		}
 	}
-	if err := protocol.ValidateOID(state.Project.Architecture.BlobOID, objectFormat); err != nil {
-		return fmt.Errorf("Architecture blob: %w", err)
+	if state.Project.Source != nil {
+		source := state.Project.Source
+		if source.ObjectFormat != "sha1" && source.ObjectFormat != "sha256" {
+			return fmt.Errorf("source object_format must be sha1 or sha256")
+		}
+		if err := protocol.ValidateOID(source.Commit, source.ObjectFormat); err != nil {
+			return fmt.Errorf("source commit: %w", err)
+		}
+		if err := protocol.ValidateOID(source.Tree, source.ObjectFormat); err != nil {
+			return fmt.Errorf("source tree: %w", err)
+		}
+		if source.HistoryPath != "docs/chassiss/onboarding/source-history.md" {
+			return fmt.Errorf("source history_path must be docs/chassiss/onboarding/source-history.md")
+		}
+		if err := protocol.ValidateOID(source.HistoryBlob, objectFormat); err != nil {
+			return fmt.Errorf("source history blob: %w", err)
+		}
 	}
 	if state.Project.Taskbook == nil {
 		if len(state.Tasks) != 0 {

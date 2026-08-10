@@ -41,6 +41,10 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 		if output == "" {
 			return Envelope{}, usageError("review --prepare requires --output")
 		}
+		reportOutput := invocation.Value("report-output")
+		if err := requireOutsideProject(project, output, reportOutput); err != nil {
+			return Envelope{}, err
+		}
 		data, err := protocol.CanonicalJSON(context)
 		if err != nil {
 			return Envelope{}, err
@@ -49,7 +53,6 @@ func reviewCommand(ctx context.Context, invocation invocation) (Envelope, error)
 			return Envelope{}, err
 		}
 		reportTemplate := workflow.NewReviewReportTemplate(contract.ReviewerAttention)
-		reportOutput := invocation.Value("report-output")
 		if reportOutput != "" {
 			templateData, err := protocol.CanonicalJSON(reportTemplate)
 			if err != nil {
@@ -167,6 +170,9 @@ func integrateCommand(ctx context.Context, invocation invocation) (Envelope, err
 	if err != nil {
 		return Envelope{}, err
 	}
+	if err := requireNoUnresolvedPending(project); err != nil {
+		return Envelope{}, err
+	}
 	taskID := invocation.Positionals[0]
 	task, exists := project.Verified.State.Tasks[taskID]
 	if !exists || task.Phase != "approved" || task.Blocked != nil ||
@@ -181,42 +187,9 @@ func integrateCommand(ctx context.Context, invocation invocation) (Envelope, err
 	if err != nil {
 		return Envelope{}, err
 	}
-	drift, err := verifier.ClassifyDrift(
-		ctx, project.Runner, project.Verified.ObjectFormat, project.Verified.State,
-		taskID, contract, project.Verified.Architecture, task.Review.ReviewMain,
-		project.Verified.Head,
-	)
+	drift, candidate, err := integrationCandidate(ctx, project, taskID, task, contract)
 	if err != nil {
 		return Envelope{}, err
-	}
-	if drift.Classification != "unrelated" {
-		return Envelope{}, &protocol.Error{
-			Code: protocol.ErrReviewContextStale, Category: protocol.CategoryReview,
-			Message: "Relevant mainline drift requires a new Review Context.",
-			Details: map[string]any{"drift_classification": drift},
-		}
-	}
-	mainCommit, err := project.Runner.ReadCommit(ctx, project.Verified.Head)
-	if err != nil {
-		return Envelope{}, err
-	}
-	mainTree, err := project.Runner.ReadTree(ctx, mainCommit.Tree)
-	if err != nil {
-		return Envelope{}, err
-	}
-	candidate, err := workflow.BuildCandidate(
-		ctx, project.Runner, project.Verified.ObjectFormat, mainTree,
-		project.Verified.State, taskID,
-	)
-	if err != nil {
-		return Envelope{}, protocol.WrapError(protocol.ErrCandidateConflict, protocol.CategoryConflict, "Candidate overlay failed.", err)
-	}
-	if violations := scopeViolations(candidate.ChangedPaths, contract.Writes); len(violations) > 0 {
-		return Envelope{}, &protocol.Error{
-			Code: protocol.ErrScopeViolation, Category: protocol.CategoryValidation,
-			Message: "Integration candidate exceeds the frozen Task writes.",
-			Details: map[string]any{"paths": violations},
-		}
 	}
 	if err := persistCandidate(ctx, project.Runner, candidate); err != nil {
 		return Envelope{}, err
@@ -291,6 +264,56 @@ func integrateCommand(ctx context.Context, invocation invocation) (Envelope, err
 	cleanupWarnings := cleanupIntegratedWork(ctx, project, taskID)
 	envelope.Warnings = append(envelope.Warnings, cleanupWarnings...)
 	return envelope, nil
+}
+
+func integrationCandidate(
+	ctx context.Context,
+	project *projectContext,
+	taskID string,
+	task state.TaskState,
+	contract contracts.Task,
+) (workflow.DriftClassification, workflow.Candidate, error) {
+	drift, err := verifier.ClassifyDrift(
+		ctx, project.Runner, project.Verified.ObjectFormat, project.Verified.State,
+		taskID, contract, project.Verified.Architecture, task.Review.ReviewMain,
+		project.Verified.Head,
+	)
+	if err != nil {
+		return workflow.DriftClassification{}, workflow.Candidate{}, err
+	}
+	if drift.Classification != "unrelated" {
+		return workflow.DriftClassification{}, workflow.Candidate{}, &protocol.Error{
+			Code: protocol.ErrReviewContextStale, Category: protocol.CategoryReview,
+			Message: "Relevant mainline drift requires a new Review Context.",
+			Details: map[string]any{"drift_classification": drift},
+		}
+	}
+	mainCommit, err := project.Runner.ReadCommit(ctx, project.Verified.Head)
+	if err != nil {
+		return workflow.DriftClassification{}, workflow.Candidate{}, err
+	}
+	mainTree, err := project.Runner.ReadTree(ctx, mainCommit.Tree)
+	if err != nil {
+		return workflow.DriftClassification{}, workflow.Candidate{}, err
+	}
+	candidate, err := workflow.BuildCandidate(
+		ctx, project.Runner, project.Verified.ObjectFormat, mainTree,
+		project.Verified.State, taskID,
+	)
+	if err != nil {
+		return workflow.DriftClassification{}, workflow.Candidate{}, protocol.WrapError(
+			protocol.ErrCandidateConflict, protocol.CategoryConflict,
+			"Candidate overlay failed.", err,
+		)
+	}
+	if violations := scopeViolations(candidate.ChangedPaths, contract.Writes); len(violations) > 0 {
+		return workflow.DriftClassification{}, workflow.Candidate{}, &protocol.Error{
+			Code: protocol.ErrScopeViolation, Category: protocol.CategoryValidation,
+			Message: "Integration candidate exceeds the frozen Task writes.",
+			Details: map[string]any{"paths": violations},
+		}
+	}
+	return drift, candidate, nil
 }
 
 func buildReviewContext(

@@ -6,6 +6,7 @@
 
 ```text
 如何找到受信 CLI
+如何把已有 Git snapshot 接入 Root-only bootstrap
 如何取得 verified Context
 如何使用 CLI 管理的 Task worktree
 如何调用 available actions
@@ -70,6 +71,8 @@ Agent 首次进入目录：
 ```
 
 如果目录不是 registered Project，按 CLI remediation 使用 `clone` 或报告。
+只有 Master 明确要求接入已有项目时，Skill 才可按 onboarding reference 在
+空目标目录使用 `bootstrap`；不得把任意未注册目录静默转成 Project。
 
 Context 返回：
 
@@ -83,6 +86,23 @@ Context 返回：
 - 下一条安全只读命令。
 
 Agent 不自行扫描 `.git` 推断协议状态。
+
+### 4.1 已有项目接入
+
+Skill 把工作分成机械层和语义层：
+
+1. CLI 从 Master 指定的 full source commit OID 只读导入 ordinary snapshot，
+   拒绝 protected collision、submodule 与逃逸 symlink，并生成
+   `docs/chassiss/onboarding/source-history.md`；
+2. Root 创建 `project.bootstrap`，再审核带 proof-of-possession 的
+   `architecture.establish` Grant；
+3. Architecture Agent 只读审计普通源码和构建/依赖清单，在 Project 外编写
+   candidate；
+4. CLI 只验证 schema/graph/path，Master 或独立 Reviewer 负责语义准确性；
+5. `architecture establish` 之后才进入 `taskbook draft --new/open`。
+
+Skill 不读取旧 `.git` 来推断 CHASSISS Authority，不把旧 commits 称为
+Transitions，也不让 Agent 在 Architecture 建立前执行普通 Task mutation。
 
 ## 5. 开始 Task
 
@@ -101,8 +121,9 @@ Agent 不自行创建 branch、checkout 或 worktree。
 
 Master 为每次 Task attempt 分配独立且不复用的 Actor、Key、narrow Grant、
 CLI-managed worktree 与临时父目录。并行 Agent 不共享 mutable checkout、
-worktree、Key、Grant 或 scratch directory；签名 mutation 显式传
-`--key/--grant`，不依赖全局 selected identity。
+worktree、Key、Grant 或 scratch directory；产生 Transition 且 command schema
+暴露 signer 选项的 mutation 显式传 `--key/--grant`，不依赖全局 selected
+identity。`work commit` 固定使用 frozen Task Actor key，不接受这两个选项。
 
 成功 Integration 后立即 revoke 临时 Grant、remove Key、确认 worktree/Work
 Ref 已清理，再销毁临时目录。失败时顺序固定：
@@ -273,6 +294,7 @@ references/
   safety.md
   context.md
   master-orchestration.md
+  onboarding.md
 scripts/
   chassiss
   build-bundle.sh

@@ -2,8 +2,10 @@ package verifier
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -185,5 +187,187 @@ func TestCurrentAttemptRequiresExactWorkRef(t *testing.T) {
 	}
 	if err := verifyCurrentWorkRefs(ctx, runner, current); err != nil {
 		t.Fatalf("legacy v1 Work Ref did not remain readable: %v", err)
+	}
+}
+
+func assertProtocolContractError(
+	t *testing.T,
+	err error,
+	code string,
+	category protocol.Category,
+) *protocol.Error {
+	t.Helper()
+	var protocolError *protocol.Error
+	if !errors.As(err, &protocolError) {
+		t.Fatalf("expected structured protocol error, got %T: %v", err, err)
+	}
+	if protocolError.Code != code || protocolError.Category != category || protocolError.Retryable {
+		t.Fatalf("unexpected error contract: %#v", protocolError)
+	}
+	if protocolError.OperationID != "" || len(protocolError.Remediation) != 0 {
+		t.Fatalf("verification refusal exposed an operation or remediation: %#v", protocolError)
+	}
+	return protocolError
+}
+
+func TestCompatibleArchitectureFactsAndWhitelist(t *testing.T) {
+	ctx := context.Background()
+	repository := t.TempDir()
+	bootstrap := gitstore.New("")
+	if _, err := bootstrap.Run(ctx, "init", "-b", "main", repository); err != nil {
+		t.Fatal(err)
+	}
+	runner := gitstore.New(repository)
+	oldData, err := os.ReadFile(filepath.Join("..", "..", "docs", "templates", "architecture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskbookData, err := os.ReadFile(filepath.Join("..", "..", "docs", "templates", "taskbook.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newData := []byte(strings.Replace(
+		string(oldData),
+		"Canonical encoding, verification, authorization, reducers, and state.",
+		"Canonical signed encoding, verification, authorization, reducers, and state.",
+		1,
+	))
+	oldArchitecture, err := contracts.ParseArchitecture(oldData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newArchitecture, err := contracts.ParseArchitecture(newData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBlob, err := runner.HashBlob(ctx, oldData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newBlob, err := runner.HashBlob(ctx, newData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskbookBlob, err := runner.HashBlob(ctx, taskbookData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &state.State{
+		Project: state.Project{
+			ID:           "PRJ-TEST",
+			Architecture: &state.BlobRef{Path: "docs/architecture.yaml", BlobOID: oldBlob},
+			Taskbook:     &state.TaskbookRef{Path: "docs/taskbook.yaml", BlobOID: taskbookBlob, ID: "TASKBOOK-001"},
+		},
+		Tasks: map[string]state.TaskState{"TASK-001": {Phase: "ready"}},
+	}
+	diff := contracts.DiffArchitecture(oldArchitecture, newArchitecture, oldBlob, newBlob)
+	operation := protocol.Operation{
+		Schema: protocol.OperationSchema, OperationID: "OPR-91ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Action: "architecture.updated-compatible", Project: "PRJ-TEST",
+		Authority: "grant:GRT-ARCHITECT-01", Target: oldArchitecture.ID,
+		Preconditions: map[string]any{
+			"all_tasks_quiescent": true, "architecture_blob": oldBlob,
+			"taskbook_blob": taskbookBlob,
+		},
+		Payload: map[string]any{"candidate_blob": newBlob, "reason": "compatible update"},
+	}
+	digest, err := protocol.ObjectDigest("operation", operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentOID := strings.Repeat("8", 40)
+	evidence := protocol.ExecutionEvidence{
+		Schema: protocol.EvidenceSchema, OperationDigest: digest,
+		Action: operation.Action, Attempt: 1, Parent: &parentOID,
+		Facts: map[string]any{
+			"new_blob": newBlob, "old_blob": oldBlob,
+			"semantic_diff": diff, "taskbook_blob": taskbookBlob,
+		},
+	}
+	engine := verifier{
+		runner: runner, format: "sha1", architectureID: oldArchitecture.ID,
+		seenResources: map[string]struct{}{},
+	}
+	message := protocol.TransitionMessage{Operation: operation, Evidence: evidence}
+	facts, _, _, err := engine.verifyFacts(
+		ctx, gitstore.Commit{OID: parentOID}, nil, parent, gitstore.Commit{}, nil, message,
+	)
+	if err != nil || !reflect.DeepEqual(facts.TargetResources, []string{"module:core"}) {
+		t.Fatalf("valid facts rejected or scope not recomputed: facts=%#v err=%v", facts, err)
+	}
+
+	tampered := message
+	tampered.Operation.Preconditions = map[string]any{
+		"all_tasks_quiescent": true, "architecture_blob": oldBlob,
+		"taskbook_blob": strings.Repeat("7", 40),
+	}
+	_, _, _, err = engine.verifyFacts(
+		ctx, gitstore.Commit{OID: parentOID}, nil, parent, gitstore.Commit{}, nil, tampered,
+	)
+	assertProtocolContractError(t, err, protocol.ErrEvidenceInvalid, protocol.CategoryProtocol)
+
+	tampered = message
+	tampered.Evidence.Facts = map[string]any{
+		"new_blob": newBlob, "old_blob": oldBlob,
+		"semantic_diff": diff, "taskbook_blob": strings.Repeat("7", 40),
+	}
+	_, _, _, err = engine.verifyFacts(
+		ctx, gitstore.Commit{OID: parentOID}, nil, parent, gitstore.Commit{}, nil, tampered,
+	)
+	assertProtocolContractError(t, err, protocol.ErrEvidenceInvalid, protocol.CategoryProtocol)
+
+	tampered = message
+	tampered.Evidence.Facts = map[string]any{
+		"new_blob": newBlob, "old_blob": oldBlob,
+		"semantic_diff": map[string]any{}, "taskbook_blob": taskbookBlob,
+	}
+	_, _, _, err = engine.verifyFacts(
+		ctx, gitstore.Commit{OID: parentOID}, nil, parent, gitstore.Commit{}, nil, tampered,
+	)
+	assertProtocolContractError(t, err, protocol.ErrArchitectureInvalid, protocol.CategoryValidation)
+
+	incompatibleData := []byte(strings.Replace(string(newData), "- src/core/**", "- src/incompatible/**", 1))
+	incompatibleBlob, err := runner.HashBlob(ctx, incompatibleData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incompatibleArchitecture, err := contracts.ParseArchitecture(incompatibleData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incompatibleDiff := contracts.DiffArchitecture(oldArchitecture, incompatibleArchitecture, oldBlob, incompatibleBlob)
+	tampered = message
+	tampered.Operation.Payload = map[string]any{"candidate_blob": incompatibleBlob, "reason": "compatible update"}
+	tampered.Evidence.Facts = map[string]any{
+		"new_blob": incompatibleBlob, "old_blob": oldBlob,
+		"semantic_diff": incompatibleDiff, "taskbook_blob": taskbookBlob,
+	}
+	_, _, _, err = engine.verifyFacts(
+		ctx, gitstore.Commit{OID: parentOID}, nil, parent, gitstore.Commit{}, nil, tampered,
+	)
+	assertProtocolContractError(t, err, protocol.ErrTaskbookInvalid, protocol.CategoryValidation)
+
+	parentTree := gitstore.TreeMap{
+		".chassiss/state.json":   {Mode: "100644", OID: strings.Repeat("1", 40)},
+		"docs/architecture.yaml": {Mode: "100644", OID: oldBlob},
+		"docs/taskbook.yaml":     {Mode: "100644", OID: taskbookBlob},
+	}
+	resultTree := gitstore.TreeMap{
+		".chassiss/state.json":   {Mode: "100644", OID: strings.Repeat("2", 40)},
+		"docs/architecture.yaml": {Mode: "100644", OID: newBlob},
+		"docs/taskbook.yaml":     {Mode: "100644", OID: strings.Repeat("3", 40)},
+	}
+	err = engine.verifyWhitelist(
+		ctx, parentTree, resultTree, parent, gitstore.Commit{}, message,
+		oldArchitecture, nil,
+	)
+	protocolError := assertProtocolContractError(
+		t, err, protocol.ErrProtectedPathChanged, protocol.CategoryProtocol,
+	)
+	if protocolError.Details["action"] != "architecture.updated-compatible" ||
+		!reflect.DeepEqual(protocolError.Details["paths"], []string{
+			".chassiss/state.json", "docs/architecture.yaml", "docs/taskbook.yaml",
+		}) {
+		t.Fatalf("whitelist details are not canonical: %#v", protocolError.Details)
 	}
 }

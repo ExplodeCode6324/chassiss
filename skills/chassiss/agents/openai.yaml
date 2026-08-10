@@ -1,4 +1,4 @@
 interface:
   display_name: "CHASSISS"
-  short_description: "Safely operate signed CHASSISS project workflows"
-  default_prompt: "Use $chassiss to enter a verified project context and carry out the next authorized workflow action."
+  short_description: "Adopt or safely operate signed CHASSISS projects"
+  default_prompt: "Use $chassiss to adopt an existing Git project or carry out the next authorized action in a verified CHASSISS project."

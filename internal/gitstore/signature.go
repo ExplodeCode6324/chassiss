@@ -140,7 +140,7 @@ func commandExitCode(err *CommandError) int {
 
 func ParentCountAllowed(action string, parents int) bool {
 	switch action {
-	case "project.genesis":
+	case "project.genesis", "project.bootstrap":
 		return parents == 0
 	case "integration.applied":
 		return parents == 2

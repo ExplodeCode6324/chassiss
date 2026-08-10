@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,9 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 			}
 		}
 	case "task.released":
+		if runtimeTask.Phase != "active" || runtimeTask.Blocked != nil {
+			return Envelope{}, protocol.NewError(protocol.ErrTaskPhaseInvalid, protocol.CategoryValidation, "Task release requires an unblocked active Task.")
+		}
 		if err := verifyReleaseWorktree(ctx, project, taskID, runtimeTask); err != nil {
 			return Envelope{}, err
 		}
@@ -216,6 +220,18 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 		envelope.Result.(map[string]any)["agent_grant"] = invocation.Value("agent-grant")
 		envelope.Result.(map[string]any)["agent_key"] = invocation.Value("agent-key")
 	}
+	if action == "task.released" {
+		worktree := project.LocalProject.Worktrees[taskID]
+		cleanup := cleanupManagedWork(ctx, project, taskID, worktree, worktree.Base)
+		addManagedWorkCleanupResult(envelope.Result.(map[string]any), cleanup)
+		if cleanup.Err != nil {
+			envelope.Warnings = append(envelope.Warnings, managedWorkCleanupWarning(
+				taskID, cleanup.Artifact,
+				"Task release was published, but managed Work cleanup requires local reconciliation.",
+				cleanup.Err,
+			))
+		}
+	}
 	if action == "task.started" {
 		published, readErr := project.Runner.ReadCommit(ctx, envelope.Operation.Commit)
 		base := project.Verified.Head
@@ -234,6 +250,104 @@ func taskMutationCommand(ctx context.Context, invocation invocation) (Envelope, 
 		}
 	}
 	return envelope, nil
+}
+
+type managedWorkCleanup struct {
+	WorktreeRemoved bool
+	LocalRefRemoved bool
+	RegistryRemoved bool
+	Artifact        string
+	Err             error
+}
+
+func addManagedWorkCleanupResult(result map[string]any, cleanup managedWorkCleanup) {
+	result["worktree_removed"] = cleanup.WorktreeRemoved
+	result["local_ref_removed"] = cleanup.LocalRefRemoved
+	result["worktree_registry_removed"] = cleanup.RegistryRemoved
+}
+
+func cleanupManagedWork(
+	ctx context.Context,
+	project *projectContext,
+	taskID string,
+	worktree localstate.Worktree,
+	expectedRefOID string,
+) managedWorkCleanup {
+	cleanup := managedWorkCleanup{}
+	fail := func(artifact string, err error) managedWorkCleanup {
+		cleanup.Artifact = artifact
+		cleanup.Err = err
+		return cleanup
+	}
+	managedRoot := filepath.Join(
+		project.Store.Paths.Data, "worktrees", project.Verified.State.Project.ID, taskID,
+	)
+	if !pathWithin(managedRoot, worktree.Path) ||
+		!containsString(taskWorkRefs(taskID, worktree.Actor, worktree.Base), worktree.Branch) {
+		return fail("worktree", fmt.Errorf("registered managed Work target is outside its CLI-owned Task path/ref"))
+	}
+	refResult, err := project.Runner.Run(ctx, "for-each-ref", "--format=%(objectname)", worktree.Branch)
+	if err != nil {
+		return fail("local_ref", err)
+	}
+	refOID := strings.TrimSpace(string(refResult.Stdout))
+	if strings.Contains(refOID, "\n") {
+		return fail("local_ref", fmt.Errorf("managed Work Ref resolved to multiple objects"))
+	}
+	if refOID != "" && refOID != expectedRefOID {
+		return fail("local_ref", fmt.Errorf("managed Work Ref moved from the exact cleanup head"))
+	}
+	if _, err := os.Stat(worktree.Path); err == nil {
+		resolvedRoot, rootErr := filepath.EvalSymlinks(managedRoot)
+		resolvedPath, pathErr := filepath.EvalSymlinks(worktree.Path)
+		if rootErr != nil || pathErr != nil || !pathWithin(resolvedRoot, resolvedPath) {
+			return fail("worktree", fmt.Errorf("registered managed Work path escapes its CLI-owned Task root"))
+		}
+		if _, err := project.Runner.Run(ctx, "worktree", "remove", worktree.Path); err != nil {
+			return fail("worktree", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fail("worktree", err)
+	}
+	cleanup.WorktreeRemoved = true
+
+	if refOID != "" {
+		if _, err := project.Runner.Run(
+			ctx, "update-ref", "-m", "CHASSISS managed Work cleanup",
+			"-d", worktree.Branch, refOID,
+		); err != nil {
+			return fail("local_ref", err)
+		}
+	}
+	cleanup.LocalRefRemoved = true
+
+	if err := project.Store.Update(func(local *localstate.State) error {
+		value := local.Projects[project.Verified.State.Project.ID]
+		current, exists := value.Worktrees[taskID]
+		if !exists {
+			return nil
+		}
+		if current != worktree {
+			return fmt.Errorf("managed Work registry changed during cleanup")
+		}
+		delete(value.Worktrees, taskID)
+		local.Projects[project.Verified.State.Project.ID] = value
+		return nil
+	}); err != nil {
+		return fail("registry", err)
+	}
+	cleanup.RegistryRemoved = true
+	return cleanup
+}
+
+func managedWorkCleanupWarning(taskID, artifact, message string, err error) Warning {
+	details := map[string]any{"artifact": artifact, "task": taskID}
+	if err != nil {
+		details["error"] = err.Error()
+	}
+	return Warning{
+		Code: "CHS_WARN_LOCAL_CLEANUP", Message: message, Details: details,
+	}
 }
 
 func cleanupAbandonedWork(ctx context.Context, project *projectContext, taskID string) (bool, []Warning) {
