@@ -288,7 +288,7 @@ func importSourceTree(
 		}
 		if entry.Mode == "120000" {
 			link := string(data)
-			if filepath.IsAbs(link) || containsParentSegment(filepath.ToSlash(link)) {
+			if symlinkTargetEscapesRepository(link) {
 				return nil, protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryValidation, "Source tree contains a symlink that escapes the repository.")
 			}
 		}
@@ -325,7 +325,7 @@ func validateSourceTree(ctx context.Context, source gitstore.Runner, sourceTree 
 				return err
 			}
 			link := string(data)
-			if filepath.IsAbs(link) || containsParentSegment(filepath.ToSlash(link)) {
+			if symlinkTargetEscapesRepository(link) {
 				return protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryValidation, "Source tree contains a symlink that escapes the repository.")
 			}
 		}

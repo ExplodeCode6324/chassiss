@@ -610,7 +610,7 @@ func validateWorkSymlink(root, path string) error {
 	if err != nil {
 		return err
 	}
-	if filepath.IsAbs(target) || containsParentSegment(filepath.ToSlash(target)) {
+	if symlinkTargetEscapesRepository(target) {
 		return protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryValidation, "Work symlink escapes the managed worktree.")
 	}
 	return nil

@@ -301,7 +301,7 @@ func scanInitialTree(ctx context.Context, runner gitstore.Runner, repository str
 			if err != nil {
 				return nil, err
 			}
-			if filepath.IsAbs(target) || containsParentSegment(filepath.ToSlash(target)) {
+			if symlinkTargetEscapesRepository(target) {
 				return nil, protocol.NewError(protocol.ErrScopeViolation, protocol.CategoryValidation, "Initial tree contains a symlink that escapes the repository.")
 			}
 			data, mode = []byte(target), "120000"
@@ -405,15 +405,6 @@ func resolveKeyHandle(value string, paths localstate.Paths) (string, error) {
 func pathWithin(root, path string) bool {
 	relative, err := filepath.Rel(root, path)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-func containsParentSegment(value string) bool {
-	for _, segment := range strings.Split(value, "/") {
-		if segment == ".." {
-			return true
-		}
-	}
-	return false
 }
 
 func validateRemoteURL(value string) error {
